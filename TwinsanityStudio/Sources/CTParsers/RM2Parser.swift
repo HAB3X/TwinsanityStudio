@@ -241,6 +241,10 @@ public enum RM2Parser {
                 return .instance(try WorldPlacementParser.parseInstance(&cursor, recordID: recordID))
             case .trigger:
                 return .trigger(try WorldPlacementParser.parseTrigger(&cursor, recordID: recordID))
+            case .camera:
+                return .camera(try WorldPlacementParser.parseCamera(&cursor, recordID: recordID, isDemo: false))
+            case .cameraDemo:
+                return .camera(try WorldPlacementParser.parseCamera(&cursor, recordID: recordID, isDemo: true))
             default:
                 return .raw(byteCount: size)
             }

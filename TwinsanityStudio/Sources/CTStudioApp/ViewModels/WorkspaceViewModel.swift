@@ -167,9 +167,18 @@ public final class WorkspaceViewModel: ObservableObject {
     /// archive in the background, so the type filter (and search) can find
     /// assets no matter which file they're packed into — without this, a
     /// filter can only ever see inside files you've individually opened.
-    /// Runs off the main thread since a full archive (hundreds of files) can
+    /// Runs off the main actor since a full archive (hundreds of files) can
     /// take tens of seconds; the UI stays responsive and `isScanning` drives
     /// a progress indicator instead of freezing during the scan.
+    ///
+    /// Split into a serial I/O phase and a parallel CPU phase per archive:
+    /// `BDArchiveReader` reuses one open file handle and isn't safe for
+    /// concurrent reads (see its own doc comment), so every candidate
+    /// entry's bytes are pulled up front on one thread — but chunk-tree
+    /// parsing, geometry/texture decode, and asset resolution are pure
+    /// functions over each entry's own independent `Data`, so that half
+    /// fans out across every core via a `TaskGroup` instead of running one
+    /// file at a time.
     public func scanAllArchives() {
         guard !isScanning else { return }
         let targets = archiveIndexByRootID.map { ($0.key, $0.value) }
@@ -183,35 +192,57 @@ public final class WorkspaceViewModel: ObservableObject {
         isScanning = true
         statusMessage = "Scanning \(totalCandidates) level file(s) across \(targets.count) archive(s)…"
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        Task.detached(priority: .userInitiated) { [weak self] in
             var resultsByRoot: [UUID: [String: ChunkNode]] = [:]
             var resolvedModels: [ResolvedModelAsset] = []
             var orphans: [OrphanedAsset] = []
+
             for (rootID, index) in targets {
-                var parsedByName: [String: ChunkNode] = [:]
-                // One open file handle reused for every entry in this
-                // archive — opening/stat-ing a fresh handle per entry (as
-                // the single-entry readEntryData does) is the dominant cost
-                // of a full scan, especially reading off a mounted disc image.
                 guard let reader = try? BDArchiveReader(index: index) else { continue }
+                var pendingEntries: [(name: String, data: Data, kind: TwinsFileKind)] = []
                 for entry in index.entries where Self.isChunkFileName(entry.name) {
                     guard let data = try? reader.read(entry) else { continue }
-                    let kind = Self.fileKind(forEntryNamed: entry.name)
-                    guard let parsed = try? RM2Parser.parse(data: data, fileKind: kind, fileName: entry.name) else { continue }
-                    parsedByName[entry.name] = parsed
-                    // Resolution is a pure read over already-decoded data —
-                    // safe and cheap to do right here alongside parsing,
-                    // keeping every bit of the expensive work off the main
-                    // thread instead of just the parsing half of it.
-                    resolvedModels.append(contentsOf: Self.resolveModels(inFileRoot: parsed, sourceLabel: entry.name))
-                    orphans.append(contentsOf: AssetResolver.scanForOrphans(fileRoot: parsed, sourceLabel: entry.name))
+                    pendingEntries.append((entry.name, data, Self.fileKind(forEntryNamed: entry.name)))
+                }
+
+                let parsed = await withTaskGroup(of: ParsedEntryResult?.self) { group in
+                    for pending in pendingEntries {
+                        group.addTask {
+                            guard let node = try? RM2Parser.parse(data: pending.data, fileKind: pending.kind, fileName: pending.name) else { return nil }
+                            let models = Self.resolveModels(inFileRoot: node, sourceLabel: pending.name)
+                            let entryOrphans = AssetResolver.scanForOrphans(fileRoot: node, sourceLabel: pending.name)
+                            return ParsedEntryResult(name: pending.name, node: node, models: models, orphans: entryOrphans)
+                        }
+                    }
+                    var collected: [ParsedEntryResult] = []
+                    collected.reserveCapacity(pendingEntries.count)
+                    for await result in group where result != nil {
+                        collected.append(result!)
+                    }
+                    return collected
+                }
+
+                var parsedByName: [String: ChunkNode] = [:]
+                for result in parsed {
+                    parsedByName[result.name] = result.node
+                    resolvedModels.append(contentsOf: result.models)
+                    orphans.append(contentsOf: result.orphans)
                 }
                 resultsByRoot[rootID] = parsedByName
             }
-            DispatchQueue.main.async {
-                self?.applyBulkScan(resultsByRoot, resolvedModels: resolvedModels, orphans: orphans)
-            }
+
+            await self?.applyBulkScan(resultsByRoot, resolvedModels: resolvedModels, orphans: orphans)
         }
+    }
+
+    /// One archive entry's parsed chunk tree plus everything derived from
+    /// it — grouped so a single `TaskGroup` child task can hand its whole
+    /// result back in one `Sendable` value.
+    private struct ParsedEntryResult: Sendable {
+        let name: String
+        let node: ChunkNode
+        let models: [ResolvedModelAsset]
+        let orphans: [OrphanedAsset]
     }
 
     private func applyBulkScan(_ resultsByRoot: [UUID: [String: ChunkNode]], resolvedModels: [ResolvedModelAsset], orphans: [OrphanedAsset]) {
@@ -372,28 +403,22 @@ public final class WorkspaceViewModel: ObservableObject {
     /// Graphics/Code sections (mesh, material, texture, skeleton records)
     /// instead of treating them as independent chunks.
     public func openModelViewer(for node: ChunkNode) {
-        guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else {
-            lastError = "Couldn't find the file this record belongs to."
-            return
-        }
-        let index = AssetResolver.buildIndex(fileRoot: fileRoot)
-        let displayName = "\(fileRoot.displayName) — \(node.displayName)"
-
-        let resolved: ResolvedModelAsset?
-        switch node.payload {
-        case .rigidModel(let rigidModel):
-            resolved = AssetResolver.resolveRigidModel(rigidModel, displayName: displayName, index: index)
-        case .skeleton(let skeleton):
-            resolved = AssetResolver.resolveSkeleton(skeleton, displayName: displayName, index: index)
-        default:
-            resolved = nil
-        }
-
-        guard let resolved else {
-            lastError = "Couldn't resolve this model — its referenced mesh ID wasn't found in this file's Graphics section."
+        guard let resolved = resolveComposite(for: node) else {
+            lastError = "Couldn't resolve this into a complete model — either this record isn't part of a model/texture/animation chain, or nothing in this file currently references it (check the Scrapped Content Scanner)."
             return
         }
         modelViewerAsset = resolved
+    }
+
+    /// The "View Parent / Composite" feature: resolves `node` — a texture,
+    /// raw mesh, material, or animation, not just the `RigidModel`/
+    /// `GraphicsInfo` link record itself — into the complete object it's
+    /// part of, by walking the same file's Graphics/Code index the rest of
+    /// linked asset resolution already builds. See
+    /// `AssetResolver.resolveComposite` for the per-payload-kind lookup.
+    public func resolveComposite(for node: ChunkNode) -> ResolvedModelAsset? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return nil }
+        return AssetResolver.resolveComposite(for: node, fileRoot: fileRoot, displayNamePrefix: "\(fileRoot.displayName) — ")
     }
 
     /// Depth-first search for the nearest ancestor of `target` that looks

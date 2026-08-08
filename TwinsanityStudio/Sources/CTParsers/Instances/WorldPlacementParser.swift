@@ -2,10 +2,26 @@ import Foundation
 import CTCore
 import CTModels
 
-/// Decodes `Position`/`Instance`/`Trigger` leaf records — the `Instance`
-/// container's sub-ID-3/6/7 collections (see `RM2Parser.tier1ChildType`).
-/// Ported 1:1 (including its two on-disk redundant count fields per list)
-/// from `Twinsanity/Items/Instances/{Position,Instance,Trigger}.cs`.
+/// Thrown for a `Camera` sub-payload type code this package doesn't
+/// recognize — `Camera.ReadCamera`'s reference-tool equivalent throws
+/// `NotImplementedException` in the same situation, so this mirrors that
+/// rather than guessing at an unknown layout.
+public enum WorldPlacementParserError: Error, CustomStringConvertible {
+    case unknownCameraSubtype(UInt32)
+
+    public var description: String {
+        switch self {
+        case .unknownCameraSubtype(let type):
+            return "Unrecognized Camera sub-payload type 0x\(String(type, radix: 16))."
+        }
+    }
+}
+
+/// Decodes `Position`/`Instance`/`Trigger`/`Camera` leaf records — the
+/// `Instance` container's sub-ID-3/6/7/8 collections (see
+/// `RM2Parser.tier1ChildType`). Ported 1:1 (including on-disk redundant
+/// count fields and `Camera`'s polymorphic sub-payloads) from
+/// `Twinsanity/Items/Instances/{Position,Instance,Trigger,Camera}.cs`.
 public enum WorldPlacementParser {
     public static func parsePosition(_ cursor: inout BinaryCursor, recordID: UInt32) throws -> PositionMarker {
         PositionMarker(id: recordID, point: try cursor.readVector4())
@@ -81,6 +97,199 @@ public enum WorldPlacementParser {
             arg3: arg3,
             arg4: arg4
         )
+    }
+
+    /// `isDemo`: whether this record was found under `.cameraDemo` rather
+    /// than `.camera` — the Demo layout omits `UnkShort` and `UnkByte`
+    /// entirely (`Camera.cs`'s `ParentType != SectionType.CameraDemo`
+    /// guards on `Save`/`Load`).
+    public static func parseCamera(_ cursor: inout BinaryCursor, recordID: UInt32, isDemo: Bool) throws -> PlacedCamera {
+        let header = try cursor.readUInt32()
+        let enabledMask = try cursor.readUInt32()
+        let someFloat = try cursor.readFloat32()
+        let rotationQuaternion = try cursor.readVector4()
+        let position = try cursor.readVector4()
+        let size = try cursor.readVector4()
+        let instanceIDs = try readCountedUInt16List(&cursor)
+
+        let camHeader = try cursor.readUInt32()
+        let unkShort: UInt16? = isDemo ? nil : try cursor.readUInt16()
+        let unkFloat1 = try cursor.readFloat32()
+        let unkCoords1 = try cursor.readVector4()
+        let unkCoords2 = try cursor.readVector4()
+        let unkFloat2 = try cursor.readFloat32()
+        let unkFloat3 = try cursor.readFloat32()
+        let unkUInt1 = try cursor.readUInt32()
+        let unkUInt2 = try cursor.readUInt32()
+        let unkUInt3 = try cursor.readUInt32()
+        let unkUInt4 = try cursor.readUInt32()
+        let unkInt5 = try cursor.readInt32()
+        let unkInt6 = try cursor.readInt32()
+        let unkFloat4 = try cursor.readFloat32()
+        let unkFloat5 = try cursor.readFloat32()
+        let unkFloat6 = try cursor.readFloat32()
+        let unkFloat7 = try cursor.readFloat32()
+        let unkUInt7 = try cursor.readUInt32()
+        let unkInt8 = try cursor.readInt32()
+        let unkUInt9 = try cursor.readUInt32()
+        let unkFloat8 = try cursor.readFloat32()
+        let cameraType1Raw = try cursor.readUInt32()
+        let cameraType2Raw = try cursor.readUInt32()
+        let unkByte: UInt8? = isDemo ? nil : try cursor.readUInt8()
+
+        let subtype1 = cameraType1Raw != CameraKind.none.rawValue ? try parseCameraSubtype(&cursor, type: cameraType1Raw) : nil
+        let subtype2 = cameraType2Raw != CameraKind.none.rawValue ? try parseCameraSubtype(&cursor, type: cameraType2Raw) : nil
+
+        return PlacedCamera(
+            id: recordID,
+            header: header,
+            enabledMask: enabledMask,
+            someFloat: someFloat,
+            rotationQuaternion: rotationQuaternion,
+            position: position,
+            size: size,
+            instanceIDs: instanceIDs,
+            camHeader: camHeader,
+            unkShort: unkShort,
+            unkFloat1: unkFloat1,
+            unkCoords1: unkCoords1,
+            unkCoords2: unkCoords2,
+            unkFloat2: unkFloat2,
+            unkFloat3: unkFloat3,
+            unkUInt1: unkUInt1,
+            unkUInt2: unkUInt2,
+            unkUInt3: unkUInt3,
+            unkUInt4: unkUInt4,
+            unkInt5: unkInt5,
+            unkInt6: unkInt6,
+            unkFloat4: unkFloat4,
+            unkFloat5: unkFloat5,
+            unkFloat6: unkFloat6,
+            unkFloat7: unkFloat7,
+            unkUInt7: unkUInt7,
+            unkInt8: unkInt8,
+            unkUInt9: unkUInt9,
+            unkFloat8: unkFloat8,
+            cameraType1: CameraKind(rawValue: cameraType1Raw) ?? .none,
+            cameraType2: CameraKind(rawValue: cameraType2Raw) ?? .none,
+            unkByte: unkByte,
+            subtype1: subtype1,
+            subtype2: subtype2
+        )
+    }
+
+    /// Ported from `Camera.ReadCamera` (`Camera.cs:367-535`).
+    private static func parseCameraSubtype(_ cursor: inout BinaryCursor, type: UInt32) throws -> CameraSubtype {
+        switch type {
+        case 0xA19:
+            let unkInt = try cursor.readUInt32()
+            let unkFloat1 = try cursor.readFloat32()
+            let unkFloat2 = try cursor.readFloat32()
+            var matrix1: [SIMD4<Float>] = []
+            for _ in 0..<4 { matrix1.append(try cursor.readVector4()) }
+            var matrix2: [SIMD4<Float>] = []
+            for _ in 0..<4 { matrix2.append(try cursor.readVector4()) }
+            let vector = try cursor.readVector4()
+            let byte1 = try cursor.readUInt8()
+            let f3 = try cursor.readFloat32()
+            let f4 = try cursor.readFloat32()
+            let f5 = try cursor.readFloat32()
+            let f6 = try cursor.readFloat32()
+            let byte2 = try cursor.readUInt8()
+            return .boss(CameraBoss(unkInt: unkInt, unkFloat1: unkFloat1, unkFloat2: unkFloat2, unkMatrix1: matrix1, unkMatrix2: matrix2, unkVector: vector, unkByte1: byte1, unkFloat3: f3, unkFloat4: f4, unkFloat5: f5, unkFloat6: f6, unkByte2: byte2))
+
+        case 0x1C02:
+            let unkInt = try cursor.readUInt32()
+            let f1 = try cursor.readFloat32()
+            let f2 = try cursor.readFloat32()
+            let v = try cursor.readVector4()
+            return .point(CameraPoint(unkInt: unkInt, unkFloat1: f1, unkFloat2: f2, unkVector: v))
+
+        case 0x1C03:
+            let unkInt = try cursor.readUInt32()
+            let f1 = try cursor.readFloat32()
+            let f2 = try cursor.readFloat32()
+            let bb1 = try cursor.readVector4()
+            let bb2 = try cursor.readVector4()
+            return .line(CameraLine(unkInt: unkInt, unkFloat1: f1, unkFloat2: f2, boundingBoxVector1: bb1, boundingBoxVector2: bb2))
+
+        case 0x1C04:
+            let unkInt = try cursor.readUInt32()
+            let f1 = try cursor.readFloat32()
+            let f2 = try cursor.readFloat32()
+            let vectorCount = try cursor.readUInt32()
+            var vectors: [SIMD4<Float>] = []
+            for _ in 0..<vectorCount { vectors.append(try cursor.readVector4()) }
+            let unkInt2 = try cursor.readInt32()
+            let trailing = try cursor.readBytes(max(0, Int(unkInt2)) * 8)
+            return .path(CameraPath(unkInt: unkInt, unkFloat1: f1, unkFloat2: f2, unkVectors: vectors, trailingData: trailing))
+
+        case 0x1C05:
+            return .null1C05
+
+        case 0x1C06:
+            let unkInt = try cursor.readInt32()
+            let f1 = try cursor.readFloat32()
+            let f2 = try cursor.readFloat32()
+            let segCount = try cursor.readUInt32()
+            let f3 = try cursor.readFloat32()
+            var vectors: [SIMD4<Float>] = []
+            for _ in 0..<((segCount + 1) * 2) { vectors.append(try cursor.readVector4()) }
+            let trailing = try cursor.readBytes(Int(segCount) * 8)
+            let unkShort = try cursor.readUInt16()
+            return .spline(CameraSpline(unkInt: unkInt, unkFloat1: f1, unkFloat2: f2, segmentCount: segCount, unkFloat3: f3, unkVectors: vectors, trailingData: trailing, unkShort: unkShort))
+
+        case 0x1C09:
+            let unkInt = try cursor.readUInt32()
+            let f1 = try cursor.readFloat32()
+            let f2 = try cursor.readFloat32()
+            return .unused1C09(CameraMinor(unkInt: unkInt, unkFloat1: f1, unkFloat2: f2))
+
+        case 0x1C0B:
+            let unkInt = try cursor.readUInt32()
+            let f1 = try cursor.readFloat32()
+            let f2 = try cursor.readFloat32()
+            let v = try cursor.readVector4()
+            let f3 = try cursor.readFloat32()
+            let b = try cursor.readUInt8()
+            return .point2(CameraPoint2(unkInt: unkInt, unkFloat1: f1, unkFloat2: f2, unkVector: v, unkFloat3: f3, unkByte: b))
+
+        case 0x1C0C:
+            let b1 = try cursor.readUInt8()
+            let b2 = try cursor.readUInt8()
+            let b3 = try cursor.readUInt8()
+            let b4 = try cursor.readUInt8()
+            return .unused1C0C(CameraFourBytes(byte1: b1, byte2: b2, byte3: b3, byte4: b4))
+
+        case 0x1C0D:
+            let unkInt = try cursor.readUInt32()
+            let f1 = try cursor.readFloat32()
+            let f2 = try cursor.readFloat32()
+            let bb1 = try cursor.readVector4()
+            let bb2 = try cursor.readVector4()
+            let f3 = try cursor.readFloat32()
+            let f4 = try cursor.readFloat32()
+            return .line2(CameraLine2(unkInt: unkInt, unkFloat1: f1, unkFloat2: f2, boundingBoxVector1: bb1, boundingBoxVector2: bb2, unkFloat3: f3, unkFloat4: f4))
+
+        case 0x1C0E:
+            return .empty1C0E
+
+        case 0x1C0F:
+            var d1v: [SIMD4<Float>] = []
+            for _ in 0..<4 { d1v.append(try cursor.readVector4()) }
+            let d1i1 = try cursor.readUInt32()
+            let d1i2 = try cursor.readUInt32()
+            let d1pad = try cursor.readUInt64()
+            var d2v: [SIMD4<Float>] = []
+            for _ in 0..<4 { d2v.append(try cursor.readVector4()) }
+            let d2i1 = try cursor.readUInt32()
+            let d2i2 = try cursor.readUInt32()
+            let d2pad = try cursor.readUInt64()
+            return .zone(CameraZone(data1Vectors: d1v, data1UnkInt1: d1i1, data1UnkInt2: d1i2, data1Padding: d1pad, data2Vectors: d2v, data2UnkInt1: d2i1, data2UnkInt2: d2i2, data2Padding: d2pad))
+
+        default:
+            throw WorldPlacementParserError.unknownCameraSubtype(type)
+        }
     }
 
     /// Reads an ID list in the shape shared by `Instance`'s three lists and

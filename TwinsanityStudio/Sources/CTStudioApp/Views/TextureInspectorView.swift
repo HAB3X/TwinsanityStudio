@@ -84,13 +84,7 @@ struct TextureInspectorView: View {
     }
 
     private func exportPNG() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.message = "Choose a folder to export this texture (and its mip levels) into."
-        panel.prompt = "Export"
-        guard panel.runModal() == .OK, let directory = panel.url else { return }
+        guard let directory = ExportPanel.chooseFolder(message: "Choose a folder to export this texture (and its mip levels) into.") else { return }
         workspace.exportTexturePNG(texture, suggestedName: node.displayName.replacingOccurrences(of: " ", with: "_"), to: directory)
     }
 }

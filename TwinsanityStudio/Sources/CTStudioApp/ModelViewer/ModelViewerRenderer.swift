@@ -38,43 +38,35 @@ private struct Uniforms {
     var lightDirection: SIMD3<Float>
 }
 
-/// Drives the Model Viewer's `MTKView`: uploads a `ResolvedModelAsset`'s
-/// geometry and textures to the GPU once, then renders it every frame with
-/// simple directional + ambient lighting and an orbit camera.
-///
-/// Deliberately renders the mesh in its bind pose only — see
-/// `AnimationPlaybackController` for why animation playback here drives a
-/// skeleton joint visualization rather than deforming these vertices.
-final class ModelViewerRenderer: NSObject, MTKViewDelegate {
+/// Device-level Metal state shared by every `ModelViewerRenderer` instance:
+/// the compiled shader library, both pipeline states, depth/sampler state,
+/// and the 1×1 fallback texture. None of this depends on which asset is
+/// being shown, but building it means compiling MSL source and linking a
+/// pipeline — tens of milliseconds of real work. The old `init?` rebuilt
+/// all of it from scratch per asset, which was invisible when the Model
+/// Viewer opened once per session; it stopped being invisible once the
+/// composite preview (`CompositePreviewView`) started creating a fresh
+/// `ModelViewerRenderer` on every single sidebar click. Built once, lazily,
+/// on first use, and reused for the process's lifetime.
+private final class ModelViewerGPUContext {
     let device: MTLDevice
-    private let commandQueue: MTLCommandQueue
-    private let pipelineState: MTLRenderPipelineState
-    private let depthState: MTLDepthStencilState
-    private let samplerState: MTLSamplerState
-    private let fallbackTexture: MTLTexture
+    let commandQueue: MTLCommandQueue
+    let pipelineState: MTLRenderPipelineState
+    let linePipelineState: MTLRenderPipelineState?
+    let depthState: MTLDepthStencilState
+    let samplerState: MTLSamplerState
+    let fallbackTexture: MTLTexture
 
-    private var submeshes: [GPUSubmesh] = []
-    private var boundsCenter: SIMD3<Float> = .zero
-    private var boundsRadius: Float = 1
+    static let shared: ModelViewerGPUContext? = ModelViewerGPUContext()
 
-    /// Camera orbit state, driven by `InteractiveMTKView`'s mouse handling.
-    var yaw: Float = .pi * 0.25
-    var pitch: Float = .pi * 0.15
-    var distanceMultiplier: Float = 2.4
-
-    /// Optional skeleton overlay, drawn as connected line segments between
-    /// joints. Set by `AnimationPlaybackController` as playback advances.
-    var skeletonJointWorldPositions: [(SIMD3<Float>, SIMD3<Float>)] = []
-    private var linePipelineState: MTLRenderPipelineState?
-
-    init?(asset: ResolvedModelAsset) {
+    private init?() {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
             return nil
         }
         self.device = device
         self.commandQueue = queue
 
-        guard let library = try? device.makeLibrary(source: Self.shaderSource, options: nil) else {
+        guard let library = try? device.makeLibrary(source: ModelViewerRenderer.shaderSource, options: nil) else {
             return nil
         }
         let vertexFunction = library.makeFunction(name: "vertex_main")
@@ -118,6 +110,8 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             lineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
             lineDescriptor.depthAttachmentPixelFormat = .depth32Float
             linePipelineState = try? device.makeRenderPipelineState(descriptor: lineDescriptor)
+        } else {
+            linePipelineState = nil
         }
 
         let depthDescriptor = MTLDepthStencilDescriptor()
@@ -134,9 +128,38 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         guard let samplerState = device.makeSamplerState(descriptor: samplerDescriptor) else { return nil }
         self.samplerState = samplerState
 
-        guard let fallback = Self.makeSolidTexture(device: device, rgba: (255, 255, 255, 255)) else { return nil }
+        guard let fallback = ModelViewerRenderer.makeSolidTexture(device: device, rgba: (255, 255, 255, 255)) else { return nil }
         self.fallbackTexture = fallback
+    }
+}
 
+/// Drives the Model Viewer's `MTKView`: uploads a `ResolvedModelAsset`'s
+/// geometry and textures to the GPU once, then renders it every frame with
+/// simple directional + ambient lighting and an orbit camera.
+///
+/// Deliberately renders the mesh in its bind pose only — see
+/// `AnimationPlaybackController` for why animation playback here drives a
+/// skeleton joint visualization rather than deforming these vertices.
+final class ModelViewerRenderer: NSObject, MTKViewDelegate {
+    private let context: ModelViewerGPUContext
+    var device: MTLDevice { context.device }
+
+    private var submeshes: [GPUSubmesh] = []
+    private var boundsCenter: SIMD3<Float> = .zero
+    private var boundsRadius: Float = 1
+
+    /// Camera orbit state, driven by `InteractiveMTKView`'s mouse handling.
+    var yaw: Float = .pi * 0.25
+    var pitch: Float = .pi * 0.15
+    var distanceMultiplier: Float = 2.4
+
+    /// Optional skeleton overlay, drawn as connected line segments between
+    /// joints. Set by `AnimationPlaybackController` as playback advances.
+    var skeletonJointWorldPositions: [(SIMD3<Float>, SIMD3<Float>)] = []
+
+    init?(asset: ResolvedModelAsset) {
+        guard let context = ModelViewerGPUContext.shared else { return nil }
+        self.context = context
         super.init()
         upload(asset: asset)
     }
@@ -176,7 +199,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
                let uploaded = Self.makeTexture(device: device, asset: resolvedTexture) {
                 texture = uploaded
             } else {
-                texture = fallbackTexture
+                texture = context.fallbackTexture
             }
 
             gpuSubmeshes.append(GPUSubmesh(vertexBuffer: vertexBuffer, indexBuffer: indexBuffer, indexCount: indices.count, texture: texture))
@@ -207,7 +230,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         return texture
     }
 
-    private static func makeSolidTexture(device: MTLDevice, rgba: (UInt8, UInt8, UInt8, UInt8)) -> MTLTexture? {
+    fileprivate static func makeSolidTexture(device: MTLDevice, rgba: (UInt8, UInt8, UInt8, UInt8)) -> MTLTexture? {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false)
         descriptor.usage = [.shaderRead]
         guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
@@ -225,7 +248,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         guard let drawable = view.currentDrawable,
               let descriptor = view.currentRenderPassDescriptor,
-              let commandBuffer = commandQueue.makeCommandBuffer()
+              let commandBuffer = context.commandQueue.makeCommandBuffer()
         else { return }
 
         let aspect = Float(view.drawableSize.width / max(view.drawableSize.height, 1))
@@ -259,7 +282,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         passDescriptor.depthAttachment.storeAction = .dontCare
         passDescriptor.depthAttachment.clearDepth = 1.0
 
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer() else { return nil }
         encode(descriptor: passDescriptor, commandBuffer: commandBuffer, aspect: Float(width) / Float(height))
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
@@ -302,9 +325,9 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             lightDirection: normalize(SIMD3<Float>(-0.4, -1.0, -0.3))
         )
 
-        encoder.setRenderPipelineState(pipelineState)
-        encoder.setDepthStencilState(depthState)
-        encoder.setFragmentSamplerState(samplerState, index: 0)
+        encoder.setRenderPipelineState(context.pipelineState)
+        encoder.setDepthStencilState(context.depthState)
+        encoder.setFragmentSamplerState(context.samplerState, index: 0)
 
         for submesh in submeshes {
             encoder.setVertexBuffer(submesh.vertexBuffer, offset: 0, index: 0)
@@ -314,7 +337,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             encoder.drawIndexedPrimitives(type: .triangle, indexCount: submesh.indexCount, indexType: .uint32, indexBuffer: submesh.indexBuffer, indexBufferOffset: 0)
         }
 
-        if let linePipelineState, !skeletonJointWorldPositions.isEmpty {
+        if let linePipelineState = context.linePipelineState, !skeletonJointWorldPositions.isEmpty {
             var lineVertices: [Float] = []
             for (a, b) in skeletonJointWorldPositions {
                 lineVertices.append(contentsOf: [a.x, a.y, a.z, b.x, b.y, b.z])
@@ -364,7 +387,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
 
     // MARK: - Shader source
 
-    private static let shaderSource = """
+    fileprivate static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
 

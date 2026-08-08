@@ -133,6 +133,25 @@ private struct SidebarRow: View {
             }
         }
         .opacity(node.isUninteresting ? 0.55 : 1.0)
+        .contextMenu {
+            if let composite = workspace.resolveComposite(for: node) {
+                Button {
+                    workspace.modelViewerAsset = composite
+                } label: {
+                    Label("View Parent / Composite", systemImage: "cube.fill")
+                }
+                Button {
+                    exportGroup(composite)
+                } label: {
+                    Label("Export as Group…", systemImage: "shippingbox")
+                }
+            }
+        }
+    }
+
+    private func exportGroup(_ asset: ResolvedModelAsset) {
+        guard let directory = ExportPanel.chooseFolder(message: "Choose a folder to export this composite object — mesh, textures, and animations — into.") else { return }
+        workspace.exportCompleteAsset(asset, to: directory)
     }
 
     private var icon: String {
@@ -146,6 +165,7 @@ private struct SidebarRow: View {
         case .position: return "mappin"
         case .instance: return "cube.transparent.fill"
         case .trigger: return "square.dashed"
+        case .camera: return "video.fill"
         case .raw, .none: return node.children.isEmpty ? "doc" : "folder"
         }
     }
@@ -161,6 +181,7 @@ private struct SidebarRow: View {
         case .position: return .mint
         case .instance: return .indigo
         case .trigger: return .red
+        case .camera: return .yellow
         case .raw, .none: return .secondary
         }
     }
@@ -178,7 +199,7 @@ extension ChunkNode {
     /// undecoded Object/Script/Trigger/Position records to find it.
     private var displaySortRank: Int {
         switch payload {
-        case .texture, .mesh, .rigidModel, .skeleton, .animation, .instance, .trigger: return 0
+        case .texture, .mesh, .rigidModel, .skeleton, .animation, .instance, .trigger, .camera: return 0
         case .material, .position: return 1
         case .none: return children.isEmpty ? 3 : 2
         case .raw: return 3

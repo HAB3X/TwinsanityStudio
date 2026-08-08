@@ -14,12 +14,14 @@ final class InteractiveMTKView: MTKView {
         guard let renderer else { return }
         renderer.yaw += Float(event.deltaX) * 0.01
         renderer.pitch = max(-1.5, min(1.5, renderer.pitch + Float(event.deltaY) * 0.01))
+        needsDisplay = true
     }
 
     override func scrollWheel(with event: NSEvent) {
         guard let renderer else { return }
         let delta = Float(event.scrollingDeltaY) * 0.01
         renderer.distanceMultiplier = max(0.3, min(20, renderer.distanceMultiplier - delta))
+        needsDisplay = true
     }
 }
 
@@ -33,11 +35,34 @@ struct MetalModelView: NSViewRepresentable {
         view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float
         view.clearColor = MTLClearColorMake(0.07, 0.07, 0.09, 1)
-        view.preferredFramesPerSecond = 60
-        view.enableSetNeedsDisplay = false
-        view.isPaused = false
+        // On-demand rendering: this asset is static the overwhelming
+        // majority of the time (no camera drag, no animation frame
+        // change), so a continuous 60fps redraw loop burns a full render
+        // pass a second time every frame for nothing — especially wasteful
+        // now that `CompositePreviewView` can have several of these
+        // embedded inline at once. Redraws are triggered explicitly instead
+        // — by mouse interaction (above) and by `updateNSView` below, which
+        // SwiftUI calls whenever anything this view depends on changes.
+        view.enableSetNeedsDisplay = true
+        view.isPaused = true
+        view.needsDisplay = true
         return view
     }
 
-    func updateNSView(_ nsView: InteractiveMTKView, context: Context) {}
+    func updateNSView(_ nsView: InteractiveMTKView, context: Context) {
+        // The composite preview swaps in a freshly-uploaded renderer per
+        // asset (see `CompositePreviewView`) while reusing this same
+        // underlying `NSView` — without re-pointing `renderer`/`delegate`
+        // here, the view would keep drawing whatever asset it first showed.
+        if nsView.renderer !== renderer {
+            nsView.renderer = renderer
+            nsView.delegate = renderer
+        }
+        // Also covers state that lives outside this view entirely (e.g.
+        // `ModelViewerWindow`'s skeleton-overlay toggle, which mutates the
+        // renderer directly) — any SwiftUI state change that reaches this
+        // node's `body` re-evaluation lands here, so one redraw per actual
+        // change is enough without polling every frame.
+        nsView.needsDisplay = true
+    }
 }

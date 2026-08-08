@@ -104,7 +104,7 @@ public enum AssetResolver {
                         }
                     case .rigidModel(let rigidModel):
                         index.rigidModels[leaf.recordID] = rigidModel
-                    case .skeleton, .animation, .position, .instance, .trigger, .raw:
+                    case .skeleton, .animation, .position, .instance, .trigger, .camera, .raw:
                         break
                     }
                 }
@@ -172,5 +172,69 @@ public enum AssetResolver {
         }
         let animations = Array(index.animations.values)
         return ResolvedModelAsset(recordID: skeleton.id, displayName: displayName, mesh: mesh, submeshMaterials: materials, skeleton: skeleton, availableAnimations: animations)
+    }
+
+    /// Resolves *any* composite-eligible node — not just a `RigidModel`/
+    /// `GraphicsInfo` link record itself, but any of the components it's
+    /// built from (a raw `Model`/`Skin` mesh, a `Material`, a `Texture`, or
+    /// an `Animation`) — into the same complete `ResolvedModelAsset` its
+    /// parent resolves to. This is what makes "select an isolated texture,
+    /// see the whole character it belongs to" possible: rather than a
+    /// texture knowing its own parent, this walks the same index every
+    /// other resolution path already builds and asks "what points at me?"
+    ///
+    /// `nil` means either this node's `payload` kind was never linkable
+    /// (e.g. a `Position`/`Trigger`) or nothing in this file's Graphics/Code
+    /// sections currently references it — the latter is exactly what the
+    /// Scrapped Content Scanner (`scanForOrphans`) flags separately.
+    public static func resolveComposite(for node: ChunkNode, fileRoot: ChunkNode, displayNamePrefix: String) -> ResolvedModelAsset? {
+        let index = buildIndex(fileRoot: fileRoot)
+
+        switch node.payload {
+        case .rigidModel(let rigidModel):
+            return resolveRigidModel(rigidModel, displayName: displayNamePrefix + node.displayName, index: index)
+
+        case .skeleton(let skeleton):
+            return resolveSkeleton(skeleton, displayName: displayNamePrefix + node.displayName, index: index)
+
+        case .mesh:
+            // A raw `Model`/`Skin` geometry record: found by which link
+            // record's meshID/skinID points at it, not by its own ID.
+            if let rigidModel = index.rigidModels.values.first(where: { $0.meshID == node.recordID }) {
+                return resolveRigidModel(rigidModel, displayName: displayNamePrefix + "Object #\(rigidModel.id)", index: index)
+            }
+            if let skeleton = index.skeletons.values.first(where: { $0.skinID == node.recordID }) {
+                return resolveSkeleton(skeleton, displayName: displayNamePrefix + "Character #\(skeleton.id)", index: index)
+            }
+            return nil
+
+        case .texture, .material:
+            let materialID: UInt32?
+            if case .texture = node.payload {
+                materialID = index.materials.first(where: { $0.value.primaryTextureID == node.recordID })?.key
+            } else {
+                materialID = node.recordID
+            }
+            guard let materialID else { return nil }
+            if let rigidModel = index.rigidModels.values.first(where: { $0.materialIDs.contains(materialID) }) {
+                return resolveRigidModel(rigidModel, displayName: displayNamePrefix + "Object #\(rigidModel.id)", index: index)
+            }
+            if let skinEntry = index.skins.first(where: { $0.value.submeshes.contains { $0.materialID == materialID } }),
+               let skeleton = index.skeletons.values.first(where: { $0.skinID == skinEntry.key }) {
+                return resolveSkeleton(skeleton, displayName: displayNamePrefix + "Character #\(skeleton.id)", index: index)
+            }
+            return nil
+
+        case .animation:
+            // No stored link from an animation to a specific skeleton (see
+            // `resolveSkeleton`'s doc comment) — "the first skeleton in the
+            // same file" is the same heuristic used to offer animations as
+            // preview candidates in the first place.
+            guard let skeleton = index.skeletons.values.first else { return nil }
+            return resolveSkeleton(skeleton, displayName: displayNamePrefix + "Character #\(skeleton.id)", index: index)
+
+        default:
+            return nil
+        }
     }
 }

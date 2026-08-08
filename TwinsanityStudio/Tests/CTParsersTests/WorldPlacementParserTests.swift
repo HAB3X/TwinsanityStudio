@@ -145,4 +145,142 @@ final class WorldPlacementParserTests: XCTestCase {
         XCTAssertEqual(trigger.rotationAngleDegrees, 180, accuracy: 0.01)
         XCTAssertEqual(cursor.position, w.count)
     }
+
+    /// Empty-instances, non-Demo, both slots `.none` (3) case should read
+    /// exactly 187 bytes — independently cross-checked by hand against
+    /// `Camera.GetSize()`'s formula (`Camera.cs:723-803`), which the
+    /// reference tool's *write* path derives with no relation to how this
+    /// read path was transcribed.
+    func testParseCameraNoneSlotsConsumesExactly187BytesNonDemo() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(0)   // Header
+        w.writeUInt32(1)   // Enabled
+        w.writeFloat32(0.3) // SomeFloat
+        for _ in 0..<3 { w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1) } // Coords
+        w.writeInt32(0); w.writeInt32(0); w.writeUInt32(10) // dup count, count, SectionHead
+        w.writeUInt32(0xCAFE) // CamHeader
+        w.writeUInt16(7)      // UnkShort (non-Demo)
+        w.writeFloat32(1)     // UnkFloat1
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1) // UnkCoords1
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1) // UnkCoords2
+        w.writeFloat32(0); w.writeFloat32(0) // UnkFloat2, UnkFloat3
+        w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0) // UnkUInt1..4
+        w.writeInt32(0); w.writeInt32(0) // UnkInt5, UnkInt6
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0) // UnkFloat4..7
+        w.writeUInt32(0)  // UnkUInt7
+        w.writeInt32(0)   // UnkInt8
+        w.writeUInt32(0)  // UnkUInt9
+        w.writeFloat32(0) // UnkFloat8
+        w.writeUInt32(3)  // CameraType1 = none
+        w.writeUInt32(3)  // CameraType2 = none
+        w.writeUInt8(9)   // UnkByte (non-Demo)
+
+        XCTAssertEqual(w.count, 187)
+
+        var cursor = BinaryCursor(data: w.data)
+        let camera = try WorldPlacementParser.parseCamera(&cursor, recordID: 4, isDemo: false)
+
+        XCTAssertEqual(camera.camHeader, 0xCAFE)
+        XCTAssertEqual(camera.unkShort, 7)
+        XCTAssertEqual(camera.unkByte, 9)
+        XCTAssertEqual(camera.cameraType1, .none)
+        XCTAssertEqual(camera.cameraType2, .none)
+        XCTAssertNil(camera.subtype1)
+        XCTAssertNil(camera.subtype2)
+        XCTAssertEqual(cursor.position, w.count)
+    }
+
+    func testParseCameraDemoOmitsUnkShortAndUnkByte() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(0); w.writeUInt32(1); w.writeFloat32(0.3)
+        for _ in 0..<3 { w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1) }
+        w.writeInt32(0); w.writeInt32(0); w.writeUInt32(10)
+        w.writeUInt32(0) // CamHeader
+        // No UnkShort for Demo.
+        w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0)
+        w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0)
+        w.writeInt32(0); w.writeInt32(0)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0)
+        w.writeUInt32(0); w.writeInt32(0); w.writeUInt32(0); w.writeFloat32(0)
+        w.writeUInt32(3); w.writeUInt32(3)
+        // No UnkByte for Demo.
+
+        var cursor = BinaryCursor(data: w.data)
+        let camera = try WorldPlacementParser.parseCamera(&cursor, recordID: 1, isDemo: true)
+
+        XCTAssertNil(camera.unkShort)
+        XCTAssertNil(camera.unkByte)
+        XCTAssertEqual(cursor.position, w.count)
+    }
+
+    /// Point (0x1C02) is the simplest sub-camera with an actual payload —
+    /// a good spot-check that slot dispatch and trailing-field parsing work.
+    func testParseCameraWithPointSubtype() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(0); w.writeUInt32(1); w.writeFloat32(0.3)
+        for _ in 0..<3 { w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1) }
+        w.writeInt32(0); w.writeInt32(0); w.writeUInt32(10)
+        w.writeUInt32(0)
+        w.writeUInt16(0)
+        w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0)
+        w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0)
+        w.writeInt32(0); w.writeInt32(0)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0)
+        w.writeUInt32(0); w.writeInt32(0); w.writeUInt32(0); w.writeFloat32(0)
+        w.writeUInt32(0x1C02) // CameraType1 = point
+        w.writeUInt32(3)      // CameraType2 = none
+        w.writeUInt8(0)
+        // Point payload:
+        w.writeUInt32(99)
+        w.writeFloat32(1.5)
+        w.writeFloat32(2.5)
+        w.writeFloat32(10); w.writeFloat32(20); w.writeFloat32(30); w.writeFloat32(1)
+
+        var cursor = BinaryCursor(data: w.data)
+        let camera = try WorldPlacementParser.parseCamera(&cursor, recordID: 2, isDemo: false)
+
+        XCTAssertEqual(camera.cameraType1, .point)
+        guard case .point(let point) = camera.subtype1 else {
+            return XCTFail("Expected a .point subtype")
+        }
+        XCTAssertEqual(point.unkInt, 99)
+        XCTAssertEqual(point.unkFloat1, 1.5, accuracy: 0.0001)
+        XCTAssertEqual(point.unkVector, SIMD4<Float>(10, 20, 30, 1))
+        XCTAssertNil(camera.subtype2)
+        XCTAssertEqual(cursor.position, w.count)
+    }
+
+    func testParseCameraUnknownSubtypeThrows() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(0); w.writeUInt32(1); w.writeFloat32(0.3)
+        for _ in 0..<3 { w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1) }
+        w.writeInt32(0); w.writeInt32(0); w.writeUInt32(10)
+        w.writeUInt32(0)
+        w.writeUInt16(0)
+        w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0)
+        w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0)
+        w.writeInt32(0); w.writeInt32(0)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0)
+        w.writeUInt32(0); w.writeInt32(0); w.writeUInt32(0); w.writeFloat32(0)
+        w.writeUInt32(0xDEAD) // unrecognized type code
+        w.writeUInt32(3)
+        w.writeUInt8(0)
+
+        var cursor = BinaryCursor(data: w.data)
+        XCTAssertThrowsError(try WorldPlacementParser.parseCamera(&cursor, recordID: 3, isDemo: false)) { error in
+            guard case WorldPlacementParserError.unknownCameraSubtype(let type) = error else {
+                return XCTFail("Expected .unknownCameraSubtype, got \(error)")
+            }
+            XCTAssertEqual(type, 0xDEAD)
+        }
+    }
 }

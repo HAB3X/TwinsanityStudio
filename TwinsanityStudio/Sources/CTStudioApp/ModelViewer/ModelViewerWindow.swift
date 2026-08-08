@@ -237,13 +237,7 @@ struct ModelViewerWindow: View {
     }
 
     private func exportCompleteAsset() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.message = "Choose a folder to export this model, its textures, and its animations into."
-        panel.prompt = "Export"
-        guard panel.runModal() == .OK, let directory = panel.url else { return }
+        guard let directory = ExportPanel.chooseFolder(message: "Choose a folder to export this model, its textures, and its animations into.") else { return }
         workspace.exportCompleteAsset(asset, to: directory)
     }
 }

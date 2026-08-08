@@ -13,6 +13,7 @@ public enum ChunkPayload: Sendable {
     case position(PositionMarker)
     case instance(PlacedInstance)
     case trigger(TriggerVolume)
+    case camera(PlacedCamera)
     /// Understood record kind, but not (yet) decoded into a typed model —
     /// still browsable/exportable as a hex/raw blob.
     case raw(byteCount: Int)
@@ -30,6 +31,7 @@ public enum ChunkPayload: Sendable {
         case animation = "Animations"
         case instance = "Entities"
         case trigger = "Triggers"
+        case camera = "Cameras"
         public var id: String { rawValue }
     }
 
@@ -41,6 +43,7 @@ public enum ChunkPayload: Sendable {
         case .animation: return .animation
         case .instance: return .instance
         case .trigger: return .trigger
+        case .camera: return .camera
         case .material, .position, .raw: return nil
         }
     }
@@ -51,7 +54,17 @@ public enum ChunkPayload: Sendable {
 /// can have thousands of nodes for a full level, and SwiftUI's `OutlineGroup`
 /// performs far better walking identity-stable class instances than diffing
 /// deeply nested value-type arrays on every render.
-public final class ChunkNode: Identifiable {
+///
+/// `@unchecked Sendable`: a tree is built single-threaded inside one parse
+/// call (see `RM2Parser`/`WorkspaceViewModel.scanAllArchives`'s parse
+/// task), never mutated concurrently from more than one task while being
+/// built, and is only handed across a task/actor boundary once construction
+/// finishes — at which point it behaves like an immutable value from the
+/// receiver's perspective (later in-place edits, e.g. `expandArchiveEntry`,
+/// only ever happen back on the main actor). The compiler can't verify that
+/// discipline for a reference type, so it's asserted here rather than
+/// inferred.
+public final class ChunkNode: Identifiable, @unchecked Sendable {
     public let id = UUID()
     public var recordID: UInt32
     public var sectionType: SectionType

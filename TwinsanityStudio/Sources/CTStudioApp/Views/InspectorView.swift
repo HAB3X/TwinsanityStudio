@@ -6,6 +6,7 @@ import CTModels
 struct InspectorView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     let node: ChunkNode?
+    @State private var showComposite = false
 
     var body: some View {
         Group {
@@ -13,32 +14,45 @@ struct InspectorView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         header(for: node)
+                        if Self.isCompositeEligible(node.payload) {
+                            Toggle(isOn: $showComposite) {
+                                Label("View Parent / Composite", systemImage: "arrow.triangle.branch")
+                            }
+                            .toggleStyle(.switch)
+                        }
                         Divider()
-                        switch node.payload {
-                        case .texture(let texture):
-                            TextureInspectorView(node: node, texture: texture)
-                        case .mesh(let mesh):
-                            MeshInspectorView(node: node, mesh: mesh)
-                        case .rigidModel(let info):
-                            RigidModelInspectorView(node: node, info: info)
-                        case .material(let material):
-                            MaterialInspectorView(material: material)
-                        case .skeleton(let skeleton):
-                            SkeletonInspectorView(node: node, skeleton: skeleton)
-                        case .animation(let animation):
-                            AnimationInspectorView(animation: animation)
-                        case .position(let position):
-                            PositionInspectorView(position: position)
-                        case .instance(let instance):
-                            InstanceInspectorView(instance: instance)
-                        case .trigger(let trigger):
-                            TriggerInspectorView(trigger: trigger)
-                        case .raw, .none:
-                            RawInspectorView(node: node)
+                        if showComposite, Self.isCompositeEligible(node.payload) {
+                            compositeContent(for: node)
+                        } else {
+                            switch node.payload {
+                            case .texture(let texture):
+                                TextureInspectorView(node: node, texture: texture)
+                            case .mesh(let mesh):
+                                MeshInspectorView(node: node, mesh: mesh)
+                            case .rigidModel(let info):
+                                RigidModelInspectorView(node: node, info: info)
+                            case .material(let material):
+                                MaterialInspectorView(material: material)
+                            case .skeleton(let skeleton):
+                                SkeletonInspectorView(node: node, skeleton: skeleton)
+                            case .animation(let animation):
+                                AnimationInspectorView(animation: animation)
+                            case .position(let position):
+                                PositionInspectorView(position: position)
+                            case .instance(let instance):
+                                InstanceInspectorView(instance: instance)
+                            case .trigger(let trigger):
+                                TriggerInspectorView(trigger: trigger)
+                            case .camera(let camera):
+                                CameraInspectorView(camera: camera)
+                            case .raw, .none:
+                                RawInspectorView(node: node)
+                            }
                         }
                     }
                     .padding(20)
                 }
+                .onChange(of: node.id) { _, _ in showComposite = false }
             } else {
                 ContentUnavailableView(
                     "No Selection",
@@ -46,6 +60,30 @@ struct InspectorView: View {
                     description: Text("Select a chunk, texture, model, or animation from the sidebar.")
                 )
             }
+        }
+    }
+
+    /// Cheap payload-kind check for whether the toggle should even appear —
+    /// deliberately *not* calling `resolveComposite` here, since that walks
+    /// and rebuilds the whole file's Graphics/Code index and this runs on
+    /// every render of every selected node, composite-eligible or not.
+    private static func isCompositeEligible(_ payload: ChunkPayload?) -> Bool {
+        switch payload {
+        case .texture, .mesh, .material, .animation, .rigidModel, .skeleton: return true
+        case .position, .instance, .trigger, .camera, .raw, .none: return false
+        }
+    }
+
+    @ViewBuilder
+    private func compositeContent(for node: ChunkNode) -> some View {
+        if let asset = workspace.resolveComposite(for: node) {
+            CompositePreviewView(asset: asset)
+        } else {
+            ContentUnavailableView(
+                "No Parent Found",
+                systemImage: "questionmark.circle",
+                description: Text("Nothing in this file currently references this record — it may be orphaned. Check the Scrapped Content Scanner.")
+            )
         }
     }
 
