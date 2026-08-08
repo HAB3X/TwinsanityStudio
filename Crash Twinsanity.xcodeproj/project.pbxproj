@@ -13,6 +13,8 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		DE8079093025DBE5007CF8BB /* Crash Twinsanity */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = "Crash Twinsanity";
 			sourceTree = "<group>";
 		};
@@ -64,8 +66,6 @@
 				DE8079093025DBE5007CF8BB /* Crash Twinsanity */,
 			);
 			name = "Crash Twinsanity";
-			packageProductDependencies = (
-			);
 			productName = "Crash Twinsanity";
 			productReference = DE8079073025DBE5007CF8BB /* Crash Twinsanity.app */;
 			productType = "com.apple.product-type.application";
@@ -94,6 +94,9 @@
 			);
 			mainGroup = DE8078FE3025DBE5007CF8BB;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				886CBBADBBD5843744F6A2E3 /* XCLocalSwiftPackageReference "TwinsanityStudio" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = DE8079083025DBE5007CF8BB /* Products */;
 			projectDirPath = "";
@@ -357,6 +360,13 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		886CBBADBBD5843744F6A2E3 /* XCLocalSwiftPackageReference "TwinsanityStudio" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = TwinsanityStudio;
+		};
+/* End XCLocalSwiftPackageReference section */
 	};
 	rootObject = DE8078FF3025DBE5007CF8BB /* Project object */;
 }

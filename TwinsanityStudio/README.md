@@ -6,6 +6,14 @@ Swift + SwiftUI. It reads `.BD`/`.BH` archives and `.RM2`/`.SM2` level/scenery
 files directly, decodes textures, models, skins, skeletons, and animations, and
 exports to PNG/OBJ.
 
+This package is wired into the sibling **`Crash Twinsanity.xcodeproj`** (your
+SceneKit game project) as a local Swift Package dependency, so opening that
+`.xcodeproj` gives you both the game and the editor as separate schemes in one
+Xcode window — see "Setup & running in Xcode" below. It's also a fully
+standalone package on its own (`swift build`/`swift test` work from this
+directory with no other project involved), which is what made it possible to
+verify everything end-to-end from the command line while building it.
+
 ## Project layout
 
 This is a **Swift Package**, not a hand-authored `.xcodeproj` — Xcode opens and
@@ -39,16 +47,25 @@ own test target.
 1. **Requirements**: Xcode 15+ on macOS 14 (Sonoma) or later. The app targets
    macOS 14 (for `NavigationSplitView`'s three-column layout and
    `ContentUnavailableView`).
-2. Open the package: `File ▸ Open…` and select `TwinsanityStudio/Package.swift`
-   (or just double-click `Package.swift` in Finder — it opens directly in Xcode).
-3. Xcode resolves the package graph automatically (there are no external
-   dependencies — everything here is first-party).
-4. In the scheme selector at the top of the window, choose the
-   **TwinsanityStudio** scheme with **My Mac** as the run destination.
-5. **Build**: `⌘B`. **Run**: `⌘R` — this launches the app window.
-6. **Test**: `⌘U` runs every test target (`CTCoreTests`, `CTParsersTests`,
-   `CTExportTests`). Use the Test navigator (`⌘6`) to run an individual suite
-   or test.
+2. Open **`Crash Twinsanity.xcodeproj`** (the repo root, one level up from this
+   package) — not `Package.swift` directly. Xcode resolves the local package
+   graph automatically on open (there are no external dependencies —
+   everything here is first-party) and adds a scheme per product.
+3. In the scheme selector at the top of the window you'll now see both
+   **Crash Twinsanity** (the game) and **TwinsanityStudio** (this editor, the
+   `CTStudioApp` executable product's scheme name) alongside the individual
+   library schemes (`CTCore`, `CTModels`, `CTParsers`, `CTExport`). Pick
+   **TwinsanityStudio** with **My Mac** as the run destination.
+4. **Build**: `⌘B`. **Run**: `⌘R` — this launches the editor's app window,
+   independent of the game.
+5. **Test**: `⌘U` while the TwinsanityStudio scheme is selected runs every
+   test target (`CTCoreTests`, `CTParsersTests`, `CTExportTests`). Use the
+   Test navigator (`⌘6`) to run an individual suite or test.
+
+(You can still open `TwinsanityStudio/Package.swift` directly for a
+standalone window scoped to just this package — useful if you don't want the
+game project loaded at all — but opening the `.xcodeproj` is the normal path
+since it gives you both in one window.)
 
 ### Using the app
 
