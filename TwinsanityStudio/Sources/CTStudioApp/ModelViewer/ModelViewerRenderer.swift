@@ -458,11 +458,35 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         print("DIAG: \(type(of: self)) drawableSizeWillChange -> \(size)")
     }
 
+    /// One-shot latches (not per-frame) for the diagnostics in `draw(in:)`
+    /// below — this is called at 20fps, so anything logged unconditionally
+    /// in here would flood the console and reintroduce the kind of
+    /// per-frame overhead this session's optimization pass removed.
+    private var hasLoggedDrawBailout = false
+    private var hasLoggedFirstSuccessfulDraw = false
+
     func draw(in view: MTKView) {
         guard let drawable = view.currentDrawable,
               let descriptor = view.currentRenderPassDescriptor,
               let commandBuffer = context.commandQueue.makeCommandBuffer()
-        else { return }
+        else {
+            // If this is the failure, everything upstream (upload,
+            // drawableSizeWillChange) can look completely healthy while
+            // nothing ever actually paints — `view.currentDrawable` comes
+            // back nil when the view's layer isn't actually hooked up to a
+            // presentable surface yet (or anymore), which this build has
+            // had no visibility into until now.
+            if !hasLoggedDrawBailout {
+                hasLoggedDrawBailout = true
+                print("DIAG: ModelViewerRenderer.draw(in:) bailed — currentDrawable=\(view.currentDrawable != nil), currentRenderPassDescriptor=\(view.currentRenderPassDescriptor != nil), drawableSize=\(view.drawableSize)")
+            }
+            return
+        }
+
+        if !hasLoggedFirstSuccessfulDraw {
+            hasLoggedFirstSuccessfulDraw = true
+            print("DIAG: ModelViewerRenderer.draw(in:) first successful frame — submeshCount=\(submeshes.count), drawableSize=\(view.drawableSize)")
+        }
 
         let aspect = Float(view.drawableSize.width / max(view.drawableSize.height, 1))
         encode(descriptor: descriptor, commandBuffer: commandBuffer, aspect: aspect)
