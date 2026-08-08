@@ -43,7 +43,15 @@ public struct ResolvedSubmeshMaterial: Sendable {
 /// logical asset the Model Viewer renders, replacing the "mesh here, texture
 /// floating separately over there" experience of browsing raw chunk records.
 public struct ResolvedModelAsset: Sendable, Identifiable {
-    public let id: UInt32
+    /// Synthesized, globally unique — deliberately *not* `recordID`.
+    /// RigidModel IDs and Skeleton IDs are independent on-disk namespaces
+    /// (a RigidModel and a Skeleton can legitimately share the same numeric
+    /// ID), and a global list aggregating results from hundreds of files
+    /// will see the same `recordID` recur constantly. Using `recordID`
+    /// itself as `Identifiable.id` would make SwiftUI's list/sheet identity
+    /// tracking silently collide across unrelated models.
+    public let id = UUID()
+    public let recordID: UInt32
     public var displayName: String
     public var mesh: MeshAsset
     public var submeshMaterials: [ResolvedSubmeshMaterial]
@@ -51,14 +59,14 @@ public struct ResolvedModelAsset: Sendable, Identifiable {
     public var availableAnimations: [AnimationAsset]
 
     public init(
-        id: UInt32,
+        recordID: UInt32,
         displayName: String,
         mesh: MeshAsset,
         submeshMaterials: [ResolvedSubmeshMaterial],
         skeleton: SkeletonAsset? = nil,
         availableAnimations: [AnimationAsset] = []
     ) {
-        self.id = id
+        self.recordID = recordID
         self.displayName = displayName
         self.mesh = mesh
         self.submeshMaterials = submeshMaterials
@@ -142,7 +150,7 @@ public enum AssetResolver {
             let texture = textureID.flatMap { index.textures[$0] }
             materials.append(ResolvedSubmeshMaterial(materialID: materialID, textureID: textureID, texture: texture))
         }
-        return ResolvedModelAsset(id: rigidModel.id, displayName: displayName, mesh: mesh, submeshMaterials: materials)
+        return ResolvedModelAsset(recordID: rigidModel.id, displayName: displayName, mesh: mesh, submeshMaterials: materials)
     }
 
     /// Resolves a rigged character via its `GraphicsInfo` skeleton:
@@ -163,6 +171,6 @@ public enum AssetResolver {
             return ResolvedSubmeshMaterial(materialID: materialID, textureID: textureID, texture: texture)
         }
         let animations = Array(index.animations.values)
-        return ResolvedModelAsset(id: skeleton.id, displayName: displayName, mesh: mesh, submeshMaterials: materials, skeleton: skeleton, availableAnimations: animations)
+        return ResolvedModelAsset(recordID: skeleton.id, displayName: displayName, mesh: mesh, submeshMaterials: materials, skeleton: skeleton, availableAnimations: animations)
     }
 }

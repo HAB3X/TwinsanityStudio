@@ -63,6 +63,11 @@ let package = Package(
             name: "CTExportTests",
             dependencies: ["CTCore", "CTModels", "CTParsers", "CTExport"],
             path: "Tests/CTExportTests"
+        ),
+        .testTarget(
+            name: "CTStudioAppTests",
+            dependencies: ["CTCore", "CTModels", "CTParsers", "CTExport", "CTStudioApp"],
+            path: "Tests/CTStudioAppTests"
         )
     ]
 )

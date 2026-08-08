@@ -21,6 +21,18 @@ public final class WorkspaceViewModel: ObservableObject {
     @Published public var lastError: String?
     /// Non-nil presents the Model Viewer sheet (see `ContentView`).
     @Published public var modelViewerAsset: ResolvedModelAsset?
+    /// Every RigidModel/Skeleton successfully resolved (mesh + textures, and
+    /// skeleton + animations where rigged) across every scanned file —
+    /// populated automatically as archives are scanned, so browsing models
+    /// never requires manually parsing/resolving a specific chunk first.
+    @Published public var modelsHub: [ResolvedModelAsset] = []
+    @Published public var isModelsHubPresented = false
+    /// Every dangling reference / unreferenced record flagged by the
+    /// "Scrapped Content Scanner" across every scanned file — populated
+    /// alongside `modelsHub` so cut content surfaces automatically as
+    /// archives are scanned, with no separate manual scan step.
+    @Published public var orphanedContent: [OrphanedAsset] = []
+    @Published public var isScrappedContentScannerPresented = false
 
     private var archiveIndexByRootID: [UUID: ArchiveIndex] = [:]
 
@@ -90,13 +102,18 @@ public final class WorkspaceViewModel: ObservableObject {
                 }
                 archiveIndexByRootID[node.id] = index
                 rootNodes.append(node)
-                statusMessage = "Loaded \(file.url.lastPathComponent) — \(index.entries.count) entries."
+                statusMessage = "Loaded \(file.url.lastPathComponent) — \(index.entries.count) entries. Scanning for models…"
+                // Auto-scan immediately — manual "Scan Archive" clicks
+                // shouldn't be a prerequisite for browsing/filtering to work.
+                scanAllArchives()
 
             case .levelResource, .sceneryResource:
                 let data = try Data(contentsOf: file.url)
                 let node = try RM2Parser.parse(data: data, fileKind: fileKind(for: file), fileName: file.url.lastPathComponent)
                 rootNodes.append(node)
                 statusMessage = "Loaded \(file.url.lastPathComponent) — \(node.children.count) top-level chunks."
+                modelsHub.append(contentsOf: Self.resolveModels(inFileRoot: node, sourceLabel: file.url.lastPathComponent))
+                orphanedContent.append(contentsOf: AssetResolver.scanForOrphans(fileRoot: node, sourceLabel: file.url.lastPathComponent))
 
             case .archiveData:
                 statusMessage = "Drop the matching .BH file to browse \(file.url.lastPathComponent) (a .BD alone has no index)."
@@ -168,23 +185,36 @@ public final class WorkspaceViewModel: ObservableObject {
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var resultsByRoot: [UUID: [String: ChunkNode]] = [:]
+            var resolvedModels: [ResolvedModelAsset] = []
+            var orphans: [OrphanedAsset] = []
             for (rootID, index) in targets {
                 var parsedByName: [String: ChunkNode] = [:]
+                // One open file handle reused for every entry in this
+                // archive — opening/stat-ing a fresh handle per entry (as
+                // the single-entry readEntryData does) is the dominant cost
+                // of a full scan, especially reading off a mounted disc image.
+                guard let reader = try? BDArchiveReader(index: index) else { continue }
                 for entry in index.entries where Self.isChunkFileName(entry.name) {
-                    guard let data = try? BDArchiveParser.readEntryData(entry, index: index) else { continue }
+                    guard let data = try? reader.read(entry) else { continue }
                     let kind = Self.fileKind(forEntryNamed: entry.name)
                     guard let parsed = try? RM2Parser.parse(data: data, fileKind: kind, fileName: entry.name) else { continue }
                     parsedByName[entry.name] = parsed
+                    // Resolution is a pure read over already-decoded data —
+                    // safe and cheap to do right here alongside parsing,
+                    // keeping every bit of the expensive work off the main
+                    // thread instead of just the parsing half of it.
+                    resolvedModels.append(contentsOf: Self.resolveModels(inFileRoot: parsed, sourceLabel: entry.name))
+                    orphans.append(contentsOf: AssetResolver.scanForOrphans(fileRoot: parsed, sourceLabel: entry.name))
                 }
                 resultsByRoot[rootID] = parsedByName
             }
             DispatchQueue.main.async {
-                self?.applyBulkScan(resultsByRoot)
+                self?.applyBulkScan(resultsByRoot, resolvedModels: resolvedModels, orphans: orphans)
             }
         }
     }
 
-    private func applyBulkScan(_ resultsByRoot: [UUID: [String: ChunkNode]]) {
+    private func applyBulkScan(_ resultsByRoot: [UUID: [String: ChunkNode]], resolvedModels: [ResolvedModelAsset], orphans: [OrphanedAsset]) {
         defer { isScanning = false }
         var parsedCount = 0
         var failedCount = 0
@@ -209,9 +239,33 @@ public final class WorkspaceViewModel: ObservableObject {
             }
         }
         rootNodes = rootNodes
+        modelsHub.append(contentsOf: resolvedModels)
+        orphanedContent.append(contentsOf: orphans)
         statusMessage = failedCount == 0
-            ? "Scan complete — parsed \(parsedCount) level file(s). Use the type filter to browse by asset kind."
-            : "Scan complete — parsed \(parsedCount) level file(s), \(failedCount) failed to parse."
+            ? "Scan complete — parsed \(parsedCount) level file(s), found \(resolvedModels.count) model(s) and \(orphans.count) orphaned/cut record(s)."
+            : "Scan complete — parsed \(parsedCount) level file(s), \(failedCount) failed to parse, found \(resolvedModels.count) model(s) and \(orphans.count) orphaned/cut record(s)."
+    }
+
+    /// Resolves every `RigidModel` and every rigged `GraphicsInfo` skeleton
+    /// in one already-parsed file into `ResolvedModelAsset`s for the Models
+    /// Hub. `nonisolated`: pure computation over value types and a
+    /// `ChunkNode` tree that hasn't been published anywhere yet, so it's
+    /// safe to run off the main actor (called from `scanAllArchives`'s
+    /// background loop).
+    private nonisolated static func resolveModels(inFileRoot fileRoot: ChunkNode, sourceLabel: String) -> [ResolvedModelAsset] {
+        let index = AssetResolver.buildIndex(fileRoot: fileRoot)
+        var results: [ResolvedModelAsset] = []
+        for rigidModel in index.rigidModels.values {
+            if let resolved = AssetResolver.resolveRigidModel(rigidModel, displayName: "\(sourceLabel) — Object #\(rigidModel.id)", index: index) {
+                results.append(resolved)
+            }
+        }
+        for skeleton in index.skeletons.values {
+            if let resolved = AssetResolver.resolveSkeleton(skeleton, displayName: "\(sourceLabel) — Character #\(skeleton.id)", index: index) {
+                results.append(resolved)
+            }
+        }
+        return results
     }
 
     /// Sets the selection and, if the node is an unparsed archive entry,

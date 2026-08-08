@@ -18,7 +18,7 @@ struct SidebarView: View {
                 }
             )) {
                 ForEach(workspace.filteredRootNodes) { root in
-                    OutlineGroup(root, children: \.childrenIfAny) { node in
+                    OutlineGroup(root, children: \.displayChildren) { node in
                         SidebarRow(node: node, rootID: root.id)
                             .tag(node.id)
                     }
@@ -114,10 +114,11 @@ private struct SidebarRow: View {
     var body: some View {
         HStack {
             Image(systemName: icon)
-                .foregroundStyle(iconColor)
+                .foregroundStyle(node.isUninteresting ? AnyShapeStyle(.tertiary) : AnyShapeStyle(iconColor))
                 .frame(width: 18)
             Text(node.displayName)
                 .lineLimit(1)
+                .foregroundStyle(node.isUninteresting ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
             Spacer()
             if workspace.isExpandableArchiveEntry(node) {
                 Button("Parse") {
@@ -131,6 +132,7 @@ private struct SidebarRow: View {
                     .foregroundStyle(.tertiary)
             }
         }
+        .opacity(node.isUninteresting ? 0.55 : 1.0)
     }
 
     private var icon: String {
@@ -163,7 +165,40 @@ private struct SidebarRow: View {
 }
 
 extension ChunkNode {
-    /// `OutlineGroup` wants `nil` (not an empty array) to treat a row as a
-    /// non-expandable leaf.
-    var childrenIfAny: [ChunkNode]? { children.isEmpty ? nil : children }
+    /// Coarse display priority: decoded, meaningful content (textures,
+    /// models, skeletons, animations, materials) sorts before raw/unhandled
+    /// records and empty containers, so browsing the tree surfaces the
+    /// interesting stuff first instead of forcing a scroll past hundreds of
+    /// undecoded Object/Script/Trigger/Position records to find it.
+    private var displaySortRank: Int {
+        switch payload {
+        case .texture, .mesh, .rigidModel, .skeleton, .animation: return 0
+        case .material: return 1
+        case .none: return children.isEmpty ? 3 : 2
+        case .raw: return 3
+        }
+    }
+
+    /// `children`, sorted for display only (a stable sort — nodes with the
+    /// same rank keep their on-disk order). `OutlineGroup` wants `nil` (not
+    /// an empty array) to treat a row as a non-expandable leaf. Export/hex
+    /// offset logic elsewhere keeps using `children` directly; this exists
+    /// purely for the sidebar tree.
+    var displayChildren: [ChunkNode]? {
+        children.isEmpty ? nil : children.sorted { $0.displaySortRank < $1.displaySortRank }
+    }
+
+    /// A dead-end the user almost certainly doesn't care about browsing:
+    /// no children of its own, and either undecoded or genuinely raw.
+    /// Sections that merely *contain* raw children (e.g. an Instance
+    /// section full of undecoded Object records) are not themselves dimmed
+    /// — only the actual dead-end leaves are.
+    var isUninteresting: Bool {
+        guard children.isEmpty else { return false }
+        switch payload {
+        case .none: return true
+        case .raw: return true
+        default: return false
+        }
+    }
 }

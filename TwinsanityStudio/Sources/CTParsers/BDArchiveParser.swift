@@ -19,6 +19,37 @@ public enum BDArchiveError: Error, CustomStringConvertible {
     }
 }
 
+/// A reusable open handle to a `.BD` file, for reading many entries without
+/// paying per-call file-open + `stat()` overhead. Reading N entries via the
+/// static `BDArchiveParser.readEntryData(_:index:)` opens/stats/closes the
+/// file N times; a full-archive scan (hundreds of entries) makes that the
+/// dominant cost, especially against a mounted disc image rather than a
+/// local SSD file. Not thread-safe for concurrent reads — a single
+/// `FileHandle`'s seek+read must not interleave across threads — but safe
+/// (and intended) for sequential reads from one background thread.
+public final class BDArchiveReader {
+    private let handle: FileHandle
+    private let fileSize: Int
+
+    public init(index: ArchiveIndex) throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: index.bdURL.path)
+        fileSize = (attributes[.size] as? NSNumber)?.intValue ?? 0
+        handle = try FileHandle(forReadingFrom: index.bdURL)
+    }
+
+    deinit {
+        try? handle.close()
+    }
+
+    public func read(_ entry: ArchiveEntry) throws -> Data {
+        guard Int(entry.offset) + Int(entry.size) <= fileSize else {
+            throw BDArchiveError.entryOutOfBounds(name: entry.name, offset: entry.offset, size: entry.size, fileSize: fileSize)
+        }
+        try handle.seek(toOffset: UInt64(entry.offset))
+        return try handle.read(upToCount: Int(entry.size)) ?? Data()
+    }
+}
+
 /// Reads and writes Twinsanity's `.BD`/`.BH` archive pair.
 ///
 /// Format (ported from `Twinsanity/BDArchive.cs`):
@@ -65,17 +96,14 @@ public enum BDArchiveParser {
         return ArchiveIndex(bhURL: bh, bdURL: bd, entries: entries)
     }
 
-    /// Reads a single entry's bytes out of the `.BD` file.
+    /// Reads a single entry's bytes out of the `.BD` file. Convenient for a
+    /// one-off read (e.g. the user clicking a single archive entry), but
+    /// opens a fresh `FileHandle` and re-`stat`s the file on every call —
+    /// reading more than a handful of entries this way (e.g. scanning a
+    /// whole archive) pays that overhead hundreds of times over. Use
+    /// `BDArchiveReader` for that instead.
     public static func readEntryData(_ entry: ArchiveEntry, index: ArchiveIndex) throws -> Data {
-        let attributes = try FileManager.default.attributesOfItem(atPath: index.bdURL.path)
-        let fileSize = (attributes[.size] as? NSNumber)?.intValue ?? 0
-        guard Int(entry.offset) + Int(entry.size) <= fileSize else {
-            throw BDArchiveError.entryOutOfBounds(name: entry.name, offset: entry.offset, size: entry.size, fileSize: fileSize)
-        }
-        let handle = try FileHandle(forReadingFrom: index.bdURL)
-        defer { try? handle.close() }
-        try handle.seek(toOffset: UInt64(entry.offset))
-        return try handle.read(upToCount: Int(entry.size)) ?? Data()
+        try BDArchiveReader(index: index).read(entry)
     }
 
     /// Extracts every entry to `destinationDirectory`, recreating the archive's

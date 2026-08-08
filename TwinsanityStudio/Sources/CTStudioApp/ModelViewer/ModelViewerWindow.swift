@@ -38,13 +38,25 @@ struct ModelViewerWindow: View {
     @ViewBuilder
     private var viewportArea: some View {
         if let renderer {
-            ZStack(alignment: .bottomLeading) {
-                MetalModelView(renderer: renderer)
-                Text("Drag to orbit · Scroll to zoom")
-                    .font(.caption)
-                    .padding(6)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6))
-                    .padding(10)
+            if renderer.hasGeometry {
+                ZStack(alignment: .bottomLeading) {
+                    MetalModelView(renderer: renderer)
+                    Text("Drag to orbit · Scroll to zoom")
+                        .font(.caption)
+                        .padding(6)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                        .padding(10)
+                }
+            } else {
+                // The asset resolved (mesh + material lookups all
+                // succeeded), but every submesh ended up with zero
+                // triangles after upload — surface that plainly instead of
+                // showing an indistinguishable-from-broken blank canvas.
+                ContentUnavailableView(
+                    "No Drawable Geometry",
+                    systemImage: "cube.transparent",
+                    description: Text("This model resolved (\(asset.mesh.submeshes.count) submesh(es)), but none produced any triangles to draw — the source mesh record may be empty or use an unsupported strip layout.")
+                )
             }
         } else {
             ContentUnavailableView("Metal Unavailable", systemImage: "exclamationmark.triangle", description: Text("Couldn't initialize a Metal device on this Mac."))

@@ -1,5 +1,6 @@
 import Metal
 import MetalKit
+import CoreGraphics
 import simd
 import CTModels
 
@@ -224,11 +225,68 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         guard let drawable = view.currentDrawable,
               let descriptor = view.currentRenderPassDescriptor,
-              let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor)
+              let commandBuffer = commandQueue.makeCommandBuffer()
         else { return }
 
         let aspect = Float(view.drawableSize.width / max(view.drawableSize.height, 1))
+        encode(descriptor: descriptor, commandBuffer: commandBuffer, aspect: aspect)
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+    }
+
+    /// Renders one frame to an offscreen texture and reads it back as a
+    /// `CGImage` — used by `debugSnapshot()` to let the pipeline be verified
+    /// without an on-screen window (e.g. from a test), and reusable for any
+    /// future thumbnail/export-preview feature.
+    func renderOffscreen(width: Int, height: Int) -> CGImage? {
+        let colorDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        colorDescriptor.usage = [.renderTarget, .shaderRead]
+        colorDescriptor.storageMode = .shared
+        guard let colorTexture = device.makeTexture(descriptor: colorDescriptor) else { return nil }
+
+        let depthDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .depth32Float, width: width, height: height, mipmapped: false)
+        depthDescriptor.usage = [.renderTarget]
+        depthDescriptor.storageMode = .private
+        guard let depthTexture = device.makeTexture(descriptor: depthDescriptor) else { return nil }
+
+        let passDescriptor = MTLRenderPassDescriptor()
+        passDescriptor.colorAttachments[0].texture = colorTexture
+        passDescriptor.colorAttachments[0].loadAction = .clear
+        passDescriptor.colorAttachments[0].storeAction = .store
+        passDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.07, 0.07, 0.09, 1)
+        passDescriptor.depthAttachment.texture = depthTexture
+        passDescriptor.depthAttachment.loadAction = .clear
+        passDescriptor.depthAttachment.storeAction = .dontCare
+        passDescriptor.depthAttachment.clearDepth = 1.0
+
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
+        encode(descriptor: passDescriptor, commandBuffer: commandBuffer, aspect: Float(width) / Float(height))
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        var pixelBytes = [UInt8](repeating: 0, count: width * height * 4)
+        pixelBytes.withUnsafeMutableBytes { ptr in
+            colorTexture.getBytes(ptr.baseAddress!, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        }
+        // BGRA (from the texture) -> RGBA for CGImage.
+        var rgba = [UInt8](repeating: 0, count: pixelBytes.count)
+        for i in stride(from: 0, to: pixelBytes.count, by: 4) {
+            rgba[i] = pixelBytes[i + 2]
+            rgba[i + 1] = pixelBytes[i + 1]
+            rgba[i + 2] = pixelBytes[i]
+            rgba[i + 3] = pixelBytes[i + 3]
+        }
+        guard let provider = CGDataProvider(data: Data(rgba) as CFData) else { return nil }
+        return CGImage(
+            width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+        )
+    }
+
+    private func encode(descriptor: MTLRenderPassDescriptor, commandBuffer: MTLCommandBuffer, aspect: Float) {
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
+
         let projection = Self.perspectiveMatrix(fovYRadians: .pi / 4, aspect: aspect, near: 0.01, far: boundsRadius * 20 + 10)
         let distance = boundsRadius * distanceMultiplier
         let eye = SIMD3<Float>(
@@ -270,9 +328,13 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         }
 
         encoder.endEncoding()
-        commandBuffer.present(drawable)
-        commandBuffer.commit()
     }
+
+    /// `submeshCount`/`hasGeometry`: cheap introspection for diagnostics and
+    /// for the sidebar/hub to show "no geometry" instead of opening a
+    /// guaranteed-blank viewer.
+    var submeshCount: Int { submeshes.count }
+    var hasGeometry: Bool { !submeshes.isEmpty }
 
     // MARK: - Matrix helpers (simd has no built-in perspective/lookAt)
 

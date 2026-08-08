@@ -24,7 +24,19 @@ struct ContentView: View {
                 } label: {
                     Label("Open…", systemImage: "folder.badge.plus")
                 }
-                if workspace.isLoading {
+                Button {
+                    workspace.isModelsHubPresented = true
+                } label: {
+                    Label("Models Hub", systemImage: "square.grid.3x3.fill")
+                }
+                .disabled(workspace.modelsHub.isEmpty && !workspace.isScanning)
+                Button {
+                    workspace.isScrappedContentScannerPresented = true
+                } label: {
+                    Label("Scrapped Content", systemImage: "questionmark.folder")
+                }
+                .disabled(workspace.orphanedContent.isEmpty && !workspace.isScanning)
+                if workspace.isLoading || workspace.isScanning {
                     ProgressView().controlSize(.small)
                 }
             }
@@ -49,6 +61,14 @@ struct ContentView: View {
                         Button("Close") { workspace.modelViewerAsset = nil }
                     }
                 }
+        }
+        .sheet(isPresented: $workspace.isModelsHubPresented) {
+            ModelsHubView()
+                .environmentObject(workspace)
+        }
+        .sheet(isPresented: $workspace.isScrappedContentScannerPresented) {
+            ScrappedContentScannerView()
+                .environmentObject(workspace)
         }
         .onDrop(of: [.fileURL], isTargeted: $isTargetedForDrop) { providers in
             handleDrop(providers: providers)
