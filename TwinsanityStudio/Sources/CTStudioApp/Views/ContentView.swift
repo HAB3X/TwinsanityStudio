@@ -41,6 +41,15 @@ struct ContentView: View {
                 DropOverlay()
             }
         }
+        .sheet(item: $workspace.modelViewerAsset) { asset in
+            ModelViewerWindow(asset: asset)
+                .environmentObject(workspace)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") { workspace.modelViewerAsset = nil }
+                    }
+                }
+        }
         .onDrop(of: [.fileURL], isTargeted: $isTargetedForDrop) { providers in
             handleDrop(providers: providers)
         }

@@ -224,6 +224,8 @@ public enum RM2Parser {
                 return .mesh(try SkinParser.parse(&cursor, recordID: recordID))
             case .rigidModel, .mesh:
                 return .rigidModel(try RigidModelParser.parse(&cursor, recordID: recordID))
+            case .material:
+                return .material(try MaterialParser.parse(&cursor, recordID: recordID))
             case .ogi:
                 return .skeleton(try GraphicsInfoParser.parse(&cursor, recordID: recordID))
             case .animation:

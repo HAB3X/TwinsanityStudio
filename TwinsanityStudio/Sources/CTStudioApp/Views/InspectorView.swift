@@ -20,9 +20,11 @@ struct InspectorView: View {
                         case .mesh(let mesh):
                             MeshInspectorView(node: node, mesh: mesh)
                         case .rigidModel(let info):
-                            RigidModelInspectorView(info: info)
+                            RigidModelInspectorView(node: node, info: info)
+                        case .material(let material):
+                            MaterialInspectorView(material: material)
                         case .skeleton(let skeleton):
-                            SkeletonInspectorView(skeleton: skeleton)
+                            SkeletonInspectorView(node: node, skeleton: skeleton)
                         case .animation(let animation):
                             AnimationInspectorView(animation: animation)
                         case .raw, .none:
@@ -57,17 +59,46 @@ struct InspectorView: View {
 }
 
 struct RigidModelInspectorView: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    let node: ChunkNode
     let info: RigidModelInfo
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Form {
+                LabeledContent("Header", value: "0x\(String(info.header, radix: 16))")
+                LabeledContent("Mesh ID", value: "\(info.meshID)")
+                LabeledContent("Material Count", value: "\(info.materialIDs.count)")
+                if !info.materialIDs.isEmpty {
+                    DisclosureGroup("Material IDs") {
+                        ForEach(info.materialIDs, id: \.self) { id in
+                            Text("#\(id)").font(.system(.body, design: .monospaced))
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+
+            Button {
+                workspace.openModelViewer(for: node)
+            } label: {
+                Label("Open in Model Viewer", systemImage: "cube.fill")
+            }
+        }
+    }
+}
+
+struct MaterialInspectorView: View {
+    let material: MaterialInfo
+
+    var body: some View {
         Form {
-            LabeledContent("Header", value: "0x\(String(info.header, radix: 16))")
-            LabeledContent("Mesh ID", value: "\(info.meshID)")
-            LabeledContent("Material Count", value: "\(info.materialIDs.count)")
-            if !info.materialIDs.isEmpty {
-                DisclosureGroup("Material IDs") {
-                    ForEach(info.materialIDs, id: \.self) { id in
-                        Text("#\(id)").font(.system(.body, design: .monospaced))
+            LabeledContent("Name", value: material.name)
+            LabeledContent("Shader Count", value: "\(material.shaders.count)")
+            if !material.shaders.isEmpty {
+                DisclosureGroup("Shaders") {
+                    ForEach(Array(material.shaders.enumerated()), id: \.offset) { _, shader in
+                        LabeledContent("Type \(shader.shaderType)", value: "texture #\(shader.textureId)")
                     }
                 }
             }

@@ -55,4 +55,22 @@ final class OBJExporterTests: XCTestCase {
         // Second submesh's face indices must be offset past the first submesh's 3 vertices.
         XCTAssertTrue(contents.contains("f 4/4/4 5/5/5 6/6/6"))
     }
+
+    func testExplicitSubmeshMaterialIDsOverrideRigidMeshDefault() throws {
+        // Rigid (Model-based) submeshes never carry their own materialID —
+        // the unified export path must supply it explicitly (from
+        // RigidModel.materialIDs) rather than silently omitting `usemtl`.
+        let sub = MeshSubmesh(
+            vertices: [StaticVertex(position: .zero), StaticVertex(position: SIMD3(1, 0, 0)), StaticVertex(position: SIMD3(0, 1, 0))],
+            connectivity: [true, true, true],
+            materialID: nil
+        )
+        let mesh = MeshAsset(id: 1, isSkinned: false, submeshes: [sub])
+        let url = tempDir.appendingPathComponent("linked.obj")
+        try OBJExporter.export(mesh, submeshMaterialIDs: [77], mtlFileName: "linked.mtl", to: url)
+
+        let contents = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(contents.contains("mtllib linked.mtl"))
+        XCTAssertTrue(contents.contains("usemtl material_77"))
+    }
 }

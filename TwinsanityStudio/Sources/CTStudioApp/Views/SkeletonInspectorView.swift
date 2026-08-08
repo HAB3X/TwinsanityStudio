@@ -2,6 +2,8 @@ import SwiftUI
 import CTModels
 
 struct SkeletonInspectorView: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    let node: ChunkNode
     let skeleton: SkeletonAsset
 
     private var tree: SkeletonTreeNode? { skeleton.buildTree() }
@@ -16,6 +18,12 @@ struct SkeletonInspectorView: View {
                 LabeledContent("Model Links", value: "\(skeleton.modelLinks.count)")
             }
             .formStyle(.grouped)
+
+            Button {
+                workspace.openModelViewer(for: node)
+            } label: {
+                Label("Open in Model Viewer", systemImage: "cube.fill")
+            }
 
             Text("Joint Hierarchy")
                 .font(.headline)

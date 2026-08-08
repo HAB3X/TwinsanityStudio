@@ -3,8 +3,10 @@
 A native macOS asset editor/IDE for *Crash Twinsanity*, ported from the community
 [Twinsanity Editor](../twinsanity-editor-master) (C#/.NET, Smartkin/Neo_Kesha) to
 Swift + SwiftUI. It reads `.BD`/`.BH` archives and `.RM2`/`.SM2` level/scenery
-files directly, decodes textures, models, skins, skeletons, and animations, and
-exports to PNG/OBJ.
+files directly, decodes textures, models, skins, skeletons, and animations,
+cross-links a model to its own materials/textures/skeleton (rather than
+showing them as unrelated files) with a Metal-based Model Viewer, and exports
+to PNG/OBJ or a complete bundled asset (mesh + textures + animation data).
 
 ## Project layout
 
@@ -19,14 +21,18 @@ TwinsanityStudio/
   Package.swift
   Sources/
     CTCore/         Binary I/O primitives, endianness, the generic chunk header format
-    CTModels/        Plain-data models: TextureAsset, MeshAsset, SkeletonAsset, AnimationAsset, ChunkNode
-    CTParsers/       BD/BH, RM2/SM2 chunk tree, Texture (PS2 + Xbox), VIF interpreter, Model/Skin, GraphicsInfo/Animation
-    CTExport/        PNG export, OBJ export, archive repackaging
-    CTStudioApp/     The SwiftUI app itself (sidebar / inspector / 3D viewport, drag-drop, search)
+    CTModels/        Plain-data models: TextureAsset, MeshAsset, SkeletonAsset, AnimationAsset, MaterialInfo,
+                     ChunkNode, and ResolvedModelAsset/AssetResolver (linked asset resolution)
+    CTParsers/       BD/BH, RM2/SM2 chunk tree, Texture (PS2 + Xbox), VIF interpreter, Model/Skin,
+                     Material/TwinsShader, GraphicsInfo/Animation
+    CTExport/        PNG export, OBJ export (with .mtl linkage), archive repackaging
+    CTStudioApp/     The SwiftUI app: sidebar / inspector / 3D viewport, drag-drop, search, type filter,
+                     and the Metal-based Model Viewer (Sources/CTStudioApp/ModelViewer/)
   Tests/
     CTCoreTests/     BinaryCursor/BinaryWriter/ChunkHeader
-    CTParsersTests/  BD/BH, RM2 chunk tree, Texture, VIF interpreter, GraphicsInfo, Animation, mesh winding
-    CTExportTests/   OBJ export, PNG export, archive repackaging
+    CTParsersTests/  BD/BH, RM2 chunk tree, Texture, VIF interpreter, Material, GraphicsInfo, Animation,
+                     AssetResolver, mesh winding
+    CTExportTests/   OBJ export (incl. mtllib linkage), PNG export, archive repackaging
 ```
 
 `CTCore` → `CTModels` → `CTParsers` → `CTExport` → `CTStudioApp` is a strict
@@ -57,16 +63,29 @@ own test target.
 
 - Drag a `.BH` archive, a loose `.RM2`/`.SM2`/`.RMX`/`.SMX` file, or a folder
   (e.g. an extracted disc image) onto the window — or `⌘O` to pick one.
-- The sidebar shows the chunk tree; type in the search field to filter by
-  name, section type, or record ID (matches keep their ancestor chunks so the
-  tree stays navigable).
-- Archive entries that look like chunk files (by extension) show a **Parse**
-  button to drill into their contents without a separate manual extract step.
+- The sidebar shows the chunk tree; selecting an unparsed `.RM2`/`.SM2`
+  archive entry parses it automatically. Type in the search field to filter
+  by name, section type, or record ID (matches keep their ancestor chunks so
+  the tree stays navigable), or use the **type filter** dropdown above the
+  tree to jump straight to every decoded Texture/Model/Skeleton/Animation —
+  click **Scan Archive** first so it can look inside files you haven't opened
+  yet (a full archive can be hundreds of files; scanning runs in the
+  background and only needs to happen once per session).
 - Selecting a texture, mesh, skeleton, or animation record shows a
-  type-specific inspector in the center panel; meshes also render live in the
-  3D viewport on the right (orbit/zoom/pan via trackpad or mouse).
+  type-specific inspector in the center panel; meshes also render live
+  (untextured) in the SceneKit viewport on the right.
+- **Model Viewer**: a `RigidModel` or `GraphicsInfo` (skeleton) record's
+  inspector has an **Open in Model Viewer** button. This resolves the record
+  against its file's Graphics/Code sections — mesh, per-submesh materials,
+  textures, and (for rigged records) the skeleton and every animation in the
+  same file — and opens a dedicated Metal-rendered window showing the model
+  *fully textured*, with drag-to-orbit/scroll-to-zoom, an animation
+  search/scrub panel, and an **Export Complete Asset…** button that bundles
+  the mesh (OBJ + MTL), every resolved texture (PNG), and decoded animation
+  data (JSON) into one folder in a single click.
 - Textures export to PNG (base + every mip level) and meshes export to
-  Wavefront OBJ via the **Export…** button in their inspector.
+  Wavefront OBJ via the **Export…** button in their own inspector too, if you
+  just want the raw geometry/texture rather than the bundled asset.
 
 ## Command-line build & test
 
@@ -123,12 +142,20 @@ things are deliberately out of scope rather than guessed at:
   and the `Object`/`Script`/`Instance` component system (a large, separate
   subsystem in the original tool). All of these still appear in the tree with
   correct byte ranges and can be extracted as raw bytes.
-- **Animation playback** in the inspector scrubs through *decoded per-frame
-  channel values*, not a live-deformed skinned mesh — turning
-  `JointSettings.Flags`/`TransformationChoice` into a final joint matrix isn't
-  fully pinned down even in the reference tool's own viewer code, so this
-  stops at exposing the real decoded numbers rather than guessing at a
-  possibly-wrong skinning result.
+- **Animation playback** (both the inspector and the Model Viewer) scrubs
+  through *decoded per-frame channel values*, not a live-deformed skinned
+  mesh — turning `JointSettings.Flags`/`TransformationChoice` into a final
+  joint matrix isn't fully pinned down even in the reference tool's own
+  viewer code, so this stops at exposing the real decoded numbers rather than
+  guessing at a possibly-wrong skinning result. The Model Viewer's optional
+  "Show Skeleton Overlay" is the same kind of best-effort: it draws bind-pose
+  joint positions from `Joint.matrix[3].xyz`, a plausible but unconfirmed
+  reading of that 5-row matrix layout — treat its shape as approximate.
+- **Animation-to-model linking**: the format has no stored link from a
+  specific `Animation` record to the skeleton it animates (that association
+  lives in the undecoded `Object`/`Script` game-logic layer) — the Model
+  Viewer offers every animation decoded in the *same file* as a preview
+  candidate, which is a reasonable heuristic but not a guaranteed-correct one.
 - **Demo-format RM2/SM2 variants** aren't auto-detected (there's no on-disk
   flag to detect them by) — files are parsed as retail-format by default,
   which matches the actual Crash Twinsanity retail disc.

@@ -13,21 +13,40 @@ public enum OBJExportError: Error, CustomStringConvertible {
 /// tool's `Model.ToPLY`), so exported geometry visually matches the original
 /// tool's output.
 public enum OBJExporter {
+    /// - Parameters:
+    ///   - submeshMaterialIDs: Explicit per-submesh material IDs, aligned by
+    ///     index with `mesh.submeshes`. Needed for rigid (`Model`-based)
+    ///     meshes, whose per-submesh material comes from the *separate*
+    ///     `RigidModel.materialIDs` array rather than being stored on the
+    ///     submesh itself (only `Skin` submeshes carry their own
+    ///     `materialID` — see `MeshSubmesh`). When `nil`, falls back to each
+    ///     submesh's own `materialID`, matching the previous behavior.
+    ///   - mtlFileName: If given, writes an `mtllib` header line so the OBJ
+    ///     links to a sibling `.mtl` file (see `WorkspaceViewModel.exportCompleteAsset`).
     @discardableResult
-    public static func export(_ mesh: MeshAsset, to url: URL) throws -> URL {
+    public static func export(
+        _ mesh: MeshAsset,
+        submeshMaterialIDs: [UInt32?]? = nil,
+        mtlFileName: String? = nil,
+        to url: URL
+    ) throws -> URL {
         guard mesh.totalVertexCount > 0 else { throw OBJExportError.emptyMesh }
 
         var lines: [String] = [
             "# Exported by TwinsanityStudio",
             "# Mesh record #\(mesh.id)\(mesh.isSkinned ? " (skinned)" : "")"
         ]
+        if let mtlFileName {
+            lines.append("mtllib \(mtlFileName)")
+        }
         var vertexOffset = 0
 
         for (subIndex, sub) in mesh.submeshes.enumerated() {
             guard !sub.vertices.isEmpty else { continue }
             lines.append("o Submesh_\(subIndex)")
-            if let materialID = sub.materialID {
-                lines.append("usemtl material_\(materialID)")
+            let resolvedMaterialID = (submeshMaterialIDs.flatMap { subIndex < $0.count ? $0[subIndex] : nil }) ?? sub.materialID
+            if let resolvedMaterialID {
+                lines.append("usemtl material_\(resolvedMaterialID)")
             }
             for v in sub.vertices {
                 lines.append("v \(format(v.position.x)) \(format(v.position.y)) \(format(v.position.z))")
