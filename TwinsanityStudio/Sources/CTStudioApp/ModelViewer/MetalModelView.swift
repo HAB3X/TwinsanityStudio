@@ -43,6 +43,11 @@ final class InteractiveMTKView: MTKView {
     /// mode picker has no other way to notice a change AppKit's `keyDown`
     /// made directly on the (plain, non-`ObservableObject`) renderer.
     var onGizmoModeChanged: (() -> Void)?
+    /// "Click any rendered element to select it" (Level Editor overhaul):
+    /// fired with the picked object's index when a `mouseDown` didn't grab
+    /// a gizmo handle but did land on/near a visible object — see
+    /// `GizmoInteractiveRenderer.pickObject`.
+    var onObjectPicked: ((Int) -> Void)?
 
     /// Non-nil for the duration of a drag that grabbed a gizmo arrow on
     /// `mouseDown` — while set, `mouseDragged` moves the selected object
@@ -56,7 +61,17 @@ final class InteractiveMTKView: MTKView {
         guard let gizmoRenderer = renderer as? GizmoInteractiveRenderer else { return }
         let point = convert(event.locationInWindow, from: nil)
         draggingGizmoAxis = gizmoRenderer.gizmoAxis(at: point, viewSize: bounds.size)
-        if draggingGizmoAxis != nil { onGizmoDragStarted?() }
+        if draggingGizmoAxis != nil {
+            onGizmoDragStarted?()
+            return
+        }
+        // No gizmo handle grabbed — try picking whatever's under the click
+        // instead, so clicking an object directly selects it even before
+        // its own gizmo exists (or for select-only layers like triggers).
+        if let picked = gizmoRenderer.pickObject(at: point, viewSize: bounds.size) {
+            onObjectPicked?(picked)
+            needsDisplay = true
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -114,6 +129,7 @@ struct MetalModelView: NSViewRepresentable {
     var onGizmoDragEnded: (() -> Void)?
     var onGizmoDragStarted: (() -> Void)?
     var onGizmoModeChanged: (() -> Void)?
+    var onObjectPicked: ((Int) -> Void)?
 
     func makeNSView(context: Context) -> InteractiveMTKView {
         let view = InteractiveMTKView(frame: .zero, device: renderer.device)
@@ -121,6 +137,7 @@ struct MetalModelView: NSViewRepresentable {
         view.onGizmoDragEnded = onGizmoDragEnded
         view.onGizmoDragStarted = onGizmoDragStarted
         view.onGizmoModeChanged = onGizmoModeChanged
+        view.onObjectPicked = onObjectPicked
         view.delegate = renderer
         view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float
@@ -156,5 +173,6 @@ struct MetalModelView: NSViewRepresentable {
         nsView.onGizmoDragEnded = onGizmoDragEnded
         nsView.onGizmoDragStarted = onGizmoDragStarted
         nsView.onGizmoModeChanged = onGizmoModeChanged
+        nsView.onObjectPicked = onObjectPicked
     }
 }

@@ -1,6 +1,7 @@
 import SwiftUI
 import CTModels
 import UniformTypeIdentifiers
+import AVFoundation
 
 /// Bundles a decoded `SceneryData` record with its already-resolved
 /// placements (mesh + textures per object) — resolved once, when the user
@@ -20,11 +21,28 @@ public struct LevelViewerContext: Identifiable {
     /// here would be a guess dressed up as data. The marker's *position* is
     /// exactly what's on disk, and dragging/saving it is fully real.
     public var instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)]
+    /// "Level Editor Overhaul": every `Trigger`/`Camera`/`SoundEffect`
+    /// record from the same file — triggers/cameras feed their scene
+    /// layers (wireframe boxes, select-and-inspect only, no write path
+    /// yet), sounds feed the Level Audio panel.
+    public var triggers: [(node: ChunkNode, trigger: TriggerVolume)]
+    public var cameras: [(node: ChunkNode, camera: PlacedCamera)]
+    public var sounds: [(node: ChunkNode, sound: SoundEffectAsset)]
 
-    public init(scenery: SceneryAsset, placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)], instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)] = []) {
+    public init(
+        scenery: SceneryAsset,
+        placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)],
+        instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)] = [],
+        triggers: [(node: ChunkNode, trigger: TriggerVolume)] = [],
+        cameras: [(node: ChunkNode, camera: PlacedCamera)] = [],
+        sounds: [(node: ChunkNode, sound: SoundEffectAsset)] = []
+    ) {
         self.scenery = scenery
         self.placements = placements
         self.instanceMarkers = instanceMarkers
+        self.triggers = triggers
+        self.cameras = cameras
+        self.sounds = sounds
     }
 }
 
@@ -38,6 +56,28 @@ public struct LevelViewerContext: Identifiable {
 /// platform, …) are fully save-able via "Save Level Overrides…", the same
 /// safe decode -> edit -> encode -> patch -> save-as-copy loop used
 /// throughout this build.
+/// "Level Editor Overhaul": a coarse preset over the "Scene Layers" panel
+/// below — picking one just sets `layerVisibility` to a sensible starting
+/// combination; the checkboxes remain independently adjustable afterward,
+/// same as the request's "regardless of mode" wording.
+enum LevelViewMode: CaseIterable {
+    case geometryOnly, populated
+
+    var displayName: String {
+        switch self {
+        case .geometryOnly: return "Geometry Only"
+        case .populated: return "Fully Populated"
+        }
+    }
+
+    var layerPreset: Set<SceneLayer> {
+        switch self {
+        case .geometryOnly: return [.scenery]
+        case .populated: return Set(SceneLayer.allCases)
+        }
+    }
+}
+
 struct LevelViewerWindow: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.undoManager) private var undoManager
@@ -45,6 +85,8 @@ struct LevelViewerWindow: View {
 
     @State private var renderer: LevelViewerRenderer?
     @State private var selectedIndex: Int?
+    @State private var viewMode: LevelViewMode = .populated
+    @State private var layerVisibility: Set<SceneLayer> = Set(SceneLayer.allCases)
     @State private var positionX: String = ""
     @State private var positionY: String = ""
     @State private var positionZ: String = ""
@@ -81,10 +123,16 @@ struct LevelViewerWindow: View {
         }
         .frame(minWidth: 960, minHeight: 620)
         .onAppear {
-            renderer = LevelViewerRenderer(placements: context.placements, instanceMarkers: context.instanceMarkers)
+            renderer = LevelViewerRenderer(
+                placements: context.placements,
+                instanceMarkers: context.instanceMarkers,
+                triggers: context.triggers,
+                cameras: context.cameras
+            )
             renderer?.snapToGrid = snapToGrid
             renderer?.gridSize = Float(gridSize)
             renderer?.rotationSnapDegrees = Float(rotationSnapDegrees)
+            renderer?.layerVisibility = layerVisibility
         }
         // "Robust Undo/Redo" (QoL sweep), scoped to object moves — the one
         // piece of mutable state this session actually introduced and
@@ -118,7 +166,8 @@ struct LevelViewerWindow: View {
                             refreshTransformFields()
                         },
                         onGizmoDragStarted: { transformBeforeEdit = currentSnapshot() },
-                        onGizmoModeChanged: { gizmoMode = renderer.gizmoMode }
+                        onGizmoModeChanged: { gizmoMode = renderer.gizmoMode },
+                        onObjectPicked: { index in select(index) }
                     )
                     // See `ModelViewerWindow`'s matching comment — a
                     // `maxWidth/maxHeight: .infinity`-only frame isn't a
@@ -165,14 +214,18 @@ struct LevelViewerWindow: View {
                 Text(context.scenery.chunkName.isEmpty ? "Level" : context.scenery.chunkName)
                     .font(.title3.bold())
 
+                modeAndLayersPanel
+
                 Form {
                     LabeledContent("Placements in tree", value: "\(context.scenery.placements.count)")
                     LabeledContent("Scenery resolved", value: "\(context.placements.count)")
                     LabeledContent("Instance markers", value: "\(context.instanceMarkers.count)")
+                    LabeledContent("Triggers", value: "\(context.triggers.count)")
+                    LabeledContent("Cameras", value: "\(context.cameras.count)")
                 }
                 .formStyle(.grouped)
 
-                Text("Scenery objects are drawn at their correct world position, but not yet rotated or scaled to match the level data — only translation is currently applied, and scenery has no write path yet (in-session sandbox only). The amber cubes are Instance records (crate/enemy/platform placements) — their position/rotation is real, live-editable with the gizmo, and \"Save Level Overrides…\" below writes it back to a copy of the file.")
+                Text("Scenery objects are drawn at their correct world position, but not yet rotated or scaled to match the level data — only translation is currently applied, and scenery has no write path yet (in-session sandbox only). The amber cubes are Instance records (crate/enemy/platform placements) — their position/rotation is real, live-editable with the gizmo, and \"Save Level Overrides…\" below writes it back to a copy of the file. Red/cyan wireframe boxes are Triggers/Cameras — click to inspect, no gizmo (no verified write path for either record type yet).")
                     .font(.caption2)
                     .foregroundStyle(.orange)
 
@@ -190,12 +243,144 @@ struct LevelViewerWindow: View {
 
                 gizmoControls
 
+                if let node = renderer?.selectedSourceNode {
+                    Divider()
+                    selectedObjectInspector(node: node)
+                }
+
                 Divider()
 
                 objectList
+
+                if !context.sounds.isEmpty {
+                    Divider()
+                    LevelAudioPanel(sounds: context.sounds)
+                }
+
+                if !context.triggers.isEmpty || hasScriptedInstances {
+                    Divider()
+                    levelEventsPanel
+                }
             }
             .padding(16)
         }
+    }
+
+    /// "Viewport Rendering Modes" + "Granular Layer Visibility": the mode
+    /// picker is a preset over the same `layerVisibility` the checkboxes
+    /// edit directly — see `LevelViewMode.layerPreset`'s doc comment.
+    private var modeAndLayersPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Mode", selection: $viewMode) {
+                ForEach(LevelViewMode.allCases, id: \.self) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .onChange(of: viewMode) { _, newValue in
+                layerVisibility = newValue.layerPreset
+                renderer?.layerVisibility = layerVisibility
+            }
+
+            Text("Scene Layers").font(.caption.bold()).foregroundStyle(.secondary)
+            ForEach(SceneLayer.allCases, id: \.self) { layer in
+                Toggle(layer.displayName, isOn: layerBinding(for: layer))
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+            }
+        }
+    }
+
+    private func layerBinding(for layer: SceneLayer) -> Binding<Bool> {
+        Binding(
+            get: { layerVisibility.contains(layer) },
+            set: { isOn in
+                if isOn { layerVisibility.insert(layer) } else { layerVisibility.remove(layer) }
+                renderer?.layerVisibility = layerVisibility
+            }
+        )
+    }
+
+    /// "Click any rendered element to select it… open its property
+    /// inspector": routes on `node.payload` to the same real inspector
+    /// views the sidebar tree already uses — no separate/duplicated
+    /// inspector logic for the Level Viewer.
+    @ViewBuilder
+    private func selectedObjectInspector(node: ChunkNode) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Selected Object").font(.headline)
+            switch node.payload {
+            case .instance(let instance):
+                InstanceInspectorView(node: node, instance: instance)
+            case .trigger(let trigger):
+                TriggerInspectorView(trigger: trigger)
+            case .camera(let camera):
+                CameraInspectorView(camera: camera)
+            default:
+                Text("No inspector available for this record type.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var hasScriptedInstances: Bool {
+        context.instanceMarkers.contains { $0.instance.scriptID != -1 }
+    }
+
+    /// "Level Scripts / Cutscenes": real decoded data (trigger
+    /// args/flags, instance script IDs), factually presented — not the
+    /// "plain English event descriptions" this build has no source for
+    /// (no script bytecode decoder exists here to describe *what* a
+    /// trigger/scriptID actually does). Titled "Level Events" rather than
+    /// "Scripts" for exactly that reason. Clicking a row selects the
+    /// underlying object, which (via `orbitTarget` already following the
+    /// current selection) snaps the camera to it.
+    private var levelEventsPanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Level Events").font(.headline)
+            Text("Factual listing of Trigger volumes and script-carrying Instances — this build doesn't decode script bytecode, so there's no plain-English description of what any of these actually do.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            ForEach(context.triggers, id: \.node.id) { entry in
+                eventRow(
+                    icon: "square.dashed",
+                    title: "Trigger #\(entry.trigger.id)",
+                    subtitle: "args \(entry.trigger.arg1)/\(entry.trigger.arg2)/\(entry.trigger.arg3)/\(entry.trigger.arg4) · mask 0b\(String(entry.trigger.enabledMask, radix: 2))",
+                    node: entry.node
+                )
+            }
+            ForEach(context.instanceMarkers.filter { $0.instance.scriptID != -1 }, id: \.node.id) { entry in
+                eventRow(
+                    icon: "cube.transparent.fill",
+                    title: "Instance #\(entry.instance.id)",
+                    subtitle: "scriptID \(entry.instance.scriptID) · objectID \(entry.instance.objectID)",
+                    node: entry.node
+                )
+            }
+        }
+    }
+
+    private func eventRow(icon: String, title: String, subtitle: String, node: ChunkNode) -> some View {
+        Button {
+            renderer?.selectByNode(node)
+            selectedIndex = renderer?.selectedObjectIndex
+            refreshTransformFields()
+        } label: {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: icon).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.caption).lineLimit(1)
+                    Text(subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .padding(4)
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -392,5 +577,68 @@ struct LevelViewerWindow: View {
             target.setSelectedScale(to: restoreTo.scale)
             registerTransformUndo(undoManager: undoManager, renderer: target, index: index, restoreTo: thenRedoTo, thenRedoTo: restoreTo)
         }
+    }
+}
+
+/// "Integrated Level Audio": every decoded `SoundEffect` in the level's
+/// file, with a frictionless inline Play button — reuses `WAVEncoder`/
+/// `PlaybackEndDelegate` (`SoundEffectInspectorView.swift`) rather than a
+/// second audio-decoding path. Deliberately titled "Sound Effects in This
+/// File", not "Background Music"/"Ambient Banks": `SoundEffectAsset` has
+/// no field distinguishing those categories, and this format doesn't
+/// record which chunk a level's music actually comes from — labeling them
+/// by role would be presenting a guess as decoded data.
+private struct LevelAudioPanel: View {
+    let sounds: [(node: ChunkNode, sound: SoundEffectAsset)]
+    @State private var playingNodeID: UUID?
+    @State private var player: AVAudioPlayer?
+    @State private var playerDelegate: PlaybackEndDelegate?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Level Audio").font(.headline)
+            Text("Sound effects in this file (\(sounds.count)) — not categorized as BGM/ambient, since nothing in the decoded data distinguishes those roles.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            ForEach(sounds, id: \.node.id) { entry in
+                HStack {
+                    Button {
+                        toggle(entry)
+                    } label: {
+                        Image(systemName: playingNodeID == entry.node.id ? "stop.fill" : "play.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(entry.sound.pcmSamples.isEmpty)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(entry.node.displayName).font(.caption).lineLimit(1)
+                        Text(String(format: "%.2fs · %d Hz", entry.sound.durationSeconds, entry.sound.sampleRateHz))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+            }
+        }
+        .onDisappear { player?.stop() }
+    }
+
+    private func toggle(_ entry: (node: ChunkNode, sound: SoundEffectAsset)) {
+        if playingNodeID == entry.node.id {
+            player?.stop()
+            playingNodeID = nil
+            return
+        }
+        guard !entry.sound.pcmSamples.isEmpty else { return }
+        let wav = WAVEncoder.encode(pcm: entry.sound.pcmSamples, sampleRateHz: entry.sound.sampleRateHz)
+        guard let newPlayer = try? AVAudioPlayer(data: wav) else {
+            playingNodeID = nil
+            return
+        }
+        let delegate = PlaybackEndDelegate { playingNodeID = nil }
+        newPlayer.delegate = delegate
+        playerDelegate = delegate
+        player = newPlayer
+        newPlayer.prepareToPlay()
+        playingNodeID = newPlayer.play() ? entry.node.id : nil
     }
 }

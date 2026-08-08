@@ -752,12 +752,33 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
 /// the Forge-style transform gizmo (blueprint 6.1) mutates them directly;
 /// everything else about an uploaded object (its GPU geometry) never
 /// changes after upload.
+/// "Level Editor Overhaul": which of the "Scene Layers" checkbox panel's
+/// four groups an object belongs to — drives both draw-time visibility
+/// filtering and the "Geometry Only"/"Fully Populated" mode preset.
+enum SceneLayer: CaseIterable, Hashable {
+    case scenery, actors, triggers, cameras
+
+    var displayName: String {
+        switch self {
+        case .scenery: return "Scenery / Terrain"
+        case .actors: return "Actors / Entities"
+        case .triggers: return "Trigger Volumes & Death Planes"
+        case .cameras: return "Camera Splines"
+        }
+    }
+}
+
 private struct GPULevelObject {
     var worldPosition: SIMD3<Float>
     var rotation: simd_quatf = simd_quatf(angle: 0, axis: SIMD3(0, 1, 0))
     var scale: SIMD3<Float> = SIMD3(1, 1, 1)
     let displayName: String
+    /// Empty for trigger/camera markers — those draw as line wireframes
+    /// (see `overlayLineBuffer`) instead of a solid mesh, but still
+    /// participate in `objects` so selection/picking/the sidebar list work
+    /// identically across every layer.
     let submeshes: [GPUSubmesh]
+    let layer: SceneLayer
     /// "Direct .RM2 Write-Back": non-nil only for placeholder `Instance`
     /// markers (see `LevelViewerContext.instanceMarkers`) — the on-disk
     /// record this object's transform patches back into on save. `nil` for
@@ -831,6 +852,17 @@ protocol GizmoInteractiveRenderer: OrbitCameraRenderer {
     /// the current selection along `axis`, interpreted per `gizmoMode`
     /// (move/rotate/scale), snapping to the configured grid if enabled.
     func dragSelectedObject(axis: GizmoAxis, viewportDelta: CGVector, viewSize: CGSize)
+    /// "Click any rendered element to select it" (Level Editor overhaul):
+    /// screen-space closest-point object pick, checked when a `mouseDown`
+    /// didn't already grab a gizmo handle. Projects every currently-visible
+    /// object's world position through the same view/projection matrix the
+    /// frame was drawn with and returns the nearest one within a small
+    /// pixel radius — not true ray/mesh intersection, but exact-shape
+    /// picking would need per-object collision geometry this build doesn't
+    /// have for placeholder markers anyway, and closest-projected-point is
+    /// the same category of screen-space technique this file's gizmo hit
+    /// test already uses. `nil` if nothing visible is close enough.
+    func pickObject(at point: CGPoint, viewSize: CGSize) -> Int?
 }
 
 /// "Scenery/Level Assembly": draws every resolved placement from a
@@ -872,6 +904,14 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// a small level would be invisible in a huge one and vice versa.
     private var gizmoArmLength: Float { max(boundsRadius * 0.12, 0.5) }
 
+    /// "Level Editor Overhaul": every layer visible by default — the mode
+    /// toggle/checkbox panel narrows this down, never the initial state.
+    var layerVisibility: Set<SceneLayer> = Set(SceneLayer.allCases) {
+        didSet { rebuildOverlayBuffer() }
+    }
+    private var overlayLineBuffer: MTLBuffer?
+    private var overlayLineVertexCount = 0
+
     /// - Parameters:
     ///   - placements: each resolved object's world position
     ///     (translation-only, see the type doc comment) paired with its
@@ -881,28 +921,49 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     ///     `LevelViewerContext.instanceMarkers`'s doc comment for why not a
     ///     real mesh) but fully selectable/gizmo-editable/save-able like
     ///     any other object.
-    init?(placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)], instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)] = []) {
+    ///   - triggers/cameras: "Level Editor Overhaul" — every `Trigger`/
+    ///     `Camera` record from the same file. Both draw as an oriented
+    ///     line wireframe box (`overlayLineBuffer`), not a solid mesh —
+    ///     their real, decoded position/size/rotation, just no gizmo
+    ///     write-back (unlike Instance markers, this build has no
+    ///     byte-exact encoder for either record type yet). Still fully
+    ///     selectable, so clicking one opens its real inspector.
+    init?(
+        placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)],
+        instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)] = [],
+        triggers: [(node: ChunkNode, trigger: TriggerVolume)] = [],
+        cameras: [(node: ChunkNode, camera: PlacedCamera)] = []
+    ) {
         guard let context = ModelViewerGPUContext.shared else { return nil }
         self.context = context
         super.init()
-        upload(placements: placements, instanceMarkers: instanceMarkers)
+        upload(placements: placements, instanceMarkers: instanceMarkers, triggers: triggers, cameras: cameras)
     }
 
-    private func upload(placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)], instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)]) {
+    private func upload(
+        placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)],
+        instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)],
+        triggers: [(node: ChunkNode, trigger: TriggerVolume)],
+        cameras: [(node: ChunkNode, camera: PlacedCamera)]
+    ) {
         var minBound = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
         var maxBound = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
         var levelObjects: [GPULevelObject] = []
-        levelObjects.reserveCapacity(placements.count + instanceMarkers.count)
+        levelObjects.reserveCapacity(placements.count + instanceMarkers.count + triggers.count + cameras.count)
+
+        func expandBounds(_ p: SIMD3<Float>) {
+            minBound = simd_min(minBound, p)
+            maxBound = simd_max(maxBound, p)
+        }
 
         for (worldPosition, asset) in placements {
             let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: asset.mesh, submeshMaterials: asset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
             guard !built.submeshes.isEmpty else { continue }
-            levelObjects.append(GPULevelObject(worldPosition: worldPosition, displayName: asset.displayName, submeshes: built.submeshes))
+            levelObjects.append(GPULevelObject(worldPosition: worldPosition, displayName: asset.displayName, submeshes: built.submeshes, layer: .scenery))
             // Bounds are tracked from placement position, not local mesh
             // extent — for a whole-level view, "where objects are" matters
             // far more than any one object's own size.
-            minBound = simd_min(minBound, worldPosition)
-            maxBound = simd_max(maxBound, worldPosition)
+            expandBounds(worldPosition)
         }
 
         let markerMesh = Self.makeMarkerCubeAsset()
@@ -915,20 +976,142 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                 rotation: Self.quaternion(fromEulerDegrees: instance.rotationDegrees),
                 displayName: "Instance #\(instance.id) (Object \(instance.objectID))",
                 submeshes: markerBuilt.submeshes,
+                layer: .actors,
                 sourceNode: node,
                 originalPositionW: instance.position.w,
                 comRotationRaw: instance.comRotationRaw
             ))
-            minBound = simd_min(minBound, worldPosition)
-            maxBound = simd_max(maxBound, worldPosition)
+            expandBounds(worldPosition)
+        }
+
+        for (node, trigger) in triggers {
+            let worldPosition = SIMD3(trigger.position.x, trigger.position.y, trigger.position.z)
+            levelObjects.append(GPULevelObject(
+                worldPosition: worldPosition,
+                rotation: simd_quatf(vector: trigger.rotationQuaternion),
+                displayName: "Trigger #\(trigger.id)",
+                submeshes: [],
+                layer: .triggers,
+                sourceNode: node
+            ))
+            expandBounds(worldPosition)
+        }
+
+        for (node, camera) in cameras {
+            let worldPosition = SIMD3(camera.position.x, camera.position.y, camera.position.z)
+            levelObjects.append(GPULevelObject(
+                worldPosition: worldPosition,
+                rotation: simd_quatf(vector: camera.rotationQuaternion),
+                displayName: "Camera #\(camera.id) (\(camera.cameraType1.displayName))",
+                submeshes: [],
+                layer: .cameras,
+                sourceNode: node
+            ))
+            expandBounds(worldPosition)
+            for vector in Self.splineControlPoints(for: camera) {
+                expandBounds(SIMD3(vector.x, vector.y, vector.z))
+            }
         }
 
         objects = levelObjects
+        self.triggers = triggers
+        self.cameras = cameras
         if minBound.x <= maxBound.x {
             boundsCenter = (minBound + maxBound) / 2
             let extent = maxBound - minBound
             boundsRadius = max(max(extent.x, extent.y), max(extent.z, 10))
         }
+        rebuildOverlayBuffer()
+    }
+
+    /// Kept alongside `objects` purely to rebuild `overlayLineBuffer` when
+    /// layer visibility toggles — the wireframes themselves aren't part of
+    /// the indexed-triangle `objects` draw path (see `GPULevelObject.
+    /// submeshes`'s doc comment), so they need their own source data to
+    /// redraw from.
+    private var triggers: [(node: ChunkNode, trigger: TriggerVolume)] = []
+    private var cameras: [(node: ChunkNode, camera: PlacedCamera)] = []
+
+    /// Control points for whichever of a camera's two sub-payload slots
+    /// actually has spline/path data — `nil`-safe: most cameras have
+    /// neither, in which case this returns an empty path and only the
+    /// camera's own box marker draws.
+    private static func splineControlPoints(for camera: PlacedCamera) -> [SIMD4<Float>] {
+        for subtype in [camera.subtype1, camera.subtype2] {
+            switch subtype {
+            case .spline(let spline): return spline.unkVectors
+            case .path(let path): return path.unkVectors
+            default: continue
+            }
+        }
+        return []
+    }
+
+    /// Rebuilds the line-primitive vertex buffer for trigger/camera
+    /// wireframe boxes plus camera spline paths — everything in
+    /// `overlayLineBuffer`, drawn through the same `collisionLineColoredPipelineState`
+    /// the gizmo already uses (`LineVertexColorIn`: interleaved position +
+    /// color). Skipped entirely for a hidden layer, both to save the (tiny)
+    /// rebuild cost and so a hidden trigger/camera can't still be picked
+    /// via `pickObject`, which only scans `objects` — layer-gating that
+    /// list is `pickObject`'s job, this buffer is purely visual.
+    private func rebuildOverlayBuffer() {
+        var floats: [Float] = []
+        func appendVertex(_ position: SIMD3<Float>, _ color: SIMD3<Float>) {
+            floats.append(contentsOf: [position.x, position.y, position.z, color.x, color.y, color.z])
+        }
+        func appendBox(position: SIMD3<Float>, size: SIMD3<Float>, rotation: simd_quatf, color: SIMD3<Float>) {
+            let half = size / 2
+            let localCorners: [SIMD3<Float>] = [
+                SIMD3(-half.x, -half.y, -half.z), SIMD3(half.x, -half.y, -half.z),
+                SIMD3(half.x, half.y, -half.z), SIMD3(-half.x, half.y, -half.z),
+                SIMD3(-half.x, -half.y, half.z), SIMD3(half.x, -half.y, half.z),
+                SIMD3(half.x, half.y, half.z), SIMD3(-half.x, half.y, half.z)
+            ]
+            let corners = localCorners.map { position + rotation.act($0) }
+            let edges: [(Int, Int)] = [
+                (0, 1), (1, 2), (2, 3), (3, 0),
+                (4, 5), (5, 6), (6, 7), (7, 4),
+                (0, 4), (1, 5), (2, 6), (3, 7)
+            ]
+            for (a, b) in edges {
+                appendVertex(corners[a], color)
+                appendVertex(corners[b], color)
+            }
+        }
+
+        let triggerColor = SIMD3<Float>(0.95, 0.25, 0.25)
+        let cameraColor = SIMD3<Float>(0.3, 0.85, 0.95)
+        let splineColor = SIMD3<Float>(0.85, 0.35, 0.95)
+
+        if layerVisibility.contains(.triggers) {
+            for (_, trigger) in triggers {
+                let position = SIMD3(trigger.position.x, trigger.position.y, trigger.position.z)
+                let size = SIMD3(max(trigger.size.x, 0.1), max(trigger.size.y, 0.1), max(trigger.size.z, 0.1))
+                appendBox(position: position, size: size, rotation: simd_quatf(vector: trigger.rotationQuaternion), color: triggerColor)
+            }
+        }
+        if layerVisibility.contains(.cameras) {
+            for (_, camera) in cameras {
+                let position = SIMD3(camera.position.x, camera.position.y, camera.position.z)
+                let size = SIMD3(max(camera.size.x, 0.1), max(camera.size.y, 0.1), max(camera.size.z, 0.1))
+                appendBox(position: position, size: size, rotation: simd_quatf(vector: camera.rotationQuaternion), color: cameraColor)
+                let controlPoints = Self.splineControlPoints(for: camera).map { SIMD3($0.x, $0.y, $0.z) }
+                guard controlPoints.count >= 2 else { continue }
+                for i in 0..<(controlPoints.count - 1) {
+                    appendVertex(controlPoints[i], splineColor)
+                    appendVertex(controlPoints[i + 1], splineColor)
+                }
+            }
+        }
+
+        guard !floats.isEmpty else {
+            overlayLineBuffer = nil
+            overlayLineVertexCount = 0
+            return
+        }
+        overlayLineVertexCount = floats.count / 6
+        overlayLineBuffer = device.makeBuffer(bytes: floats, length: floats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
     }
 
     /// A small procedural cube (0.8 world units per side) plus a solid
@@ -996,7 +1179,11 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// benefit.
     var pendingLevelOverrides: [(node: ChunkNode, encoded: Data)] {
         objects.compactMap { object in
-            guard let node = object.sourceNode else { return nil }
+            // `.actors` only: triggers/cameras also carry a `sourceNode`
+            // (for click-to-inspect), but `writeInstanceTransform` encodes
+            // an `Instance` record's byte layout specifically — applying it
+            // to a Trigger/Camera node would silently corrupt that record.
+            guard object.layer == .actors, let node = object.sourceNode else { return nil }
             let degrees = Self.eulerDegrees(from: object.rotation)
             let rotationRaw = SIMD3(
                 PlacedInstance.rawAngle(fromDegrees: degrees.x),
@@ -1040,9 +1227,36 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         return objects[selectedObjectIndex].scale
     }
 
+    /// "Level Editor Overhaul": the `ChunkNode` behind whatever's currently
+    /// selected — `nil` for scenery placements and Models-Hub-dropped
+    /// props (neither has one), non-`nil` for Instance/Trigger/Camera
+    /// markers. Lets the SwiftUI side route to the right real inspector
+    /// (`node.payload` already carries which kind it is) without this
+    /// renderer needing to know anything about SwiftUI views.
+    var selectedSourceNode: ChunkNode? {
+        guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return nil }
+        return objects[selectedObjectIndex].sourceNode
+    }
+
     func select(index: Int?) {
         selectedObjectIndex = index.flatMap { objects.indices.contains($0) ? $0 : nil }
         rebuildGizmoBuffer()
+    }
+
+    /// "Level Events" panel: selects whichever object was built from
+    /// `node` (identity, not value, comparison — `ChunkNode` is a
+    /// reference type) so clicking an event row both highlights it in the
+    /// sidebar and (via `orbitTarget` already following the selection)
+    /// snaps the camera to it. Returns whether a match was found — `node`
+    /// could in principle belong to a layer that's currently hidden and
+    /// therefore still present in `objects` but intentionally not
+    /// selectable via viewport picking; selecting it programmatically from
+    /// the events list is fine either way.
+    @discardableResult
+    func selectByNode(_ node: ChunkNode) -> Bool {
+        guard let index = objects.firstIndex(where: { $0.sourceNode === node }) else { return false }
+        select(index: index)
+        return true
     }
 
     /// Direct position edit — the sidebar's X/Y/Z nudge fields go through
@@ -1111,7 +1325,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     func addObject(asset: ResolvedModelAsset) -> Int? {
         let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: asset.mesh, submeshMaterials: asset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
         guard !built.submeshes.isEmpty else { return nil }
-        objects.append(GPULevelObject(worldPosition: boundsCenter, displayName: asset.displayName, submeshes: built.submeshes))
+        objects.append(GPULevelObject(worldPosition: boundsCenter, displayName: asset.displayName, submeshes: built.submeshes, layer: .actors))
         let newIndex = objects.count - 1
         select(index: newIndex)
         return newIndex
@@ -1172,7 +1386,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         encoder.setDepthStencilState(context.depthState)
         encoder.setFragmentSamplerState(context.samplerState, index: 0)
 
-        for object in objects {
+        for object in objects where layerVisibility.contains(object.layer) {
             // T * R * S: scale and rotate the local mesh first, then place
             // the result at the object's world position — the standard
             // TRS composition order (reversed relative to how it reads
@@ -1190,12 +1404,21 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             }
         }
 
-        if let gizmoBuffer, let coloredPipeline = context.collisionLineColoredPipelineState {
+        if let coloredPipeline = context.collisionLineColoredPipelineState {
             var uniforms = Uniforms(modelViewProjection: viewProjection, modelMatrix: matrix_identity_float4x4, lightDirection: lightDirection)
             encoder.setRenderPipelineState(coloredPipeline)
-            encoder.setVertexBuffer(gizmoBuffer, offset: 0, index: 0)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
-            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: gizmoVertexCount)
+            // "Level Editor Overhaul": trigger/camera wireframes, same line
+            // pipeline and vertex layout as the gizmo below — both are
+            // interleaved position+color buffers, so they share one setup.
+            if let overlayLineBuffer {
+                encoder.setVertexBuffer(overlayLineBuffer, offset: 0, index: 0)
+                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: overlayLineVertexCount)
+            }
+            if let gizmoBuffer {
+                encoder.setVertexBuffer(gizmoBuffer, offset: 0, index: 0)
+                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: gizmoVertexCount)
+            }
         }
 
         encoder.endEncoding()
@@ -1215,7 +1438,14 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// per-frame — same caching rationale as `ModelViewerRenderer`'s own
     /// line buffers.
     private func rebuildGizmoBuffer() {
-        guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else {
+        // Triggers/cameras are select-and-inspect only — no gizmo, since
+        // this build has no verified byte-exact encoder for either record
+        // type (see `pendingLevelOverrides`'s guard). Showing a draggable
+        // gizmo on one anyway would let it *look* editable while any drag
+        // silently vanishes on save.
+        guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex),
+              objects[selectedObjectIndex].layer == .scenery || objects[selectedObjectIndex].layer == .actors
+        else {
             gizmoBuffer = nil
             gizmoVertexCount = 0
             return
@@ -1350,6 +1580,24 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             }
             return best?.axis
         }
+    }
+
+    /// "Click any rendered element to select it" (Level Editor overhaul):
+    /// see `GizmoInteractiveRenderer.pickObject`'s doc comment for the
+    /// technique. Only considers objects on a currently-visible layer, so a
+    /// hidden trigger/camera/actor can't be selected by clicking through
+    /// where it used to be.
+    func pickObject(at point: CGPoint, viewSize: CGSize) -> Int? {
+        let viewProjection = currentViewProjection(viewSize: viewSize)
+        var best: (index: Int, distance: CGFloat)?
+        for (index, object) in objects.enumerated() where layerVisibility.contains(object.layer) {
+            guard let screen = Self.project(object.worldPosition, viewProjection: viewProjection, viewSize: viewSize) else { continue }
+            let d = hypot(point.x - screen.x, point.y - screen.y)
+            if d < 22, (best == nil || d < best!.distance) {
+                best = (index, d)
+            }
+        }
+        return best?.index
     }
 
     /// Standard screen-space axis-constrained drag: project the selected

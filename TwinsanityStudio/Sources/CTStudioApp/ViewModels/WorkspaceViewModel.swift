@@ -535,11 +535,56 @@ public final class WorkspaceViewModel: ObservableObject {
     /// walk, not cached, since it's only ever called once per "Open Level
     /// Viewer" click.
     public func instanceRecords(inSameFileAs levelNode: ChunkNode) -> [(node: ChunkNode, instance: PlacedInstance)] {
+        recordsInSameFile(as: levelNode) { payload in
+            if case .instance(let placed) = payload { return placed }
+            return nil
+        }.map { (node: $0.node, instance: $0.value) }
+    }
+
+    /// "Level Editor Overhaul": every `Trigger` record in the same file —
+    /// same shape as `instanceRecords`, feeding the "Trigger Volumes & Death
+    /// Planes" scene layer and the Level Events panel.
+    public func triggerRecords(inSameFileAs levelNode: ChunkNode) -> [(node: ChunkNode, trigger: TriggerVolume)] {
+        recordsInSameFile(as: levelNode) { payload in
+            if case .trigger(let trigger) = payload { return trigger }
+            return nil
+        }.map { (node: $0.node, trigger: $0.value) }
+    }
+
+    /// Every `Camera` record in the same file — feeds the "Camera Splines"
+    /// scene layer.
+    public func cameraRecords(inSameFileAs levelNode: ChunkNode) -> [(node: ChunkNode, camera: PlacedCamera)] {
+        recordsInSameFile(as: levelNode) { payload in
+            if case .camera(let camera) = payload { return camera }
+            return nil
+        }.map { (node: $0.node, camera: $0.value) }
+    }
+
+    /// Every decoded `SoundEffect` record in the same file — feeds the
+    /// Level Audio panel. Deliberately presented as exactly that ("sound
+    /// effects in this file"), not "BGM"/"ambient bank": `SoundEffectAsset`
+    /// carries no category field distinguishing those, and this format
+    /// doesn't record which chunk a level's music/ambience actually comes
+    /// from, so claiming that distinction would be inventing data this
+    /// build doesn't have.
+    public func soundEffectRecords(inSameFileAs levelNode: ChunkNode) -> [(node: ChunkNode, sound: SoundEffectAsset)] {
+        recordsInSameFile(as: levelNode) { payload in
+            if case .soundEffect(let sound) = payload { return sound }
+            return nil
+        }.map { (node: $0.node, sound: $0.value) }
+    }
+
+    /// Shared tree walk behind `instanceRecords`/`triggerRecords`/
+    /// `cameraRecords`/`soundEffectRecords`: every node in the same file as
+    /// `levelNode` whose payload `extract` recognizes, paired with that
+    /// node. A live walk, not cached — each of these is only ever called
+    /// once per "Open Level Viewer" click.
+    private func recordsInSameFile<T>(as levelNode: ChunkNode, extract: (ChunkPayload?) -> T?) -> [(node: ChunkNode, value: T)] {
         guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes) else { return [] }
-        var results: [(node: ChunkNode, instance: PlacedInstance)] = []
+        var results: [(node: ChunkNode, value: T)] = []
         func walk(_ node: ChunkNode) {
-            if case .instance(let placed) = node.payload {
-                results.append((node, placed))
+            if let value = extract(node.payload) {
+                results.append((node, value))
             }
             for child in node.children { walk(child) }
         }
@@ -884,17 +929,24 @@ public final class WorkspaceViewModel: ObservableObject {
         }.value
     }
 
-    /// "Visual Levels Hub" / "Direct .RM2 Write-Back": the one call both the
-    /// Levels Hub gallery and the Scenery inspector's "Open Level Viewer"
-    /// button make — resolves the scenery placements (see
-    /// `resolvedLevelPlacements`), gathers every `Instance` record from the
-    /// same file for the marker layer, and opens the Level Viewer with
-    /// both. Kept in one place so the two entry points can't drift into
-    /// gathering different data for what's supposed to be the same view.
+    /// "Visual Levels Hub" / "Direct .RM2 Write-Back" / "Level Editor
+    /// Overhaul": the one call every entry point into the Level Viewer
+    /// makes — resolves the scenery placements (see
+    /// `resolvedLevelPlacements`) and gathers every Instance/Trigger/
+    /// Camera/SoundEffect record from the same file for the scene-layer
+    /// markers, audio panel, and events panel. Kept in one place so no
+    /// entry point can drift into gathering different data for what's
+    /// supposed to be the same view.
     public func openLevelViewer(for scenery: SceneryAsset, node: ChunkNode) async {
         let placements = await resolvedLevelPlacements(for: scenery, node: node)
-        let markers = instanceRecords(inSameFileAs: node)
-        levelViewerContext = LevelViewerContext(scenery: scenery, placements: placements, instanceMarkers: markers)
+        levelViewerContext = LevelViewerContext(
+            scenery: scenery,
+            placements: placements,
+            instanceMarkers: instanceRecords(inSameFileAs: node),
+            triggers: triggerRecords(inSameFileAs: node),
+            cameras: cameraRecords(inSameFileAs: node),
+            sounds: soundEffectRecords(inSameFileAs: node)
+        )
     }
 
     /// "Deep Hierarchy & Linked Asset Resolution": the parent composite
