@@ -10,6 +10,14 @@ protocol OrbitCameraRenderer: AnyObject, MTKViewDelegate {
     var yaw: Float { get set }
     var pitch: Float { get set }
     var distanceMultiplier: Float { get set }
+    /// "F to Focus/Frame" (QoL sweep): resets the orbit angle/distance to a
+    /// sensible default. A plain reset, not a per-object fitted bounding
+    /// calculation — `LevelViewerRenderer` gets the "orbit around whatever's
+    /// selected" part of "focus on selection" for free from its own
+    /// `orbitTarget` (see that type), since the look-at point already
+    /// follows the current selection; this just un-sticks a wildly zoomed
+    /// in/out or spun-around camera back to a readable framing.
+    func resetView()
 }
 
 extension ModelViewerRenderer: OrbitCameraRenderer {}
@@ -20,11 +28,59 @@ extension LevelViewerRenderer: OrbitCameraRenderer {}
 /// the renderer, this just forwards deltas to it.
 final class InteractiveMTKView: MTKView {
     var renderer: OrbitCameraRenderer?
+    /// Fired once when a gizmo-arrow drag ends — lets the SwiftUI side
+    /// (whose coordinate nudge fields have no other way to observe a plain,
+    /// non-`ObservableObject` renderer mutated straight from AppKit mouse
+    /// events) resync its display *after* the drag, rather than needing
+    /// per-pixel observation of a hot interactive loop.
+    var onGizmoDragEnded: (() -> Void)?
+    /// Fired once when a gizmo-arrow drag *starts* — lets the SwiftUI side
+    /// snapshot the pre-drag position for an Undo step covering the whole
+    /// gesture (see `LevelViewerWindow`), rather than one Undo step per
+    /// mouse-moved event.
+    var onGizmoDragStarted: (() -> Void)?
+
+    /// Non-nil for the duration of a drag that grabbed a gizmo arrow on
+    /// `mouseDown` — while set, `mouseDragged` moves the selected object
+    /// along that axis instead of orbiting the camera.
+    private var draggingGizmoAxis: GizmoAxis?
 
     override var acceptsFirstResponder: Bool { true }
 
+    override func mouseDown(with event: NSEvent) {
+        draggingGizmoAxis = nil
+        guard let gizmoRenderer = renderer as? GizmoInteractiveRenderer else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        draggingGizmoAxis = gizmoRenderer.gizmoAxis(at: point, viewSize: bounds.size)
+        if draggingGizmoAxis != nil { onGizmoDragStarted?() }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let wasDragging = draggingGizmoAxis != nil
+        draggingGizmoAxis = nil
+        if wasDragging { onGizmoDragEnded?() }
+    }
+
+    /// "F to Focus/Frame" (QoL sweep) — the one keyboard shortcut from the
+    /// original wishlist that maps onto something this build actually has
+    /// (a translate-only gizmo, no rotate/scale modes to switch between
+    /// with W/E/R, so those aren't wired to anything).
+    override func keyDown(with event: NSEvent) {
+        guard event.charactersIgnoringModifiers?.lowercased() == "f" else {
+            super.keyDown(with: event)
+            return
+        }
+        renderer?.resetView()
+        needsDisplay = true
+    }
+
     override func mouseDragged(with event: NSEvent) {
         guard let renderer else { return }
+        if let axis = draggingGizmoAxis, let gizmoRenderer = renderer as? GizmoInteractiveRenderer {
+            gizmoRenderer.dragSelectedObject(axis: axis, viewportDelta: CGVector(dx: event.deltaX, dy: event.deltaY), viewSize: bounds.size)
+            needsDisplay = true
+            return
+        }
         renderer.yaw += Float(event.deltaX) * 0.01
         renderer.pitch = max(-1.5, min(1.5, renderer.pitch + Float(event.deltaY) * 0.01))
         needsDisplay = true
@@ -40,10 +96,14 @@ final class InteractiveMTKView: MTKView {
 
 struct MetalModelView: NSViewRepresentable {
     let renderer: OrbitCameraRenderer
+    var onGizmoDragEnded: (() -> Void)?
+    var onGizmoDragStarted: (() -> Void)?
 
     func makeNSView(context: Context) -> InteractiveMTKView {
         let view = InteractiveMTKView(frame: .zero, device: renderer.device)
         view.renderer = renderer
+        view.onGizmoDragEnded = onGizmoDragEnded
+        view.onGizmoDragStarted = onGizmoDragStarted
         view.delegate = renderer
         view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float
@@ -76,5 +136,7 @@ struct MetalModelView: NSViewRepresentable {
             nsView.renderer = renderer
             nsView.delegate = renderer
         }
+        nsView.onGizmoDragEnded = onGizmoDragEnded
+        nsView.onGizmoDragStarted = onGizmoDragStarted
     }
 }

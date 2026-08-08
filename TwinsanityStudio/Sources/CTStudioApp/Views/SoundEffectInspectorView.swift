@@ -141,16 +141,30 @@ struct SoundEffectInspectorView: View {
             return
         }
         let wav = WAVEncoder.encode(pcm: sound.pcmSamples, sampleRateHz: sound.sampleRateHz)
-        guard let newPlayer = try? AVAudioPlayer(data: wav) else {
-            workspace.lastError = "Couldn't create an audio player for this sound."
+        print("DIAG: Audio selected \"\(node.displayName)\" — \(sound.pcmSamples.count) samples @ \(sound.sampleRateHz) Hz, \(wav.count) byte WAV container")
+        let newPlayer: AVAudioPlayer
+        do {
+            // `try?` here used to swallow the real reason construction
+            // failed (unsupported format, corrupt container, ...) — surface
+            // it for real instead of a generic "couldn't create a player."
+            newPlayer = try AVAudioPlayer(data: wav)
+        } catch {
+            print("DIAG: AVAudioPlayer(data:) threw: \(error)")
+            workspace.lastError = "Couldn't create an audio player for this sound: \(error.localizedDescription)"
             return
         }
+        print("DIAG: Audio buffer loaded — format=\(newPlayer.format), duration=\(newPlayer.duration)s, channels=\(newPlayer.numberOfChannels)")
         let delegate = PlaybackEndDelegate { isPlaying = false }
         newPlayer.delegate = delegate
         playerDelegate = delegate
         player = newPlayer
-        newPlayer.play()
-        isPlaying = true
+        newPlayer.prepareToPlay()
+        let started = newPlayer.play()
+        print("DIAG: Audio play command sent — accepted=\(started)")
+        if !started {
+            workspace.lastError = "AVAudioPlayer.play() returned false — playback didn't start (check system output device/volume)."
+        }
+        isPlaying = started
     }
 
     private func exportWAV() {

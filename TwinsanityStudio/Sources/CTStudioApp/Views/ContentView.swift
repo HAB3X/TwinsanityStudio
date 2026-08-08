@@ -5,16 +5,21 @@ struct ContentView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var isTargetedForDrop = false
+    @State private var isConsoleExpanded = false
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView()
-                .navigationSplitViewColumnWidth(min: 260, ideal: 320)
-        } content: {
-            InspectorView(node: workspace.selectedNode)
-                .navigationSplitViewColumnWidth(min: 360, ideal: 480)
-        } detail: {
-            ViewportPanel(node: workspace.selectedNode)
+        VStack(spacing: 0) {
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                SidebarView()
+                    .navigationSplitViewColumnWidth(min: 260, ideal: 320)
+            } content: {
+                InspectorView(node: workspace.selectedNode)
+                    .navigationSplitViewColumnWidth(min: 360, ideal: 480)
+            } detail: {
+                ViewportPanel(node: workspace.selectedNode)
+            }
+            Divider()
+            EngineConsoleView(isExpanded: $isConsoleExpanded)
         }
         .navigationTitle("Twinsanity Studio")
         .toolbar {
@@ -23,6 +28,11 @@ struct ContentView: View {
                     presentOpenPanel()
                 } label: {
                     Label("Open…", systemImage: "folder.badge.plus")
+                }
+                Button {
+                    presentMemoryCardOpenPanel()
+                } label: {
+                    Label("Open Memory Card…", systemImage: "externaldrive")
                 }
                 Button {
                     workspace.isModelsHubPresented = true
@@ -42,6 +52,11 @@ struct ContentView: View {
                     Label("Asset Diff", systemImage: "rectangle.on.rectangle")
                 }
                 .disabled(workspace.modelsHub.count < 2)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { isConsoleExpanded.toggle() }
+                } label: {
+                    Label("Console", systemImage: "terminal")
+                }
                 if workspace.isLoading || workspace.isScanning {
                     ProgressView().controlSize(.small)
                 }
@@ -111,11 +126,33 @@ struct ContentView: View {
             AssetDiffView()
                 .environmentObject(workspace)
         }
+        .sheet(item: $workspace.hexViewerNode) { node in
+            if let bytes = workspace.rawBytes(for: node) {
+                HexViewerWindow(node: node, originalBytes: bytes)
+                    .environmentObject(workspace)
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { workspace.memoryCardAsset != nil },
+            set: { if !$0 { workspace.memoryCardAsset = nil } }
+        )) {
+            if let asset = workspace.memoryCardAsset {
+                MemoryCardInspectorWindow(asset: asset)
+                    .environmentObject(workspace)
+            }
+        }
         .onDrop(of: [.fileURL], isTargeted: $isTargetedForDrop) { providers in
             handleDrop(providers: providers)
         }
         .onReceive(NotificationCenter.default.publisher(for: .ctStudioOpenRequested)) { _ in
             presentOpenPanel()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ctStudioCommandPaletteRequested)) { _ in
+            workspace.isCommandPalettePresented = true
+        }
+        .sheet(isPresented: $workspace.isCommandPalettePresented) {
+            CommandPaletteView()
+                .environmentObject(workspace)
         }
     }
 
@@ -147,6 +184,17 @@ struct ContentView: View {
         panel.message = "Choose a .BH archive, .RM2/.SM2 file, or a folder to scan."
         if panel.runModal() == .OK {
             workspace.open(urls: panel.urls)
+        }
+    }
+
+    private func presentMemoryCardOpenPanel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.message = "Choose a PS2 memory card image (.mcr/.ps2/.mc2)."
+        if panel.runModal() == .OK, let url = panel.urls.first {
+            workspace.openMemoryCard(url: url)
         }
     }
 }

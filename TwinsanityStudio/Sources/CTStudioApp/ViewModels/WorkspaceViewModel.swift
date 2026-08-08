@@ -4,6 +4,21 @@ import CTModels
 import CTParsers
 import CTExport
 
+/// One line in the Engine Console (blueprint 7.5) — a real status/error
+/// event this session actually produced, timestamped when it happened.
+public struct EngineLogEntry: Identifiable, Sendable {
+    public let id = UUID()
+    public let timestamp: Date
+    public let message: String
+    public let isError: Bool
+
+    public init(timestamp: Date = Date(), message: String, isError: Bool) {
+        self.timestamp = timestamp
+        self.message = message
+        self.isError = isError
+    }
+}
+
 /// Drives the whole workspace: what's open, the search filter, the current
 /// selection, and drag-drop ingestion. One instance is shared by the whole
 /// app (`ContentView` owns it as a `@StateObject`).
@@ -15,10 +30,54 @@ public final class WorkspaceViewModel: ObservableObject {
     /// `Animation` in the workspace, regardless of which file it's buried in.
     @Published public var typeFilter: ChunkPayload.Kind?
     @Published public var selectedNode: ChunkNode?
-    @Published public var statusMessage: String = "Drop a .BH/.BD archive, .RM2/.SM2 file, or a folder to begin."
+    /// "Real-Time Engine Console" (blueprint 7.5): every non-empty value
+    /// this property (and `lastError` below) ever takes is also appended to
+    /// `engineLog` — one `didSet` here instead of touching every one of the
+    /// ~20 call sites that already set `statusMessage` throughout this file,
+    /// so the console always shows exactly the same real events the status
+    /// banner does, nothing invented. Note this deliberately does *not*
+    /// attempt "translating raw hex crash addresses into plain-language
+    /// explanations" from the original blueprint wording — that needs a
+    /// crash/symbolication pipeline this app has no source for; the console
+    /// is a real event log, not a fabricated one.
+    @Published public var statusMessage: String = "Drop a .BH/.BD archive, .RM2/.SM2 file, or a folder to begin." {
+        didSet { if !statusMessage.isEmpty { engineLog.append(EngineLogEntry(message: statusMessage, isError: false)) } }
+    }
     @Published public var isLoading = false
     @Published public var isScanning = false
-    @Published public var lastError: String?
+    @Published public var lastError: String? {
+        didSet { if let lastError { engineLog.append(EngineLogEntry(message: lastError, isError: true)) } }
+    }
+    /// Rolling log backing the Engine Console drawer. Unbounded growth isn't
+    /// a real concern for a desktop inspection session (thousands of
+    /// entries is still a trivially small array of small structs), so this
+    /// doesn't truncate.
+    @Published public private(set) var engineLog: [EngineLogEntry] = []
+
+    public func clearEngineLog() {
+        engineLog.removeAll()
+    }
+
+    // MARK: - Memory Card Inspector (blueprint 7.3)
+
+    /// Non-nil presents the Memory Card Inspector sheet (see `ContentView`).
+    @Published public var memoryCardAsset: MemoryCardAsset?
+
+    /// "Global Command/Search Bar" (⌘K) — see `ContentView`'s `.commands`.
+    @Published public var isCommandPalettePresented = false
+
+    /// A completely separate document type from the `.BD`/`.RM2` workspace
+    /// tree above — a PS2 memory card image has nothing to do with
+    /// Twinsanity's own formats, so this doesn't touch `rootNodes` at all.
+    public func openMemoryCard(url: URL) {
+        do {
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            memoryCardAsset = try MemoryCardParser.parse(data: data)
+            statusMessage = "Loaded memory card \(url.lastPathComponent)."
+        } catch {
+            lastError = "Couldn't read \(url.lastPathComponent) as a PS2 memory card: \(error)"
+        }
+    }
     /// Non-nil presents the Model Viewer sheet (see `ContentView`).
     @Published public var modelViewerAsset: ResolvedModelAsset?
     /// Non-nil presents the Collision Viewer sheet (see `ContentView`).
@@ -121,7 +180,18 @@ public final class WorkspaceViewModel: ObservableObject {
                 scanAllArchives()
 
             case .levelResource, .sceneryResource:
-                let data = try Data(contentsOf: file.url)
+                // "Memory-Mapped Hex Engine" (blueprint 5.2): `.mappedIfSafe`
+                // asks Foundation to `mmap` the file instead of reading it
+                // fully into the heap up front — a real, meaningful choice
+                // for a full level file (potentially many MB) whose bytes
+                // are about to be walked into a `ChunkNode` tree, most of
+                // which the user will never look at. Mutating this `Data`
+                // later (`patchedFileBytes`'s `replaceSubrange`) still works
+                // correctly — Foundation copy-on-writes a mapped buffer into
+                // a private heap copy the moment it's actually mutated, so
+                // the on-disk file is never touched by editing this in-memory
+                // copy.
+                let data = try Data(contentsOf: file.url, options: .mappedIfSafe)
                 let node = try RM2Parser.parse(data: data, fileKind: fileKind(for: file), fileName: file.url.lastPathComponent)
                 rawFileBytesByRootID[node.id] = data
                 rootNodes.append(node)
@@ -437,6 +507,41 @@ public final class WorkspaceViewModel: ObservableObject {
     /// actually knows for the file.
     public func originalFileName(for node: ChunkNode) -> String? {
         findFileRoot(containing: node, in: rootNodes)?.displayName
+    }
+
+    /// "Memory-Mapped Hex Engine" (blueprint 5.2): the exact on-disk bytes
+    /// backing `node`, for the raw hex viewer/editor. Same standalone-file
+    /// scope as `canSaveEdits`/`patchedFileBytes` — an archive-packed
+    /// entry's bytes aren't held anywhere after `expandArchiveEntry`
+    /// discards them post-parse, only a standalone-opened file's full bytes
+    /// are kept around (`rawFileBytesByRootID`).
+    public func rawBytes(for node: ChunkNode) -> Data? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes),
+              let bytes = rawFileBytesByRootID[fileRoot.id],
+              node.fileOffset >= 0, node.byteSize >= 0,
+              node.fileOffset + node.byteSize <= bytes.count
+        else { return nil }
+        return bytes.subdata(in: node.fileOffset..<(node.fileOffset + node.byteSize))
+    }
+
+    /// Non-nil presents the Hex Viewer sheet (see `ContentView`).
+    @Published public var hexViewerNode: ChunkNode?
+
+    /// Saves a hex-edited byte range back the same way `PositionInspectorView`
+    /// saves a structured edit — patch a copy of the owning file's bytes,
+    /// prompt for where to write it, leave the originally-opened file alone.
+    /// `editedBytes.count` must equal `node.byteSize`; the hex editor UI
+    /// enforces this by construction (it edits a fixed-size buffer, no
+    /// insert/delete), matching `patchedFileBytes`'s own same-size
+    /// requirement.
+    public func saveHexEdit(node: ChunkNode, editedBytes: Data, to url: URL) {
+        guard let patched = patchedFileBytes(replacing: node, with: editedBytes) else { return }
+        do {
+            try patched.write(to: url)
+            statusMessage = "Saved edited copy to \(url.lastPathComponent). The original file was not modified."
+        } catch {
+            lastError = "Save failed: \(error)"
+        }
     }
 
     /// Patches `encoded` into a *copy* of the owning file's original bytes

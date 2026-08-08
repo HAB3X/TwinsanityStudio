@@ -113,6 +113,14 @@ struct ModelsHubView: View {
                         ModelsHubRow(model: model)
                     }
                     .buttonStyle(.plain)
+                    // "Drag-and-Drop Asset Palette" (blueprint 6.2): drags
+                    // the model's UUID, not the model itself — a
+                    // `ResolvedModelAsset` carries real GPU-scale mesh/
+                    // texture data, and `Transferable` serialization is the
+                    // wrong tool for handing that between two windows in
+                    // the same process. The Level Viewer's drop target
+                    // looks the UUID back up in `workspace.modelsHub`.
+                    .draggable(model.id.uuidString)
                 }
             }
             .listStyle(.plain)

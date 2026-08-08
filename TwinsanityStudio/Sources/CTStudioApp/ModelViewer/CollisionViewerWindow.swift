@@ -30,14 +30,19 @@ struct CollisionViewerWindow: View {
     private var viewportArea: some View {
         if let renderer {
             if renderer.hasCollisionWireframe {
+                // See `ModelViewerWindow`'s matching comment — an
+                // `NSViewRepresentable` `MTKView` has no intrinsic size and
+                // can collapse inside the surrounding `HStack` without this.
                 ZStack(alignment: .bottomLeading) {
                     MetalModelView(renderer: renderer)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     Text("Drag to orbit · Scroll to zoom")
                         .font(.caption)
                         .padding(6)
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6))
                         .padding(10)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ContentUnavailableView(
                     "No Collision Geometry",

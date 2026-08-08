@@ -20,12 +20,19 @@ struct CTStudioApp: App {
                 }
                 .keyboardShortcut("o", modifiers: [.command])
             }
+            CommandGroup(after: .textEditing) {
+                Button("Search Everything…") {
+                    NotificationCenter.default.post(name: .ctStudioCommandPaletteRequested, object: nil)
+                }
+                .keyboardShortcut("k", modifiers: [.command])
+            }
         }
     }
 }
 
 extension Notification.Name {
     static let ctStudioOpenRequested = Notification.Name("CTStudioOpenRequested")
+    static let ctStudioCommandPaletteRequested = Notification.Name("CTStudioCommandPaletteRequested")
 }
 
 /// Plain SPM executable targets (as opposed to a proper `.app` bundle

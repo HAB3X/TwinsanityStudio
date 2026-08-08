@@ -57,14 +57,24 @@ struct ModelViewerWindow: View {
     private var viewportArea: some View {
         if let renderer {
             if renderer.hasGeometry {
+                // `MetalModelView` wraps an `NSViewRepresentable` `MTKView`,
+                // which has no intrinsic content size SwiftUI can infer —
+                // inside an `HStack` next to a fixed-width sidebar, that can
+                // mean this column collapses to near-zero instead of filling
+                // the remaining space, which reads as "the viewport is
+                // blank" (it's not blank, it's just not there). Forcing both
+                // the `ZStack` and the view itself to expand removes that
+                // ambiguity regardless of window/split-view layout timing.
                 ZStack(alignment: .bottomLeading) {
                     MetalModelView(renderer: renderer)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     Text("Drag to orbit · Scroll to zoom")
                         .font(.caption)
                         .padding(6)
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6))
                         .padding(10)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // The asset resolved (mesh + material lookups all
                 // succeeded), but every submesh ended up with zero

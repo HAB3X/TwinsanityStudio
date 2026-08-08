@@ -146,6 +146,13 @@ private struct SidebarRow: View {
                     Label("Export as Group…", systemImage: "shippingbox")
                 }
             }
+            if node.byteSize > 0, workspace.rawBytes(for: node) != nil {
+                Button {
+                    workspace.hexViewerNode = node
+                } label: {
+                    Label("View Raw Bytes (Hex)…", systemImage: "number")
+                }
+            }
         }
     }
 
