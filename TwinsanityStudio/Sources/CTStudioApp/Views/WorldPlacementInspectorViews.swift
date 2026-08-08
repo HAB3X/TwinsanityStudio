@@ -1,5 +1,6 @@
 import SwiftUI
 import CTModels
+import CTParsers
 import simd
 
 /// Phase 3.4 property inspectors: plain-language `Form`s over the raw
@@ -8,14 +9,75 @@ import simd
 /// write-back/repackage path wired to the UI yet, so these mirror
 /// `MaterialInspectorView`/`TextureInspectorView` rather than promising
 /// in-place editing.
+/// "Editing GUI" proof of concept: the one record type in this build with
+/// a real write path all the way through (see `WorldPlacementWriter`,
+/// `WorkspaceViewModel.patchedFileBytes`). Every other inspector in this
+/// file stays read-only — this one specifically demonstrates decode -> edit
+/// -> encode -> patch -> save, not "editing everywhere now."
 struct PositionInspectorView: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    let node: ChunkNode
     let position: PositionMarker
+
+    @State private var x: String = ""
+    @State private var y: String = ""
+    @State private var z: String = ""
+    @State private var w: String = ""
 
     var body: some View {
         Form {
-            LabeledContent("Point", value: vectorString(position.point))
+            Section("Point") {
+                LabeledContent("X") { TextField("X", text: $x).textFieldStyle(.roundedBorder) }
+                LabeledContent("Y") { TextField("Y", text: $y).textFieldStyle(.roundedBorder) }
+                LabeledContent("Z") { TextField("Z", text: $z).textFieldStyle(.roundedBorder) }
+                LabeledContent("W") { TextField("W", text: $w).textFieldStyle(.roundedBorder) }
+            }
         }
         .formStyle(.grouped)
+        .onAppear { loadFields() }
+        .onChange(of: node.id) { _, _ in loadFields() }
+
+        HStack {
+            Button("Save Edited Copy…") { save() }
+                .disabled(editedPoint == nil || !workspace.canSaveEdits(for: node))
+            Spacer()
+        }
+
+        if !workspace.canSaveEdits(for: node) {
+            Text("Editing only saves for a standalone-opened .RM2/.SM2 file — this record's file is archive-packed, which this build doesn't have a write path for yet.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        } else {
+            Text("Saves an edited copy under a new name — the file you opened is never modified in place.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func loadFields() {
+        x = String(position.point.x)
+        y = String(position.point.y)
+        z = String(position.point.z)
+        w = String(position.point.w)
+    }
+
+    private var editedPoint: SIMD4<Float>? {
+        guard let fx = Float(x), let fy = Float(y), let fz = Float(z), let fw = Float(w) else { return nil }
+        return SIMD4(fx, fy, fz, fw)
+    }
+
+    private func save() {
+        guard let point = editedPoint else { return }
+        let edited = PositionMarker(id: position.id, point: point)
+        let encoded = WorldPlacementWriter.writePosition(edited)
+        guard let patchedBytes = workspace.patchedFileBytes(replacing: node, with: encoded) else { return }
+        guard let url = ExportPanel.chooseSaveLocation(suggestedName: "\(node.displayName)_edited.rm2", message: "Save the edited copy of this file. The original file on disk is not modified.") else { return }
+        do {
+            try patchedBytes.write(to: url)
+            workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent). The original file was not modified."
+        } catch {
+            workspace.lastError = "Save failed: \(error)"
+        }
     }
 }
 

@@ -70,6 +70,14 @@ struct ContentView: View {
                     }
                 }
         }
+        .sheet(item: $workspace.levelViewerContext) { context in
+            LevelViewerWindow(context: context)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") { workspace.levelViewerContext = nil }
+                    }
+                }
+        }
         .sheet(isPresented: $workspace.isModelsHubPresented) {
             ModelsHubView()
                 .environmentObject(workspace)

@@ -167,6 +167,9 @@ private struct SidebarRow: View {
         case .trigger: return "square.dashed"
         case .camera: return "video.fill"
         case .collision: return "square.grid.3x1.below.line.grid.1x2"
+        case .scenery: return "map"
+        case .dynamicScenery: return "arrow.triangle.2.circlepath"
+        case .soundEffect: return "speaker.wave.2"
         case .raw, .none: return node.children.isEmpty ? "doc" : "folder"
         }
     }
@@ -184,6 +187,9 @@ private struct SidebarRow: View {
         case .trigger: return .red
         case .camera: return .yellow
         case .collision: return .cyan
+        case .scenery: return .green
+        case .dynamicScenery: return .mint
+        case .soundEffect: return .pink
         case .raw, .none: return .secondary
         }
     }
@@ -201,7 +207,7 @@ extension ChunkNode {
     /// undecoded Object/Script/Trigger/Position records to find it.
     private var displaySortRank: Int {
         switch payload {
-        case .texture, .mesh, .rigidModel, .skeleton, .animation, .instance, .trigger, .camera, .collision: return 0
+        case .texture, .mesh, .rigidModel, .skeleton, .animation, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect: return 0
         case .material, .position: return 1
         case .none: return children.isEmpty ? 3 : 2
         case .raw: return 3

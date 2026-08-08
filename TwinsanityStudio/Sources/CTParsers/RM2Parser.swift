@@ -97,22 +97,34 @@ public enum RM2Parser {
         case .rawLeaf(let name):
             let byteSize = max(0, Int(entry.size))
             let displayName = "\(name) #\(entry.id)"
-            if name == "ColData", absoluteOffset >= 0, absoluteOffset + byteSize <= data.count {
-                let colData = data.subdata(in: (data.startIndex + absoluteOffset)..<(data.startIndex + absoluteOffset + byteSize))
-                var colCursor = BinaryCursor(data: colData)
-                if let mesh = try? ColDataParser.parse(&colCursor, recordID: entry.id, size: byteSize) {
-                    return ChunkNode(
-                        recordID: entry.id, sectionType: .null, displayName: displayName,
-                        byteSize: byteSize, fileOffset: absoluteOffset,
-                        payload: .collision(mesh)
-                    )
-                }
-            }
+            let payload = decodeTopLevelRawLeaf(name: name, data: data, absoluteOffset: absoluteOffset, byteSize: byteSize, recordID: entry.id)
+                ?? .raw(byteCount: byteSize)
             return ChunkNode(
                 recordID: entry.id, sectionType: .null, displayName: displayName,
-                byteSize: byteSize, fileOffset: absoluteOffset,
-                payload: .raw(byteCount: byteSize)
+                byteSize: byteSize, fileOffset: absoluteOffset, payload: payload
             )
+        }
+    }
+
+    /// A handful of top-level (tier 0) "raw leaf" entries (see
+    /// `tier0Kind`) aren't actually opaque — `ColData`, `SceneryData`, and
+    /// `DynamicSceneryData` each have a fully-specified format of their
+    /// own, just not one that fits the chunk-headered section machinery
+    /// every other record goes through. `nil` (falling back to `.raw`)
+    /// covers both "this name isn't one of those" and "decoding failed."
+    private static func decodeTopLevelRawLeaf(name: String, data: Data, absoluteOffset: Int, byteSize: Int, recordID: UInt32) -> ChunkPayload? {
+        guard absoluteOffset >= 0, absoluteOffset + byteSize <= data.count else { return nil }
+        let leafData = data.subdata(in: (data.startIndex + absoluteOffset)..<(data.startIndex + absoluteOffset + byteSize))
+        var cursor = BinaryCursor(data: leafData)
+        switch name {
+        case "ColData":
+            return (try? ColDataParser.parse(&cursor, recordID: recordID, size: byteSize)).map(ChunkPayload.collision)
+        case "SceneryData":
+            return (try? SceneryDataParser.parse(&cursor, recordID: recordID)).map(ChunkPayload.scenery)
+        case "DynamicSceneryData":
+            return (try? DynamicSceneryDataParser.parse(&cursor, recordID: recordID)).map(ChunkPayload.dynamicScenery)
+        default:
+            return nil
         }
     }
 
@@ -185,6 +197,16 @@ public enum RM2Parser {
 
         let node = ChunkNode(recordID: recordID, sectionType: sectionType, displayName: "\(sectionType.rawValue) #\(recordID)", byteSize: size, fileOffset: absoluteOffset)
 
+        // `SoundEffect` records under a `.se`-family collection store their
+        // actual audio bytes not in their own record, but in this
+        // *enclosing section's* trailing "extra data" — everything past
+        // the last indexed sub-item (ported from `TwinsSection.Load`'s own
+        // `extra_begin`/`ExtraData` handling). Computed once per section,
+        // not per record.
+        let soundExtraData: Data? = soundEffectSectionTypes.contains(sectionType)
+            ? extractSectionExtraData(data: data, header: header, absoluteOffset: absoluteOffset, size: size)
+            : nil
+
         for entry in header.entries {
             let childLocalOffset = header.indexStartPosition + Int(entry.offset)
             let childAbsoluteOffset = absoluteOffset + childLocalOffset
@@ -198,12 +220,46 @@ public enum RM2Parser {
                 // Sub-ID didn't match a known child type under this container:
                 // keep it browsable as a raw leaf rather than dropping it.
                 node.children.append(ChunkNode(recordID: entry.id, sectionType: .unknown, displayName: "Unknown #\(entry.id)", byteSize: childSize, fileOffset: childAbsoluteOffset, payload: .raw(byteCount: childSize)))
+            } else if let soundExtraData {
+                node.children.append(buildSoundEffectLeafNode(data: data, extraData: soundExtraData, sectionType: sectionType, absoluteOffset: childAbsoluteOffset, size: childSize, recordID: entry.id))
             } else {
                 // Tier 2 collection: every child is a leaf record of `sectionType`.
                 node.children.append(buildLeafNode(data: data, sectionType: sectionType, absoluteOffset: childAbsoluteOffset, size: childSize, recordID: entry.id))
             }
         }
         return node
+    }
+
+    /// PS2 `.se`-family sound-bank sections only — `.xboxSE*`/`.mbSE` use a
+    /// different, unverified record layout (`SoundEffectX.cs`/
+    /// `SoundEffectMB.cs` in the reference tool), so they're deliberately
+    /// left undecoded rather than guessed at.
+    private static let soundEffectSectionTypes: Set<SectionType> = [.se, .seEng, .seFre, .seGer, .seSpa, .seIta, .seJpn]
+
+    /// Ported from `TwinsSection.Load`'s `extra_begin`/`ExtraData`
+    /// computation: the section's bytes from just past the furthest
+    /// (offset + size) of any indexed sub-item, to the section's own end.
+    private static func extractSectionExtraData(data: Data, header: ChunkHeader, absoluteOffset: Int, size: Int) -> Data? {
+        let extraBeginLocal = max(12, header.entries.map { Int($0.offset) + max(0, Int($0.size)) }.max() ?? 12)
+        let start = absoluteOffset + extraBeginLocal
+        let length = size - extraBeginLocal
+        guard length > 0, start >= 0, start + length <= data.count else { return nil }
+        return data.subdata(in: (data.startIndex + start)..<(data.startIndex + start + length))
+    }
+
+    private static func buildSoundEffectLeafNode(data: Data, extraData: Data, sectionType: SectionType, absoluteOffset: Int, size: Int, recordID: UInt32) -> ChunkNode {
+        let displayName = "\(sectionType.rawValue) #\(recordID)"
+        guard absoluteOffset >= 0, size >= 0, absoluteOffset + size <= data.count else {
+            return ChunkNode(recordID: recordID, sectionType: sectionType, displayName: displayName, byteSize: max(0, size), fileOffset: absoluteOffset, payload: .raw(byteCount: max(0, size)))
+        }
+        let leafData = data.subdata(in: (data.startIndex + absoluteOffset)..<(data.startIndex + absoluteOffset + size))
+        var cursor = BinaryCursor(data: leafData)
+        guard let record = try? SoundEffectParser.parseHeader(&cursor, recordID: recordID),
+              let asset = SoundEffectParser.resolve(record, extraData: extraData)
+        else {
+            return ChunkNode(recordID: recordID, sectionType: sectionType, displayName: displayName, byteSize: size, fileOffset: absoluteOffset, payload: .raw(byteCount: size))
+        }
+        return ChunkNode(recordID: recordID, sectionType: sectionType, displayName: displayName, byteSize: size, fileOffset: absoluteOffset, payload: .soundEffect(asset))
     }
 
     // MARK: - Tier 2 leaves

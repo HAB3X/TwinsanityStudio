@@ -1,0 +1,163 @@
+import Foundation
+import simd
+
+/// One placed scenery model, ported from the reference tool's
+/// `SceneryData.ScenerySubModel` (`Twinsanity/Items/SceneryData.cs`).
+/// `modelMatrix` is empty when its enclosing `SceneryModelGroup.header`
+/// wasn't `0x1613` (the reference tool only reads matrices/IDs under that
+/// header — see `LoadSceneryModel`).
+public struct SceneryModelPlacement: Sendable {
+    public var modelID: UInt32
+    public var isSpecial: Bool
+    public var boundingBoxMin: SIMD4<Float>
+    public var boundingBoxMax: SIMD4<Float>
+    /// 4 rows — a full affine transform for this placement.
+    public var modelMatrix: [SIMD4<Float>]
+
+    public init(modelID: UInt32, isSpecial: Bool, boundingBoxMin: SIMD4<Float>, boundingBoxMax: SIMD4<Float>, modelMatrix: [SIMD4<Float>]) {
+        self.modelID = modelID
+        self.isSpecial = isSpecial
+        self.boundingBoxMin = boundingBoxMin
+        self.boundingBoxMax = boundingBoxMax
+        self.modelMatrix = modelMatrix
+    }
+
+    /// Row 3 of the matrix is the translation column in every other 4-row
+    /// transform this codebase decodes (`Joint.matrix`, `SkinTransform`) —
+    /// used for a first-pass "where is this roughly" placement position
+    /// without needing full matrix math wired through the renderer yet.
+    public var translation: SIMD3<Float>? {
+        guard modelMatrix.count > 3 else { return nil }
+        let v = modelMatrix[3]
+        return SIMD3(v.x, v.y, v.z)
+    }
+}
+
+/// A `SceneryModelStruct` — a group of placements sharing one header/type
+/// tag, plus the group's own bounding info.
+public struct SceneryModelGroup: Sendable {
+    public var header: UInt32
+    public var placements: [SceneryModelPlacement]
+
+    public init(header: UInt32, placements: [SceneryModelPlacement]) {
+        self.header = header
+        self.placements = placements
+    }
+}
+
+/// A node in the recursive scenery placement tree (`SceneryStruct`) — up to
+/// 8 child links, each either a nested group, a leaf model group, or empty,
+/// selected by a type tag read just ahead of the link contents
+/// (`LoadScenery`: `0x1600` = nested group, `0x1605` = leaf model group,
+/// anything else = empty).
+public indirect enum SceneryLink: Sendable {
+    case group(SceneryGroup)
+    case modelGroup(SceneryModelGroup)
+    case empty
+}
+
+public struct SceneryGroup: Sendable {
+    public var model: SceneryModelGroup
+    public var links: [SceneryLink]
+
+    public init(model: SceneryModelGroup, links: [SceneryLink]) {
+        self.model = model
+        self.links = links
+    }
+
+    /// Flattens the whole recursive tree into every placement with an
+    /// actual transform — what a level-assembly viewport actually needs to
+    /// draw, without the caller having to walk the tree itself.
+    public func flattenedPlacements() -> [SceneryModelPlacement] {
+        var result = model.placements
+        for link in links {
+            switch link {
+            case .group(let child): result.append(contentsOf: child.flattenedPlacements())
+            case .modelGroup(let group): result.append(contentsOf: group.placements)
+            case .empty: break
+            }
+        }
+        return result
+    }
+}
+
+/// A single light entry — every one of `SceneryData`'s 4 light kinds
+/// (`LightAmbient`/`LightDirectional`/`LightPoint`/`LightNegative`) shares
+/// this common shape; the reference tool's extra per-kind fields (facing
+/// vectors, falloff shorts) aren't modeled here since nothing in this pass
+/// renders lighting from level data yet — position/radius/color is enough
+/// to place a marker in a future level viewport.
+public struct SceneryLight: Sendable {
+    public var radius: Float
+    public var color: SIMD3<Float>
+    public var position: SIMD4<Float>
+
+    public init(radius: Float, color: SIMD3<Float>, position: SIMD4<Float>) {
+        self.radius = radius
+        self.color = color
+        self.position = position
+    }
+}
+
+/// A decoded `SceneryData` record (`Twinsanity/Items/SceneryData.cs`) — a
+/// whole level's static scenery placement tree, plus its ambient/
+/// directional/point/negative lights.
+public struct SceneryAsset: Sendable, Identifiable {
+    public let id: UInt32
+    public var chunkName: String
+    public var skydomeID: UInt32?
+    public var ambientLights: [SceneryLight]
+    public var directionalLights: [SceneryLight]
+    public var pointLights: [SceneryLight]
+    public var negativeLights: [SceneryLight]
+    /// `nil` when this record's `HeaderUnk3 != 0x160A` — the reference
+    /// tool leaves the whole tree unset in that case too.
+    public var root: SceneryGroup?
+
+    public init(id: UInt32, chunkName: String, skydomeID: UInt32?, ambientLights: [SceneryLight], directionalLights: [SceneryLight], pointLights: [SceneryLight], negativeLights: [SceneryLight], root: SceneryGroup?) {
+        self.id = id
+        self.chunkName = chunkName
+        self.skydomeID = skydomeID
+        self.ambientLights = ambientLights
+        self.directionalLights = directionalLights
+        self.pointLights = pointLights
+        self.negativeLights = negativeLights
+        self.root = root
+    }
+
+    public var placements: [SceneryModelPlacement] { root?.flattenedPlacements() ?? [] }
+}
+
+/// One `DynamicSceneryData` entry (`Twinsanity/Items/DynamicSceneryData.cs`)
+/// — a movable/animated scenery piece (elevators, rotating platforms, ...).
+/// Only its *resting* placement is exposed: `worldPosition`/
+/// `worldRotation` are the reference tool's own reconciliation of "static
+/// value if this channel doesn't animate, else the first keyframe" — full
+/// per-frame motion curves aren't modeled, since nothing renders scenery
+/// animation yet (see `DynamicSceneryDataParser` for exactly what's parsed
+/// vs. discarded to reach this).
+public struct DynamicSceneryPlacement: Sendable {
+    public var modelID: UInt32
+    public var boundingBoxMin: SIMD4<Float>
+    public var boundingBoxMax: SIMD4<Float>
+    public var worldPosition: SIMD3<Float>
+    public var worldRotation: SIMD4<Float>
+
+    public init(modelID: UInt32, boundingBoxMin: SIMD4<Float>, boundingBoxMax: SIMD4<Float>, worldPosition: SIMD3<Float>, worldRotation: SIMD4<Float>) {
+        self.modelID = modelID
+        self.boundingBoxMin = boundingBoxMin
+        self.boundingBoxMax = boundingBoxMax
+        self.worldPosition = worldPosition
+        self.worldRotation = worldRotation
+    }
+}
+
+public struct DynamicSceneryAsset: Sendable, Identifiable {
+    public let id: UInt32
+    public var placements: [DynamicSceneryPlacement]
+
+    public init(id: UInt32, placements: [DynamicSceneryPlacement]) {
+        self.id = id
+        self.placements = placements
+    }
+}

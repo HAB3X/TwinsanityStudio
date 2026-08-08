@@ -23,6 +23,8 @@ public final class WorkspaceViewModel: ObservableObject {
     @Published public var modelViewerAsset: ResolvedModelAsset?
     /// Non-nil presents the Collision Viewer sheet (see `ContentView`).
     @Published public var collisionViewerMesh: CollisionMesh?
+    /// Non-nil presents the Level Viewer sheet (see `ContentView`).
+    @Published public var levelViewerContext: LevelViewerContext?
     /// Every RigidModel/Skeleton successfully resolved (mesh + textures, and
     /// skeleton + animations where rigged) across every scanned file —
     /// populated automatically as archives are scanned, so browsing models
@@ -37,6 +39,12 @@ public final class WorkspaceViewModel: ObservableObject {
     @Published public var isScrappedContentScannerPresented = false
 
     private var archiveIndexByRootID: [UUID: ArchiveIndex] = [:]
+    /// Raw file bytes for standalone-opened `.RM2`/`.SM2` files, keyed by
+    /// their root `ChunkNode.id` — the "Editing GUI" write path's source
+    /// material for patching an edited record back in at its known offset.
+    /// Deliberately scoped to standalone files only (not archive-nested
+    /// entries) for now; see `WorldPlacementWriter`'s doc comment.
+    private var rawFileBytesByRootID: [UUID: Data] = [:]
 
     public init() {}
 
@@ -112,6 +120,7 @@ public final class WorkspaceViewModel: ObservableObject {
             case .levelResource, .sceneryResource:
                 let data = try Data(contentsOf: file.url)
                 let node = try RM2Parser.parse(data: data, fileKind: fileKind(for: file), fileName: file.url.lastPathComponent)
+                rawFileBytesByRootID[node.id] = data
                 rootNodes.append(node)
                 statusMessage = "Loaded \(file.url.lastPathComponent) — \(node.children.count) top-level chunks."
                 modelsHub.append(contentsOf: Self.resolveModels(inFileRoot: node, sourceLabel: file.url.lastPathComponent))
@@ -396,6 +405,44 @@ public final class WorkspaceViewModel: ObservableObject {
         return root
     }
 
+    // MARK: - Editing (proof of concept — see WorldPlacementWriter's doc comment)
+
+    /// Whether `node`'s enclosing file is one this build can currently save
+    /// edits back to: a standalone-opened `.RM2`/`.SM2`, not one still
+    /// packed inside a `.BD` archive (`rawFileBytesByRootID` is only
+    /// populated for the former — see `load(_:)`).
+    public func canSaveEdits(for node: ChunkNode) -> Bool {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return false }
+        return rawFileBytesByRootID[fileRoot.id] != nil
+    }
+
+    /// Patches `encoded` into a *copy* of the owning file's original bytes
+    /// at `node`'s known offset — pure and side-effect-free; the caller
+    /// (a view) is responsible for prompting where to save the result and
+    /// actually writing it, matching this codebase's established split
+    /// (compare `ExportPanel` + `exportTexturePNG`). Only valid when
+    /// `encoded.count == node.byteSize`: this proof of concept covers a
+    /// fixed-size record (`Position`, always 16 bytes), so nothing else in
+    /// the file needs its offsets adjusted.
+    public func patchedFileBytes(replacing node: ChunkNode, with encoded: Data) -> Data? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes),
+              var bytes = rawFileBytesByRootID[fileRoot.id]
+        else {
+            lastError = "Can't save edits here — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return nil
+        }
+        guard encoded.count == node.byteSize else {
+            lastError = "Internal error: encoded record is \(encoded.count) bytes, expected \(node.byteSize) — refusing to save a size-changing edit."
+            return nil
+        }
+        guard node.fileOffset >= 0, node.fileOffset + encoded.count <= bytes.count else {
+            lastError = "Internal error: this record's offset is outside its file's bounds."
+            return nil
+        }
+        bytes.replaceSubrange(node.fileOffset..<(node.fileOffset + encoded.count), with: encoded)
+        return bytes
+    }
+
     // MARK: - Linked asset resolution / Model Viewer
 
     /// Resolves `node` (a `RigidModel` or a `GraphicsInfo` skeleton) into a
@@ -437,6 +484,74 @@ public final class WorkspaceViewModel: ObservableObject {
             }
         }
         return nil
+    }
+
+    /// "Scenery/Level Assembly": resolves every placement in `scenery`
+    /// (found via `node`, the `SceneryData` chunk itself) into an actual
+    /// textured mesh, keyed by the model ID the placement references.
+    /// Placements whose `modelID` doesn't match any `RigidModel` in this
+    /// file's Graphics section (skinned/`Skin`-based scenery, or a model
+    /// this build's resolver can't reach) are silently skipped rather than
+    /// failing the whole level — a level with some unresolved pieces is
+    /// still far more useful than no level view at all.
+    public func resolvedLevelPlacements(for scenery: SceneryAsset, node: ChunkNode) -> [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)] {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return [] }
+        let index = AssetResolver.buildIndex(fileRoot: fileRoot)
+        var results: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)] = []
+        for placement in scenery.placements {
+            guard let translation = placement.translation,
+                  let rigidModel = index.rigidModels[placement.modelID],
+                  let resolved = AssetResolver.resolveRigidModel(rigidModel, displayName: "Scenery Object #\(placement.modelID)", index: index)
+            else { continue }
+            results.append((translation, resolved))
+        }
+        return results
+    }
+
+    /// "Deep Hierarchy & Linked Asset Resolution": the parent composite
+    /// object `node` belongs to, plus every component that composite is
+    /// built from — one call standing in for what used to be scattered
+    /// across the Model Viewer's separate sections.
+    public func relationalChain(for node: ChunkNode) -> RelationalChain? {
+        resolveComposite(for: node).map(RelationalChain.init(asset:))
+    }
+
+    /// Jumps the sidebar selection to the chunk backing `component` — the
+    /// "click a linked component to go inspect it directly" affordance in
+    /// the relational chain panel. Searches every parsed file (component
+    /// IDs are the same global, hash-like values discussed on
+    /// `resolveComposite`, so the record isn't guaranteed to be in the same
+    /// file as the composite that references it); silently does nothing
+    /// findable if the underlying chunk isn't in the currently loaded
+    /// workspace at all — e.g. a texture record from an archive entry that
+    /// hasn't been scanned/expanded yet.
+    public func selectComponent(_ component: LinkedComponent) {
+        guard let found = findNode(matching: component, in: rootNodes) else {
+            lastError = "\(component.displayName) isn't loaded in the current workspace yet — try Scan Archive."
+            return
+        }
+        select(found)
+    }
+
+    private func findNode(matching component: LinkedComponent, in nodes: [ChunkNode]) -> ChunkNode? {
+        for node in nodes {
+            if matches(node.payload, component) { return node }
+            if !isExpandableArchiveEntry(node), let found = findNode(matching: component, in: node.children) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    private func matches(_ payload: ChunkPayload?, _ component: LinkedComponent) -> Bool {
+        switch (payload, component.kind) {
+        case (.mesh(let mesh), .mesh): return mesh.id == component.recordID
+        case (.material(let material), .material): return material.id == component.recordID
+        case (.texture(let texture), .texture): return texture.id == component.recordID
+        case (.skeleton(let skeleton), .skeleton): return skeleton.id == component.recordID
+        case (.animation(let animation), .animation): return animation.id == component.recordID
+        default: return false
+        }
     }
 
     /// Depth-first search for the nearest ancestor of `target` that looks

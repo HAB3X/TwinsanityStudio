@@ -21,6 +21,12 @@ struct ModelVertexGPU {
 /// have independent vertex streams, since each can use a different
 /// triangle-strip connectivity pattern) and its resolved texture, if any.
 private struct GPUSubmesh {
+    /// Index into the source `ResolvedModelAsset.mesh.submeshes` — *not*
+    /// necessarily this array's own index, since submeshes with no
+    /// vertices are skipped during upload and would otherwise shift
+    /// everything after them out of alignment with
+    /// `ModelViewerRenderer.hiddenSubmeshIndices`.
+    let originalIndex: Int
     let vertexBuffer: MTLBuffer
     let indexBuffer: MTLBuffer
     let indexCount: Int
@@ -172,6 +178,14 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     /// joints. Set by `AnimationPlaybackController` as playback advances.
     var skeletonJointWorldPositions: [(SIMD3<Float>, SIMD3<Float>)] = []
 
+    /// "Granular Component Visibility": submesh indices (matching
+    /// `ResolvedModelAsset.mesh.submeshes`/`.submeshMaterials`) to skip
+    /// during the draw pass. Indices, not identity, because that's the
+    /// granularity a submesh actually exists at on the GPU side — there's
+    /// no separate "hide this texture" primitive, just "don't draw the
+    /// submesh(es) that use it" (see `ComponentVisibilityView`).
+    var hiddenSubmeshIndices: Set<Int> = []
+
     /// Collision wireframe edges (blue), set when this renderer was built
     /// from a `CollisionMesh` rather than a `ResolvedModelAsset`. Drawn with
     /// the same line pipeline machinery as the skeleton overlay, just a
@@ -237,11 +251,27 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     }
 
     private func upload(asset: ResolvedModelAsset) {
+        let built = Self.buildGPUSubmeshes(mesh: asset.mesh, submeshMaterials: asset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
+        submeshes = built.submeshes
+        let minBound = built.minBound
+        let maxBound = built.maxBound
+        if minBound.x <= maxBound.x {
+            boundsCenter = (minBound + maxBound) / 2
+            let extent = maxBound - minBound
+            boundsRadius = max(max(extent.x, extent.y), max(extent.z, 1))
+        }
+    }
+
+    /// Shared by `ModelViewerRenderer.upload(asset:)` and
+    /// `LevelViewerRenderer` (which uploads many objects, each needing the
+    /// exact same per-submesh vertex/index/texture upload) — one GPU-upload
+    /// implementation instead of two copies that could drift apart.
+    fileprivate static func buildGPUSubmeshes(mesh: MeshAsset, submeshMaterials: [ResolvedSubmeshMaterial], device: MTLDevice, fallbackTexture: MTLTexture) -> (submeshes: [GPUSubmesh], minBound: SIMD3<Float>, maxBound: SIMD3<Float>) {
         var minBound = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
         var maxBound = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
         var gpuSubmeshes: [GPUSubmesh] = []
 
-        for (index, submesh) in asset.mesh.submeshes.enumerated() {
+        for (index, submesh) in mesh.submeshes.enumerated() {
             guard !submesh.vertices.isEmpty else { continue }
             var gpuVertices: [ModelVertexGPU] = []
             gpuVertices.reserveCapacity(submesh.vertices.count)
@@ -267,25 +297,20 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             else { continue }
 
             let texture: MTLTexture
-            if let resolvedTexture = index < asset.submeshMaterials.count ? asset.submeshMaterials[index].texture : nil,
-               let uploaded = Self.makeTexture(device: device, asset: resolvedTexture) {
+            if let resolvedTexture = index < submeshMaterials.count ? submeshMaterials[index].texture : nil,
+               let uploaded = makeTexture(device: device, asset: resolvedTexture) {
                 texture = uploaded
             } else {
-                texture = context.fallbackTexture
+                texture = fallbackTexture
             }
 
-            gpuSubmeshes.append(GPUSubmesh(vertexBuffer: vertexBuffer, indexBuffer: indexBuffer, indexCount: indices.count, texture: texture))
+            gpuSubmeshes.append(GPUSubmesh(originalIndex: index, vertexBuffer: vertexBuffer, indexBuffer: indexBuffer, indexCount: indices.count, texture: texture))
         }
 
-        submeshes = gpuSubmeshes
-        if minBound.x <= maxBound.x {
-            boundsCenter = (minBound + maxBound) / 2
-            let extent = maxBound - minBound
-            boundsRadius = max(max(extent.x, extent.y), max(extent.z, 1))
-        }
+        return (gpuSubmeshes, minBound, maxBound)
     }
 
-    private static func makeTexture(device: MTLDevice, asset: TextureAsset) -> MTLTexture? {
+    fileprivate static func makeTexture(device: MTLDevice, asset: TextureAsset) -> MTLTexture? {
         guard asset.width > 0, asset.height > 0, asset.rgba.count >= asset.width * asset.height * 4 else { return nil }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: asset.width, height: asset.height, mipmapped: false)
         descriptor.usage = [.shaderRead]
@@ -401,7 +426,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         encoder.setDepthStencilState(context.depthState)
         encoder.setFragmentSamplerState(context.samplerState, index: 0)
 
-        for submesh in submeshes {
+        for submesh in submeshes where !hiddenSubmeshIndices.contains(submesh.originalIndex) {
             encoder.setVertexBuffer(submesh.vertexBuffer, offset: 0, index: 0)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
@@ -448,7 +473,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
 
     // MARK: - Matrix helpers (simd has no built-in perspective/lookAt)
 
-    private static func perspectiveMatrix(fovYRadians: Float, aspect: Float, near: Float, far: Float) -> simd_float4x4 {
+    fileprivate static func perspectiveMatrix(fovYRadians: Float, aspect: Float, near: Float, far: Float) -> simd_float4x4 {
         let y = 1 / tan(fovYRadians * 0.5)
         let x = y / aspect
         let z = far / (near - far)
@@ -460,7 +485,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         )
     }
 
-    private static func lookAtMatrix(eye: SIMD3<Float>, center: SIMD3<Float>, up: SIMD3<Float>) -> simd_float4x4 {
+    fileprivate static func lookAtMatrix(eye: SIMD3<Float>, center: SIMD3<Float>, up: SIMD3<Float>) -> simd_float4x4 {
         let z = normalize(eye - center)
         let x = normalize(cross(up, z))
         let y = cross(z, x)
@@ -549,4 +574,123 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         return float4(0.25, 0.7, 1.0, 0.9);
     }
     """
+}
+
+/// One resolved scenery placement, uploaded once and drawn every frame at
+/// its own world position.
+private struct GPULevelObject {
+    let worldPosition: SIMD3<Float>
+    let submeshes: [GPUSubmesh]
+}
+
+/// "Scenery/Level Assembly": draws every resolved placement from a
+/// `SceneryAsset` in one scene, each positioned at its own world-space
+/// translation. Shares `ModelViewerGPUContext`/`GPUSubmesh` upload logic
+/// with `ModelViewerRenderer` — the only real difference is drawing many
+/// objects with per-object model matrices instead of one object at identity.
+///
+/// Rotation/scale from each placement's decoded 4-row matrix are
+/// deliberately **not** applied — only translation (row 3) is, the same
+/// "position is trustworthy, full matrix orientation isn't independently
+/// confirmed" simplification `ModelViewerWindow.bindPoseSkeletonSegments()`
+/// already makes for joint matrices. Objects will show up in the right
+/// place but not necessarily facing the right way yet.
+final class LevelViewerRenderer: NSObject, MTKViewDelegate {
+    private let context: ModelViewerGPUContext
+    var device: MTLDevice { context.device }
+
+    private var objects: [GPULevelObject] = []
+    private var boundsCenter: SIMD3<Float> = .zero
+    private var boundsRadius: Float = 10
+
+    var yaw: Float = .pi * 0.25
+    var pitch: Float = .pi * 0.3
+    var distanceMultiplier: Float = 1.4
+
+    /// - Parameter placements: each resolved object's world position
+    ///   (translation-only, see the type doc comment) paired with its
+    ///   fully textured mesh.
+    init?(placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)]) {
+        guard let context = ModelViewerGPUContext.shared else { return nil }
+        self.context = context
+        super.init()
+        upload(placements: placements)
+    }
+
+    private func upload(placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)]) {
+        var minBound = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var maxBound = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        var levelObjects: [GPULevelObject] = []
+        levelObjects.reserveCapacity(placements.count)
+
+        for (worldPosition, asset) in placements {
+            let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: asset.mesh, submeshMaterials: asset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
+            guard !built.submeshes.isEmpty else { continue }
+            levelObjects.append(GPULevelObject(worldPosition: worldPosition, submeshes: built.submeshes))
+            // Bounds are tracked from placement position, not local mesh
+            // extent — for a whole-level view, "where objects are" matters
+            // far more than any one object's own size.
+            minBound = simd_min(minBound, worldPosition)
+            maxBound = simd_max(maxBound, worldPosition)
+        }
+
+        objects = levelObjects
+        if minBound.x <= maxBound.x {
+            boundsCenter = (minBound + maxBound) / 2
+            let extent = maxBound - minBound
+            boundsRadius = max(max(extent.x, extent.y), max(extent.z, 10))
+        }
+    }
+
+    var hasGeometry: Bool { !objects.isEmpty }
+    var objectCount: Int { objects.count }
+
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+
+    func draw(in view: MTKView) {
+        guard let drawable = view.currentDrawable,
+              let descriptor = view.currentRenderPassDescriptor,
+              let commandBuffer = context.commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor)
+        else { return }
+
+        let aspect = Float(view.drawableSize.width / max(view.drawableSize.height, 1))
+        let projection = ModelViewerRenderer.perspectiveMatrix(fovYRadians: .pi / 4, aspect: aspect, near: 0.05, far: boundsRadius * 20 + 50)
+        let distance = boundsRadius * distanceMultiplier
+        let eye = SIMD3<Float>(
+            boundsCenter.x + distance * cos(pitch) * sin(yaw),
+            boundsCenter.y + distance * sin(pitch),
+            boundsCenter.z + distance * cos(pitch) * cos(yaw)
+        )
+        let view4x4 = ModelViewerRenderer.lookAtMatrix(eye: eye, center: boundsCenter, up: SIMD3<Float>(0, 1, 0))
+        let viewProjection = projection * view4x4
+        let lightDirection = normalize(SIMD3<Float>(-0.4, -1.0, -0.3))
+
+        encoder.setRenderPipelineState(context.pipelineState)
+        encoder.setDepthStencilState(context.depthState)
+        encoder.setFragmentSamplerState(context.samplerState, index: 0)
+
+        for object in objects {
+            let model = simd_float4x4(translation: object.worldPosition)
+            var uniforms = Uniforms(modelViewProjection: viewProjection * model, modelMatrix: model, lightDirection: lightDirection)
+            for submesh in object.submeshes {
+                encoder.setVertexBuffer(submesh.vertexBuffer, offset: 0, index: 0)
+                encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+                encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+                encoder.setFragmentTexture(submesh.texture, index: 0)
+                encoder.drawIndexedPrimitives(type: .triangle, indexCount: submesh.indexCount, indexType: .uint32, indexBuffer: submesh.indexBuffer, indexBufferOffset: 0)
+            }
+        }
+
+        encoder.endEncoding()
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+    }
+}
+
+private extension simd_float4x4 {
+    init(translation: SIMD3<Float>) {
+        self = matrix_identity_float4x4
+        columns.3 = SIMD4<Float>(translation.x, translation.y, translation.z, 1)
+    }
 }

@@ -19,6 +19,7 @@ struct ModelViewerWindow: View {
     @State private var currentFrame: Double = 0
     @State private var playbackTimer: Timer?
     @State private var isPlaying = false
+    @State private var hiddenSubmeshIndices: Set<Int> = []
 
     var body: some View {
         HStack(spacing: 0) {
@@ -30,8 +31,25 @@ struct ModelViewerWindow: View {
         .frame(minWidth: 900, minHeight: 600)
         .onAppear { renderer = ModelViewerRenderer(asset: asset) }
         .onDisappear { stopPlayback() }
-        .onChange(of: showSkeletonOverlay) { _, newValue in
-            renderer?.skeletonJointWorldPositions = newValue ? bindPoseSkeletonSegments() : []
+        .onChange(of: showSkeletonOverlay) { _, _ in updateSkeletonOverlay() }
+        .onChange(of: selectedAnimation?.id) { _, _ in updateSkeletonOverlay() }
+        .onChange(of: currentFrame) { _, _ in updateSkeletonOverlay() }
+    }
+
+    /// Drives the skeleton line overlay: the animated (experimental —
+    /// see `ExperimentalAnimationPose`) pose at the current playback frame
+    /// when an animation is selected, otherwise the bind pose. Both only
+    /// show when the user has opted into the overlay at all.
+    private func updateSkeletonOverlay() {
+        guard showSkeletonOverlay, let skeleton = asset.skeleton else {
+            renderer?.skeletonJointWorldPositions = []
+            return
+        }
+        if let selectedAnimation {
+            let frameIndex = min(selectedAnimation.body.totalFrames - 1, max(0, Int(currentFrame)))
+            renderer?.skeletonJointWorldPositions = ExperimentalAnimationPose.jointSegments(skeleton: skeleton, track: selectedAnimation.body, frameIndex: frameIndex)
+        } else {
+            renderer?.skeletonJointWorldPositions = bindPoseSkeletonSegments()
         }
     }
 
@@ -72,6 +90,8 @@ struct ModelViewerWindow: View {
 
                 infoSection
                 Divider()
+                componentVisibilitySection
+                Divider()
                 if asset.skeleton != nil {
                     skeletonSection
                     Divider()
@@ -100,6 +120,45 @@ struct ModelViewerWindow: View {
         }
     }
 
+    /// "Granular Component Visibility": a checklist of the materials/
+    /// textures making up this object — unchecking one hides every submesh
+    /// that uses it in the viewport immediately (see
+    /// `ModelViewerRenderer.hiddenSubmeshIndices`). Built from the same
+    /// `RelationalChain` the inspector's relational-chain panel uses, so
+    /// the two stay in agreement about what this object is made of.
+    private var componentVisibilitySection: some View {
+        let toggleable = RelationalChain(asset: asset).components.filter {
+            ($0.kind == .material || $0.kind == .texture) && !$0.submeshIndices.isEmpty
+        }
+        return VStack(alignment: .leading, spacing: 6) {
+            Label("Components", systemImage: "checklist").font(.headline)
+            if toggleable.isEmpty {
+                Text("No separately toggleable components.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(toggleable) { component in
+                    Toggle(component.displayName, isOn: visibilityBinding(for: component))
+                        .toggleStyle(.checkbox)
+                }
+            }
+        }
+    }
+
+    private func visibilityBinding(for component: LinkedComponent) -> Binding<Bool> {
+        Binding(
+            get: { !component.submeshIndices.contains(where: hiddenSubmeshIndices.contains) },
+            set: { isVisible in
+                if isVisible {
+                    hiddenSubmeshIndices.subtract(component.submeshIndices)
+                } else {
+                    hiddenSubmeshIndices.formUnion(component.submeshIndices)
+                }
+                renderer?.hiddenSubmeshIndices = hiddenSubmeshIndices
+            }
+        )
+    }
+
     private var skeletonSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("Skeleton", systemImage: "figure.stand").font(.headline)
@@ -108,7 +167,7 @@ struct ModelViewerWindow: View {
             }
             Toggle("Show Skeleton Overlay (experimental)", isOn: $showSkeletonOverlay)
                 .toggleStyle(.checkbox)
-            Text("Joint positions are a best-effort bind-pose visualization — the exact matrix layout isn't fully confirmed, so treat shape/proportions as approximate.")
+            Text("Bind-pose joint positions are a best-effort visualization — the exact matrix layout isn't fully confirmed. Select an animation below to see an experimental (illustrative, not verified-accurate) animated pose instead.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

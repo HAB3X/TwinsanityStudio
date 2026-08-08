@@ -15,6 +15,24 @@ final class WorldPlacementParserTests: XCTestCase {
         XCTAssertEqual(position.point, SIMD4<Float>(1, 2, 3, 1))
     }
 
+    /// The "Editing GUI" write path's core correctness guarantee: encoding
+    /// a decoded (and possibly edited) `PositionMarker` must produce
+    /// exactly the same 16-byte shape the parser reads, so patching it back
+    /// into a copy of the original file at the record's known offset never
+    /// shifts anything after it.
+    func testPositionRoundTripsThroughWriter() throws {
+        let original = PositionMarker(id: 9, point: SIMD4<Float>(1.5, -2.25, 3.75, 1))
+        let encoded = WorldPlacementWriter.writePosition(original)
+
+        XCTAssertEqual(encoded.count, 16)
+
+        var cursor = BinaryCursor(data: encoded)
+        let decoded = try WorldPlacementParser.parsePosition(&cursor, recordID: original.id)
+
+        XCTAssertEqual(decoded.point, original.point)
+        XCTAssertEqual(cursor.position, 16)
+    }
+
     /// Empty-lists case should read exactly 90 bytes — matching the
     /// reference tool's `Instance.GetSize()` base constant
     /// (`Twinsanity/Items/Instances/Instance.cs:127`), which was written

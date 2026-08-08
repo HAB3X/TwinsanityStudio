@@ -2,11 +2,24 @@ import SwiftUI
 import MetalKit
 import CTModels
 
+/// Common orbit-camera surface both `ModelViewerRenderer` and
+/// `LevelViewerRenderer` implement, so `InteractiveMTKView`/`MetalModelView`
+/// can drive either without knowing which one they're holding.
+protocol OrbitCameraRenderer: AnyObject, MTKViewDelegate {
+    var device: MTLDevice { get }
+    var yaw: Float { get set }
+    var pitch: Float { get set }
+    var distanceMultiplier: Float { get set }
+}
+
+extension ModelViewerRenderer: OrbitCameraRenderer {}
+extension LevelViewerRenderer: OrbitCameraRenderer {}
+
 /// `MTKView` subclass that turns mouse drag into orbit and scroll into zoom.
 /// Kept as a thin, dumb input adapter — all the actual camera math lives on
-/// `ModelViewerRenderer`, this just forwards deltas to it.
+/// the renderer, this just forwards deltas to it.
 final class InteractiveMTKView: MTKView {
-    var renderer: ModelViewerRenderer?
+    var renderer: OrbitCameraRenderer?
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -26,7 +39,7 @@ final class InteractiveMTKView: MTKView {
 }
 
 struct MetalModelView: NSViewRepresentable {
-    let renderer: ModelViewerRenderer
+    let renderer: OrbitCameraRenderer
 
     func makeNSView(context: Context) -> InteractiveMTKView {
         let view = InteractiveMTKView(frame: .zero, device: renderer.device)

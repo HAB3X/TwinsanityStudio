@@ -11,6 +11,14 @@ struct CompositePreviewView: View {
     let asset: ResolvedModelAsset
 
     @State private var renderer: ModelViewerRenderer?
+    /// Selected by ID, not by value — `AnimationAsset` doesn't conform to
+    /// `Hashable` (nothing else in the codebase has needed it to), and a
+    /// `Picker` selection/`tag` needs a `Hashable` type. Same pattern
+    /// `ModelViewerWindow`'s own animation list already uses.
+    @State private var sandboxAnimationID: UInt32?
+    @State private var sandboxFrame: Double = 0
+    @State private var sandboxTimer: Timer?
+    @State private var sandboxPlaying = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -48,9 +56,98 @@ struct CompositePreviewView: View {
                 }
                 Spacer()
             }
+
+            if asset.skeleton != nil, !asset.availableAnimations.isEmpty {
+                Divider()
+                animationSandbox
+            }
         }
         .onAppear { renderer = ModelViewerRenderer(asset: asset) }
-        .onChange(of: asset.id) { _, _ in renderer = ModelViewerRenderer(asset: asset) }
+        .onChange(of: asset.id) { _, _ in
+            renderer = ModelViewerRenderer(asset: asset)
+            stopSandboxPlayback()
+            sandboxAnimationID = nil
+        }
+        .onDisappear { stopSandboxPlayback() }
+    }
+
+    private var sandboxAnimation: AnimationAsset? {
+        guard let sandboxAnimationID else { return nil }
+        return asset.availableAnimations.first { $0.id == sandboxAnimationID }
+    }
+
+    /// "Integrated Animation Sandbox": every animation available to this
+    /// object, playable directly against the composited preview above.
+    private var animationSandbox: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Animation Sandbox", systemImage: "figure.run")
+                .font(.headline)
+
+            Picker("Animation", selection: $sandboxAnimationID) {
+                Text("None").tag(UInt32?.none)
+                ForEach(asset.availableAnimations.sorted { $0.id < $1.id }) { animation in
+                    Text("Animation #\(animation.id) (\(animation.body.totalFrames)f)").tag(Optional(animation.id))
+                }
+            }
+            .labelsHidden()
+            .onChange(of: sandboxAnimationID) { _, _ in
+                stopSandboxPlayback()
+                sandboxFrame = 0
+                applySandboxPose()
+            }
+
+            if let sandboxAnimation, sandboxAnimation.body.totalFrames > 1 {
+                HStack {
+                    Button {
+                        toggleSandboxPlayback(frameCount: sandboxAnimation.body.totalFrames)
+                    } label: {
+                        Image(systemName: sandboxPlaying ? "pause.fill" : "play.fill")
+                    }
+                    Slider(value: $sandboxFrame, in: 0...Double(sandboxAnimation.body.totalFrames - 1), step: 1)
+                        .onChange(of: sandboxFrame) { _, _ in applySandboxPose() }
+                    Text("\(Int(sandboxFrame))/\(sandboxAnimation.body.totalFrames - 1)")
+                        .font(.caption.monospacedDigit())
+                        .frame(width: 44, alignment: .trailing)
+                }
+                Text("Experimental: joint-channel semantics aren't confirmed against the original engine, so this is an illustrative pose, not a verified deformation — see the Animation record's own inspector for the raw decoded data.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private func toggleSandboxPlayback(frameCount: Int) {
+        sandboxPlaying.toggle()
+        if sandboxPlaying {
+            sandboxTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { _ in
+                sandboxFrame = (sandboxFrame + 1).truncatingRemainder(dividingBy: Double(max(1, frameCount)))
+                applySandboxPose()
+            }
+        } else {
+            sandboxTimer?.invalidate()
+            sandboxTimer = nil
+        }
+    }
+
+    private func stopSandboxPlayback() {
+        sandboxPlaying = false
+        sandboxTimer?.invalidate()
+        sandboxTimer = nil
+    }
+
+    /// Pushes the current sandbox frame's (experimental) joint pose to the
+    /// renderer — see `ExperimentalAnimationPose`'s doc comment for exactly
+    /// what "experimental" means here.
+    private func applySandboxPose() {
+        guard let skeleton = asset.skeleton, let sandboxAnimation else {
+            renderer?.skeletonJointWorldPositions = []
+            return
+        }
+        renderer?.skeletonJointWorldPositions = ExperimentalAnimationPose.jointSegments(
+            skeleton: skeleton,
+            track: sandboxAnimation.body,
+            frameIndex: min(sandboxAnimation.body.totalFrames - 1, max(0, Int(sandboxFrame)))
+        )
     }
 
     @ViewBuilder

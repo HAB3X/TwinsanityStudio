@@ -15,6 +15,9 @@ public enum ChunkPayload: Sendable {
     case trigger(TriggerVolume)
     case camera(PlacedCamera)
     case collision(CollisionMesh)
+    case scenery(SceneryAsset)
+    case dynamicScenery(DynamicSceneryAsset)
+    case soundEffect(SoundEffectAsset)
     /// Understood record kind, but not (yet) decoded into a typed model —
     /// still browsable/exportable as a hex/raw blob.
     case raw(byteCount: Int)
@@ -34,6 +37,7 @@ public enum ChunkPayload: Sendable {
         case trigger = "Triggers"
         case camera = "Cameras"
         case collision = "Collision"
+        case soundEffect = "Audio"
         public var id: String { rawValue }
     }
 
@@ -47,7 +51,8 @@ public enum ChunkPayload: Sendable {
         case .trigger: return .trigger
         case .camera: return .camera
         case .collision: return .collision
-        case .material, .position, .raw: return nil
+        case .soundEffect: return .soundEffect
+        case .material, .position, .scenery, .dynamicScenery, .raw: return nil
         }
     }
 }

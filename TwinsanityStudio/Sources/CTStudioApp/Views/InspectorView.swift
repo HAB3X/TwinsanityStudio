@@ -19,6 +19,7 @@ struct InspectorView: View {
                                 Label("View Parent / Composite", systemImage: "arrow.triangle.branch")
                             }
                             .toggleStyle(.switch)
+                            RelationalChainView(node: node)
                         }
                         Divider()
                         if showComposite, Self.isCompositeEligible(node.payload) {
@@ -38,7 +39,7 @@ struct InspectorView: View {
                             case .animation(let animation):
                                 AnimationInspectorView(animation: animation)
                             case .position(let position):
-                                PositionInspectorView(position: position)
+                                PositionInspectorView(node: node, position: position)
                             case .instance(let instance):
                                 InstanceInspectorView(instance: instance)
                             case .trigger(let trigger):
@@ -47,6 +48,12 @@ struct InspectorView: View {
                                 CameraInspectorView(camera: camera)
                             case .collision(let mesh):
                                 CollisionInspectorView(mesh: mesh)
+                            case .scenery(let scenery):
+                                SceneryInspectorView(node: node, scenery: scenery)
+                            case .dynamicScenery(let dynamicScenery):
+                                DynamicSceneryInspectorView(scenery: dynamicScenery)
+                            case .soundEffect(let sound):
+                                SoundEffectInspectorView(node: node, sound: sound)
                             case .raw, .none:
                                 RawInspectorView(node: node)
                             }
@@ -72,7 +79,7 @@ struct InspectorView: View {
     private static func isCompositeEligible(_ payload: ChunkPayload?) -> Bool {
         switch payload {
         case .texture, .mesh, .material, .animation, .rigidModel, .skeleton: return true
-        case .position, .instance, .trigger, .camera, .collision, .raw, .none: return false
+        case .position, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .raw, .none: return false
         }
     }
 

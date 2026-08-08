@@ -15,4 +15,17 @@ enum ExportPanel {
         guard panel.runModal() == .OK else { return nil }
         return panel.url
     }
+
+    /// "Save this one file as a new name/location" — used by the editing
+    /// write path, which always saves an edited *copy* rather than
+    /// overwriting the originally-opened file.
+    static func chooseSaveLocation(suggestedName: String, message: String) -> URL? {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedName
+        panel.canCreateDirectories = true
+        panel.message = message
+        panel.prompt = "Save"
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
 }
