@@ -15,6 +15,7 @@ import CTModels
 struct HexViewerWindow: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.undoManager) private var undoManager
     let node: ChunkNode
     let originalBytes: Data
 
@@ -39,6 +40,18 @@ struct HexViewerWindow: View {
             footer
         }
         .frame(minWidth: 720, minHeight: 560)
+        // "Robust Undo/Redo" (QoL sweep) — see the matching mechanism (and
+        // its doc comment) in `LevelViewerWindow`. `UndoManager` doesn't
+        // route its effects back into SwiftUI `@State` on its own, so this
+        // is what keeps the selected byte's displayed hex value in sync
+        // after ⌘Z/⌘⇧Z.
+        .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidUndoChange)) { _ in resyncEditField() }
+        .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidRedoChange)) { _ in resyncEditField() }
+    }
+
+    private func resyncEditField() {
+        guard let selectedOffset, selectedOffset < editedBytes.count else { return }
+        editFieldText = String(format: "%02X", editedBytes[editedBytes.startIndex + selectedOffset])
     }
 
     private var header: some View {
@@ -127,10 +140,37 @@ struct HexViewerWindow: View {
 
     private func applyEdit(at offset: Int) {
         guard let value = byteValue(from: editFieldText) else { return }
+        let previousValue = editedBytes[editedBytes.startIndex + offset]
         editedBytes[editedBytes.startIndex + offset] = value
+        if previousValue != value {
+            registerByteUndo(offset: offset, restoreTo: previousValue, thenRedoTo: value)
+        }
         let next = offset + 1
         if next < editedBytes.count {
             select(offset: next)
+        }
+    }
+
+    /// Registers one ⌘Z step restoring `offset` to `restoreTo`, and (via
+    /// the recursive helper below) a matching ⌘⇧Z redo back to
+    /// `thenRedoTo` — built from a captured `Binding<Data>` rather than
+    /// `self`, same reasoning as the equivalent mechanism in
+    /// `LevelViewerWindow`: a `Binding` closes over the stable underlying
+    /// `@State` storage, not over this ephemeral View struct instance, so
+    /// it's safe for `UndoManager` to hold onto for as long as this sheet
+    /// stays open. The `NSObject()` target is a disposable anchor —
+    /// `registerUndo` needs *some* `AnyObject`, but nothing here reads
+    /// anything off it.
+    private func registerByteUndo(offset: Int, restoreTo: UInt8, thenRedoTo: UInt8) {
+        guard let undoManager else { return }
+        undoManager.setActionName("Edit Byte")
+        Self.registerByteUndo(undoManager: undoManager, binding: $editedBytes, offset: offset, restoreTo: restoreTo, thenRedoTo: thenRedoTo)
+    }
+
+    private static func registerByteUndo(undoManager: UndoManager, binding: Binding<Data>, offset: Int, restoreTo: UInt8, thenRedoTo: UInt8) {
+        undoManager.registerUndo(withTarget: NSObject()) { _ in
+            binding.wrappedValue[binding.wrappedValue.startIndex + offset] = restoreTo
+            registerByteUndo(undoManager: undoManager, binding: binding, offset: offset, restoreTo: thenRedoTo, thenRedoTo: restoreTo)
         }
     }
 

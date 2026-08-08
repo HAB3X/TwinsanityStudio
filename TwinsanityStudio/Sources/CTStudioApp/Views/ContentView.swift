@@ -4,13 +4,36 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.openWindow) private var openWindow
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// "Persist Window Layout" (QoL sweep): `@SceneStorage` only supports a
+    /// closed set of primitive types (Bool/Int/Double/String/URL/Data),
+    /// and `NavigationSplitViewVisibility` isn't one of them — this stores
+    /// a plain `Int` proxy instead and converts through `columnVisibility`
+    /// below, but still gets the same "tied to this window's restoration
+    /// state, comes back automatically" behavior `@SceneStorage` provides.
+    @SceneStorage("columnVisibilityRaw") private var columnVisibilityRaw: Int = 0
     @State private var isTargetedForDrop = false
     @State private var isConsoleExpanded = false
 
+    private var columnVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: {
+                switch columnVisibilityRaw {
+                case 1: return .detailOnly
+                case 2: return .doubleColumn
+                default: return .all
+                }
+            },
+            set: { newValue in
+                if newValue == .detailOnly { columnVisibilityRaw = 1 }
+                else if newValue == .doubleColumn { columnVisibilityRaw = 2 }
+                else { columnVisibilityRaw = 0 }
+            }
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            NavigationSplitView(columnVisibility: $columnVisibility) {
+            NavigationSplitView(columnVisibility: columnVisibility) {
                 SidebarView()
                     .navigationSplitViewColumnWidth(min: 260, ideal: 320)
             } content: {
@@ -41,6 +64,18 @@ struct ContentView: View {
                     Label("Models Hub", systemImage: "square.grid.3x3.fill")
                 }
                 .disabled(workspace.modelsHub.isEmpty && !workspace.isScanning)
+                Button {
+                    workspace.isTexturesHubPresented = true
+                } label: {
+                    Label("Textures Hub", systemImage: "photo.stack")
+                }
+                .disabled(workspace.texturesHub.isEmpty && !workspace.isScanning)
+                Button {
+                    workspace.isLevelsHubPresented = true
+                } label: {
+                    Label("Levels Hub", systemImage: "map")
+                }
+                .disabled(workspace.levelsHub.isEmpty && !workspace.isScanning)
                 Button {
                     workspace.isScrappedContentScannerPresented = true
                 } label: {
@@ -109,6 +144,14 @@ struct ContentView: View {
             ModelsHubView()
                 .environmentObject(workspace)
         }
+        .sheet(isPresented: $workspace.isTexturesHubPresented) {
+            TexturesHubView()
+                .environmentObject(workspace)
+        }
+        .sheet(isPresented: $workspace.isLevelsHubPresented) {
+            LevelsHubView()
+                .environmentObject(workspace)
+        }
         .sheet(isPresented: $workspace.isScrappedContentScannerPresented) {
             ScrappedContentScannerView()
                 .environmentObject(workspace)
@@ -137,6 +180,10 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .ctStudioOpenRequested)) { _ in
             presentOpenPanel()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ctStudioOpenRecentRequested)) { notification in
+            guard let url = notification.object as? URL else { return }
+            workspace.open(url: url)
         }
         .onReceive(NotificationCenter.default.publisher(for: .ctStudioCommandPaletteRequested)) { _ in
             workspace.isCommandPalettePresented = true

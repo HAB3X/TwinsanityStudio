@@ -80,6 +80,18 @@ public struct PlacedInstance: Sendable, Identifiable {
         Float(raw) / Float(UInt32(UInt16.max) + 1) * 360
     }
 
+    /// The exact inverse of `degrees(fromRawAngle:)` — used by both the
+    /// Instance inspector's edit form and the Level Viewer's "Save Level
+    /// Overrides" pipeline, so an edited rotation re-encodes identically
+    /// regardless of which UI produced it. Wraps to `0..<360` first since a
+    /// gizmo drag or a typed field can easily go negative or past a full
+    /// turn, neither of which the raw 16-bit fraction can represent.
+    public static func rawAngle(fromDegrees degrees: Float) -> UInt16 {
+        let wrapped = degrees.truncatingRemainder(dividingBy: 360)
+        let normalized = wrapped < 0 ? wrapped + 360 : wrapped
+        return UInt16(clamping: Int((normalized / 360) * Float(UInt32(UInt16.max) + 1)))
+    }
+
     public var rotationDegrees: SIMD3<Float> {
         SIMD3(
             Self.degrees(fromRawAngle: rotationRaw.x),

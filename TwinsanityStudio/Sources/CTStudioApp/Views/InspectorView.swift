@@ -54,7 +54,7 @@ struct InspectorView: View {
                             case .position(let position):
                                 PositionInspectorView(node: node, position: position)
                             case .instance(let instance):
-                                InstanceInspectorView(instance: instance)
+                                InstanceInspectorView(node: node, instance: instance)
                             case .trigger(let trigger):
                                 TriggerInspectorView(trigger: trigger)
                             case .camera(let camera):

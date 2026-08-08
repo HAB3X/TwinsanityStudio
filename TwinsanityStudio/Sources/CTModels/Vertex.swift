@@ -3,7 +3,7 @@ import simd
 /// A single rigid (non-skinned) vertex, laid out to drop straight into a Metal
 /// vertex buffer (`MTLVertexDescriptor` with float3/float3/float2/uchar4/uchar4
 /// attributes at the offsets below — no repacking needed at draw time).
-public struct StaticVertex: Sendable, Equatable {
+public struct StaticVertex: Sendable, Equatable, Codable {
     public var position: SIMD3<Float>
     public var normal: SIMD3<Float>
     public var uv: SIMD2<Float>

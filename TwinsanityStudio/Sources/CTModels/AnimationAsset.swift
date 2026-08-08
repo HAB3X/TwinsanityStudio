@@ -3,7 +3,7 @@ import Foundation
 /// Per-joint indirection into either the static-value pool or the per-frame
 /// animated-column pool (`Animation.JointSettings`,
 /// `Twinsanity/Items/Code/Animation.cs:139-162`).
-public struct AnimJointSettings: Sendable {
+public struct AnimJointSettings: Sendable, Codable {
     public var flags: UInt16
     public var transformationChoice: UInt16
     public var transformationIndex: UInt16
@@ -22,7 +22,7 @@ public struct AnimJointSettings: Sendable {
 /// (`/ 4096`); rotation decodes on a different fixed-point scale mapping the
 /// full `int16` range to one full turn (`Animation.Transformation.RotValue`,
 /// `Animation.cs:180-186`).
-public struct AnimStaticTransform: Sendable {
+public struct AnimStaticTransform: Sendable, Codable {
     public var stored: Int16
 
     public init(stored: Int16) {
@@ -37,7 +37,7 @@ public struct AnimStaticTransform: Sendable {
 
 /// One animated frame's flat channel row (`Animation.AnimatedTransform`). Each
 /// joint's actual per-frame value is `values[jointSettings.animatedTransformIndex]`.
-public struct AnimFrame: Sendable {
+public struct AnimFrame: Sendable, Codable {
     public var values: [Int16]
 
     public init(values: [Int16]) {
@@ -49,7 +49,7 @@ public struct AnimFrame: Sendable {
 
 /// One of the two independent curve sets in an `Animation` record (body,
 /// facial) — see `Animation.cs:12-22`.
-public struct AnimationTrack: Sendable {
+public struct AnimationTrack: Sendable, Codable {
     public var jointSettings: [AnimJointSettings]
     public var staticTransforms: [AnimStaticTransform]
     public var frames: [AnimFrame]
@@ -66,7 +66,7 @@ public struct AnimationTrack: Sendable {
 }
 
 /// A fully decoded `Animation` record: body + facial tracks.
-public struct AnimationAsset: Sendable, Identifiable {
+public struct AnimationAsset: Sendable, Identifiable, Codable {
     public let id: UInt32
     public var body: AnimationTrack
     public var facial: AnimationTrack

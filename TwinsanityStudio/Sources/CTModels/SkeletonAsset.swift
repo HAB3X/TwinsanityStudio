@@ -7,7 +7,7 @@ import simd
 /// animation/skinning layer, since the original tool never fully documents the
 /// exact row semantics either (bind pose + something auxiliary per the parser's
 /// own comments).
-public struct Joint: Sendable, Identifiable {
+public struct Joint: Sendable, Identifiable, Codable {
     public var id: UInt32 { jointIndex }
     public var reactJointID: UInt32
     public var jointIndex: UInt32
@@ -26,7 +26,7 @@ public struct Joint: Sendable, Identifiable {
     }
 }
 
-public struct ExitPoint: Sendable, Identifiable {
+public struct ExitPoint: Sendable, Identifiable, Codable {
     public var id: UInt32
     public var parentJointIndex: UInt32
     public var matrix: [SIMD4<Float>] // 4 rows
@@ -39,7 +39,7 @@ public struct ExitPoint: Sendable, Identifiable {
 }
 
 /// Column-major skinning transform per joint (`GraphicsInfo.SkinTransform`).
-public struct SkinTransform: Sendable {
+public struct SkinTransform: Sendable, Codable {
     public var matrix: [SIMD4<Float>] // 4 rows
 
     public init(matrix: [SIMD4<Float>]) {
@@ -47,7 +47,7 @@ public struct SkinTransform: Sendable {
     }
 }
 
-public struct ModelLink: Sendable {
+public struct ModelLink: Sendable, Codable {
     public var jointIndex: UInt32
     public var modelID: UInt32
 
@@ -59,7 +59,7 @@ public struct ModelLink: Sendable {
 
 /// A fully decoded `GraphicsInfo` (OGI) record: bind-pose skeleton plus links to
 /// the skin/blend-skin/model records it drives.
-public struct SkeletonAsset: Sendable, Identifiable {
+public struct SkeletonAsset: Sendable, Identifiable, Codable {
     public let id: UInt32
     public var joints: [Joint]
     public var exitPoints: [ExitPoint]

@@ -39,6 +39,10 @@ final class InteractiveMTKView: MTKView {
     /// gesture (see `LevelViewerWindow`), rather than one Undo step per
     /// mouse-moved event.
     var onGizmoDragStarted: (() -> Void)?
+    /// Fired when the W/E/R hotkeys change `gizmoMode` — the SwiftUI-side
+    /// mode picker has no other way to notice a change AppKit's `keyDown`
+    /// made directly on the (plain, non-`ObservableObject`) renderer.
+    var onGizmoModeChanged: (() -> Void)?
 
     /// Non-nil for the duration of a drag that grabbed a gizmo arrow on
     /// `mouseDown` — while set, `mouseDragged` moves the selected object
@@ -61,16 +65,27 @@ final class InteractiveMTKView: MTKView {
         if wasDragging { onGizmoDragEnded?() }
     }
 
-    /// "F to Focus/Frame" (QoL sweep) — the one keyboard shortcut from the
-    /// original wishlist that maps onto something this build actually has
-    /// (a translate-only gizmo, no rotate/scale modes to switch between
-    /// with W/E/R, so those aren't wired to anything).
+    /// "F to Focus/Frame" plus W/E/R gizmo-mode switching (QoL sweep) —
+    /// the standard 3D-tool convention for translate/rotate/scale.
     override func keyDown(with event: NSEvent) {
-        guard event.charactersIgnoringModifiers?.lowercased() == "f" else {
+        var changedMode = false
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "f":
+            renderer?.resetView()
+        case "w" where renderer is GizmoInteractiveRenderer:
+            (renderer as? GizmoInteractiveRenderer)?.gizmoMode = .translate
+            changedMode = true
+        case "e" where renderer is GizmoInteractiveRenderer:
+            (renderer as? GizmoInteractiveRenderer)?.gizmoMode = .rotate
+            changedMode = true
+        case "r" where renderer is GizmoInteractiveRenderer:
+            (renderer as? GizmoInteractiveRenderer)?.gizmoMode = .scale
+            changedMode = true
+        default:
             super.keyDown(with: event)
             return
         }
-        renderer?.resetView()
+        if changedMode { onGizmoModeChanged?() }
         needsDisplay = true
     }
 
@@ -98,12 +113,14 @@ struct MetalModelView: NSViewRepresentable {
     let renderer: OrbitCameraRenderer
     var onGizmoDragEnded: (() -> Void)?
     var onGizmoDragStarted: (() -> Void)?
+    var onGizmoModeChanged: (() -> Void)?
 
     func makeNSView(context: Context) -> InteractiveMTKView {
         let view = InteractiveMTKView(frame: .zero, device: renderer.device)
         view.renderer = renderer
         view.onGizmoDragEnded = onGizmoDragEnded
         view.onGizmoDragStarted = onGizmoDragStarted
+        view.onGizmoModeChanged = onGizmoModeChanged
         view.delegate = renderer
         view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float
@@ -138,5 +155,6 @@ struct MetalModelView: NSViewRepresentable {
         }
         nsView.onGizmoDragEnded = onGizmoDragEnded
         nsView.onGizmoDragStarted = onGizmoDragStarted
+        nsView.onGizmoModeChanged = onGizmoModeChanged
     }
 }

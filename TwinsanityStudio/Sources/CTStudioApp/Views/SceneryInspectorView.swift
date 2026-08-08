@@ -45,9 +45,8 @@ struct SceneryInspectorView: View {
                         // texture lookups for potentially thousands of
                         // objects) runs off the main actor — this used to
                         // block the whole UI for however long that took.
-                        let resolved = await workspace.resolvedLevelPlacements(for: scenery, node: node)
+                        await workspace.openLevelViewer(for: scenery, node: node)
                         isResolving = false
-                        workspace.levelViewerContext = LevelViewerContext(scenery: scenery, placements: resolved)
                     }
                 } label: {
                     if isResolving {

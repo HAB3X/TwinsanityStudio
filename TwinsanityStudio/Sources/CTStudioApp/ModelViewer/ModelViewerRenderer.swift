@@ -3,6 +3,7 @@ import MetalKit
 import CoreGraphics
 import simd
 import CTModels
+import CTParsers
 
 /// Tightly-packed, GPU-ready vertex layout: 12 sequential `Float`s (48
 /// bytes), no `SIMD3<Float>` fields. This matters — `SIMD3<Float>` has a
@@ -362,26 +363,6 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             let extent = maxBound - minBound
             boundsRadius = max(max(extent.x, extent.y), max(extent.z, 1))
         }
-        // One-time (per asset load, not per-frame) — the real answer to
-        // "was a vertex buffer actually created, and how many": if this
-        // prints 0 submeshes for an asset the sidebar shows real
-        // vertex/submesh counts for, the bug is in this upload step, not in
-        // `draw(in:)` or SwiftUI layout.
-        print("DIAG: ModelViewerRenderer uploaded \(submeshes.count) GPU submesh(es) for \"\(asset.displayName)\", boundsRadius=\(boundsRadius), boundsCenter=\(boundsCenter)")
-        // `fragment_main` outputs alpha as `texColor.a * in.color.a`, and
-        // the main pipeline has real alpha blending enabled
-        // (isBlendingEnabled=true, standard source-over) — a mesh whose
-        // decoded per-vertex color alpha comes out near 0 would render
-        // fully successfully (a real drawable, a real committed frame,
-        // exactly what the draw(in:) diagnostics just confirmed) while
-        // being visually indistinguishable from "nothing drawn at all",
-        // blended away into the dark clear color. This measures the raw
-        // decoded alpha byte directly, before it ever reaches the GPU, to
-        // confirm or rule that out rather than guessing further.
-        let alphaValues = asset.mesh.submeshes.flatMap { $0.vertices.map { Int($0.color.w) } }
-        if let minAlpha = alphaValues.min(), let maxAlpha = alphaValues.max() {
-            print("DIAG: vertex color alpha range for \"\(asset.displayName)\": min=\(minAlpha) max=\(maxAlpha) (0-255 scale; near-0 across the board would render as invisible, not broken)")
-        }
     }
 
     /// Shared by `ModelViewerRenderer.upload(asset:)` and
@@ -462,45 +443,13 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
 
     // MARK: - MTKViewDelegate
 
-    /// Real, low-frequency (not per-frame — this only fires when the
-    /// drawable actually gets/changes a size, e.g. once on first layout and
-    /// again on window resize) diagnostic: a viewport that's genuinely
-    /// "blank because it has zero area" shows up here as `size = (0.0, 0.0)`
-    /// and never anything else, which is a different, distinguishable
-    /// symptom from a real Metal/shader failure.
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-        print("DIAG: \(type(of: self)) drawableSizeWillChange -> \(size)")
-    }
-
-    /// One-shot latches (not per-frame) for the diagnostics in `draw(in:)`
-    /// below — this is called at 20fps, so anything logged unconditionally
-    /// in here would flood the console and reintroduce the kind of
-    /// per-frame overhead this session's optimization pass removed.
-    private var hasLoggedDrawBailout = false
-    private var hasLoggedFirstSuccessfulDraw = false
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
         guard let drawable = view.currentDrawable,
               let descriptor = view.currentRenderPassDescriptor,
               let commandBuffer = context.commandQueue.makeCommandBuffer()
-        else {
-            // If this is the failure, everything upstream (upload,
-            // drawableSizeWillChange) can look completely healthy while
-            // nothing ever actually paints — `view.currentDrawable` comes
-            // back nil when the view's layer isn't actually hooked up to a
-            // presentable surface yet (or anymore), which this build has
-            // had no visibility into until now.
-            if !hasLoggedDrawBailout {
-                hasLoggedDrawBailout = true
-                print("DIAG: ModelViewerRenderer.draw(in:) bailed — currentDrawable=\(view.currentDrawable != nil), currentRenderPassDescriptor=\(view.currentRenderPassDescriptor != nil), drawableSize=\(view.drawableSize)")
-            }
-            return
-        }
-
-        if !hasLoggedFirstSuccessfulDraw {
-            hasLoggedFirstSuccessfulDraw = true
-            print("DIAG: ModelViewerRenderer.draw(in:) first successful frame — submeshCount=\(submeshes.count), drawableSize=\(view.drawableSize)")
-        }
+        else { return }
 
         let aspect = Float(view.drawableSize.width / max(view.drawableSize.height, 1))
         encode(descriptor: descriptor, commandBuffer: commandBuffer, aspect: aspect)
@@ -799,17 +748,38 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
 }
 
 /// One resolved scenery placement, uploaded once and drawn every frame at
-/// its own world position. `worldPosition` is `var` — the Forge-style
-/// transform gizmo (blueprint 6.1) mutates it directly; everything else
-/// about an uploaded object (its GPU geometry) never changes after upload.
+/// its own world position. `worldPosition`/`rotation`/`scale` are `var` —
+/// the Forge-style transform gizmo (blueprint 6.1) mutates them directly;
+/// everything else about an uploaded object (its GPU geometry) never
+/// changes after upload.
 private struct GPULevelObject {
     var worldPosition: SIMD3<Float>
+    var rotation: simd_quatf = simd_quatf(angle: 0, axis: SIMD3(0, 1, 0))
+    var scale: SIMD3<Float> = SIMD3(1, 1, 1)
     let displayName: String
     let submeshes: [GPUSubmesh]
+    /// "Direct .RM2 Write-Back": non-nil only for placeholder `Instance`
+    /// markers (see `LevelViewerContext.instanceMarkers`) — the on-disk
+    /// record this object's transform patches back into on save. `nil` for
+    /// ordinary scenery placements and Models-Hub-dropped objects, neither
+    /// of which have a verified write path.
+    var sourceNode: ChunkNode?
+    /// The record's on-disk W component and COM-rotation, preserved
+    /// unedited — the gizmo only ever touches XYZ position and the primary
+    /// rotation, so these need to survive round-trip to re-encode a valid
+    /// 28-byte transform prefix on save.
+    var originalPositionW: Float = 0
+    var comRotationRaw: SIMD3<UInt16> = .zero
 }
 
-/// One translate-gizmo axis (blueprint 6.1). `CaseIterable` order is also
-/// draw order for the gizmo's three arrows.
+/// Which transform the gizmo currently edits — the W/E/R hotkeys switch
+/// this, same as most 3D DCC tools' own convention.
+enum GizmoMode: CaseIterable {
+    case translate, rotate, scale
+}
+
+/// One gizmo axis (blueprint 6.1). `CaseIterable` order is also draw order
+/// for the gizmo's three arrows/rings.
 enum GizmoAxis: CaseIterable {
     case x, y, z
 
@@ -831,22 +801,35 @@ enum GizmoAxis: CaseIterable {
         case .z: return SIMD3(0.3, 0.55, 0.95)
         }
     }
+
+    /// Two unit vectors spanning the plane perpendicular to this axis —
+    /// the plane a rotation ring around this axis actually lies in (e.g.
+    /// the ring for rotating *around* X lies flat *in* the YZ plane).
+    var planeBasis: (u: SIMD3<Float>, v: SIMD3<Float>) {
+        switch self {
+        case .x: return (SIMD3(0, 1, 0), SIMD3(0, 0, 1))
+        case .y: return (SIMD3(1, 0, 0), SIMD3(0, 0, 1))
+        case .z: return (SIMD3(1, 0, 0), SIMD3(0, 1, 0))
+        }
+    }
 }
 
-/// Shared by any renderer that draws a "Forge-style" translate gizmo on a
-/// selected object and lets the user drag one of its arrows — today just
+/// Shared by any renderer that draws a "Forge-style" transform gizmo on a
+/// selected object and lets the user drag one of its handles — today just
 /// `LevelViewerRenderer`. `InteractiveMTKView` checks for this conformance
-/// to decide whether a `mouseDown` should try to grab a gizmo arrow before
-/// falling back to its normal orbit-drag behavior.
+/// to decide whether a `mouseDown` should try to grab a gizmo handle before
+/// falling back to its normal orbit-drag behavior, and reads/writes
+/// `gizmoMode` directly for the W/E/R hotkeys.
 protocol GizmoInteractiveRenderer: OrbitCameraRenderer {
+    var gizmoMode: GizmoMode { get set }
     /// Screen-space (AppKit view-point coordinates, `viewSize` = that same
     /// view's `bounds.size`) hit test against the current selection's
-    /// gizmo arrows. `nil` if nothing is selected or the point isn't close
-    /// enough to any arrow.
+    /// gizmo handles for the current `gizmoMode`. `nil` if nothing is
+    /// selected or the point isn't close enough to any handle.
     func gizmoAxis(at point: CGPoint, viewSize: CGSize) -> GizmoAxis?
-    /// Moves the current selection along `axis` by however much
-    /// `viewportDelta` (raw `NSEvent.deltaX`/`deltaY`, points) projects
-    /// onto that axis on screen, snapping to the configured grid if enabled.
+    /// Applies `viewportDelta` (raw `NSEvent.deltaX`/`deltaY`, points) to
+    /// the current selection along `axis`, interpreted per `gizmoMode`
+    /// (move/rotate/scale), snapping to the configured grid if enabled.
     func dragSelectedObject(axis: GizmoAxis, viewportDelta: CGVector, viewSize: CGSize)
 }
 
@@ -879,27 +862,37 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     private(set) var selectedObjectIndex: Int?
     var snapToGrid = true
     var gridSize: Float = 1.0
+    /// Rotation snap step, in degrees — the rotate-mode equivalent of
+    /// `gridSize`, gated by the same `snapToGrid` toggle.
+    var rotationSnapDegrees: Float = 15.0
+    var gizmoMode: GizmoMode = .translate { didSet { rebuildGizmoBuffer() } }
     private var gizmoBuffer: MTLBuffer?
 
     /// `boundsRadius`-relative, not a fixed world size — a gizmo sized for
     /// a small level would be invisible in a huge one and vice versa.
     private var gizmoArmLength: Float { max(boundsRadius * 0.12, 0.5) }
 
-    /// - Parameter placements: each resolved object's world position
-    ///   (translation-only, see the type doc comment) paired with its
-    ///   fully textured mesh.
-    init?(placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)]) {
+    /// - Parameters:
+    ///   - placements: each resolved object's world position
+    ///     (translation-only, see the type doc comment) paired with its
+    ///     fully textured mesh.
+    ///   - instanceMarkers: "Direct .RM2 Write-Back" — every `Instance`
+    ///     record from the same file, drawn as a placeholder cube (see
+    ///     `LevelViewerContext.instanceMarkers`'s doc comment for why not a
+    ///     real mesh) but fully selectable/gizmo-editable/save-able like
+    ///     any other object.
+    init?(placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)], instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)] = []) {
         guard let context = ModelViewerGPUContext.shared else { return nil }
         self.context = context
         super.init()
-        upload(placements: placements)
+        upload(placements: placements, instanceMarkers: instanceMarkers)
     }
 
-    private func upload(placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)]) {
+    private func upload(placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)], instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)]) {
         var minBound = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
         var maxBound = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
         var levelObjects: [GPULevelObject] = []
-        levelObjects.reserveCapacity(placements.count)
+        levelObjects.reserveCapacity(placements.count + instanceMarkers.count)
 
         for (worldPosition, asset) in placements {
             let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: asset.mesh, submeshMaterials: asset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
@@ -912,11 +905,107 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             maxBound = simd_max(maxBound, worldPosition)
         }
 
+        let markerMesh = Self.makeMarkerCubeAsset()
+        let markerBuilt = ModelViewerRenderer.buildGPUSubmeshes(mesh: markerMesh.mesh, submeshMaterials: [markerMesh.material], device: device, fallbackTexture: context.fallbackTexture)
+        for (node, instance) in instanceMarkers {
+            guard !markerBuilt.submeshes.isEmpty else { break }
+            let worldPosition = SIMD3(instance.position.x, instance.position.y, instance.position.z)
+            levelObjects.append(GPULevelObject(
+                worldPosition: worldPosition,
+                rotation: Self.quaternion(fromEulerDegrees: instance.rotationDegrees),
+                displayName: "Instance #\(instance.id) (Object \(instance.objectID))",
+                submeshes: markerBuilt.submeshes,
+                sourceNode: node,
+                originalPositionW: instance.position.w,
+                comRotationRaw: instance.comRotationRaw
+            ))
+            minBound = simd_min(minBound, worldPosition)
+            maxBound = simd_max(maxBound, worldPosition)
+        }
+
         objects = levelObjects
         if minBound.x <= maxBound.x {
             boundsCenter = (minBound + maxBound) / 2
             let extent = maxBound - minBound
             boundsRadius = max(max(extent.x, extent.y), max(extent.z, 10))
+        }
+    }
+
+    /// A small procedural cube (0.8 world units per side) plus a solid
+    /// amber texture, standing in for an `Instance` record's real geometry
+    /// (see `LevelViewerContext.instanceMarkers`'s doc comment for why: no
+    /// verified `objectID` -> mesh mapping exists in this build). Built as
+    /// 12 independent triangles, not a shared-vertex indexed cube — the
+    /// `MeshSubmesh.connectivity`/`triangleIndices()` triangle-strip scheme
+    /// this pipeline's mesh format uses reads a sliding window of 3
+    /// consecutive vertices per candidate triangle, so restarting the strip
+    /// after every triangle (`connectivity = [false, false, true]` per
+    /// triple) is what turns it into 12 disconnected triangles instead of a
+    /// connected strip. `addTriangle`'s odd/even vertex swap exists purely
+    /// to counteract `triangleIndices()`'s own alternating-winding rule for
+    /// strips (`ModelViewerRenderer.swift`'s `MeshSubmesh.triangleIndices`
+    /// doc comment) — without it, every other face here would be wound
+    /// backwards and get backface-culled.
+    private static func makeMarkerCubeAsset() -> (mesh: MeshAsset, material: ResolvedSubmeshMaterial) {
+        let half: Float = 0.4
+        var vertices: [StaticVertex] = []
+        var connectivity: [Bool] = []
+
+        func addTriangle(_ p0: SIMD3<Float>, _ p1: SIMD3<Float>, _ p2: SIMD3<Float>, normal: SIMD3<Float>) {
+            let i = vertices.count
+            let odd = (i & 1) == 1
+            let ordered: [SIMD3<Float>] = odd ? [p1, p0, p2] : [p0, p1, p2]
+            for p in ordered {
+                vertices.append(StaticVertex(position: p, normal: normal, uv: SIMD2(0.5, 0.5)))
+            }
+            connectivity.append(false)
+            connectivity.append(false)
+            connectivity.append(true)
+        }
+
+        let c: [SIMD3<Float>] = [
+            SIMD3(-half, -half, -half), SIMD3(half, -half, -half), SIMD3(half, half, -half), SIMD3(-half, half, -half),
+            SIMD3(-half, -half, half), SIMD3(half, -half, half), SIMD3(half, half, half), SIMD3(-half, half, half)
+        ]
+        let faces: [(a: Int, b: Int, c: Int, d: Int, normal: SIMD3<Float>)] = [
+            (0, 1, 2, 3, SIMD3(0, 0, -1)),
+            (5, 4, 7, 6, SIMD3(0, 0, 1)),
+            (4, 0, 3, 7, SIMD3(-1, 0, 0)),
+            (1, 5, 6, 2, SIMD3(1, 0, 0)),
+            (3, 2, 6, 7, SIMD3(0, 1, 0)),
+            (4, 5, 1, 0, SIMD3(0, -1, 0))
+        ]
+        for face in faces {
+            addTriangle(c[face.a], c[face.b], c[face.c], normal: face.normal)
+            addTriangle(c[face.a], c[face.c], c[face.d], normal: face.normal)
+        }
+
+        let submesh = MeshSubmesh(vertices: vertices, connectivity: connectivity)
+        let mesh = MeshAsset(id: 0, isSkinned: false, submeshes: [submesh])
+        let texture = TextureAsset(id: 0, width: 1, height: 1, pixelFormat: .rawRGBA, rgba: [255, 149, 0, 255])
+        return (mesh, ResolvedSubmeshMaterial(texture: texture))
+    }
+
+    /// "Save Level Overrides": the current position/rotation of every
+    /// Instance marker, re-encoded and paired with the `ChunkNode` it
+    /// patches into — ready to hand straight to `WorkspaceViewModel.
+    /// patchedFileBytes(applyingPrefixPatches:)`. Includes every marker,
+    /// not just ones that moved: writing an unchanged transform back is a
+    /// harmless no-op patch, and skipping "unchanged" ones would need exact
+    /// float-equality tracking against the original decode for no real
+    /// benefit.
+    var pendingLevelOverrides: [(node: ChunkNode, encoded: Data)] {
+        objects.compactMap { object in
+            guard let node = object.sourceNode else { return nil }
+            let degrees = Self.eulerDegrees(from: object.rotation)
+            let rotationRaw = SIMD3(
+                PlacedInstance.rawAngle(fromDegrees: degrees.x),
+                PlacedInstance.rawAngle(fromDegrees: degrees.y),
+                PlacedInstance.rawAngle(fromDegrees: degrees.z)
+            )
+            let position = SIMD4(object.worldPosition.x, object.worldPosition.y, object.worldPosition.z, object.originalPositionW)
+            let encoded = WorldPlacementWriter.writeInstanceTransform(position: position, rotationRaw: rotationRaw, comRotationRaw: object.comRotationRaw)
+            return (node, encoded)
         }
     }
 
@@ -936,6 +1025,21 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         return objects[selectedObjectIndex].worldPosition
     }
 
+    /// Euler-angle degrees, decomposed from the object's quaternion in
+    /// XYZ order — quaternions are what actually drive the model matrix
+    /// (composable, no gimbal-lock surprises mid-drag), but Euler degrees
+    /// are what a nudge-field UI should show; nobody edits a rotation by
+    /// typing quaternion components directly.
+    var selectedRotationDegrees: SIMD3<Float>? {
+        guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return nil }
+        return Self.eulerDegrees(from: objects[selectedObjectIndex].rotation)
+    }
+
+    var selectedScale: SIMD3<Float>? {
+        guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return nil }
+        return objects[selectedObjectIndex].scale
+    }
+
     func select(index: Int?) {
         selectedObjectIndex = index.flatMap { objects.indices.contains($0) ? $0 : nil }
         rebuildGizmoBuffer()
@@ -947,6 +1051,52 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return }
         objects[selectedObjectIndex].worldPosition = newPosition
         rebuildGizmoBuffer()
+    }
+
+    func setSelectedRotation(eulerDegrees: SIMD3<Float>) {
+        guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return }
+        objects[selectedObjectIndex].rotation = Self.quaternion(fromEulerDegrees: eulerDegrees)
+        rebuildGizmoBuffer()
+    }
+
+    func setSelectedScale(to newScale: SIMD3<Float>) {
+        guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return }
+        // A zero or negative scale collapses/flips the mesh in a way
+        // that's indistinguishable from "the model disappeared" — the
+        // exact class of bug the earlier blank-viewport investigation
+        // spent a long time chasing, so this is guarded explicitly rather
+        // than trusting every caller (nudge-field typos included) to
+        // avoid it.
+        let clamped = SIMD3(max(newScale.x, 0.01), max(newScale.y, 0.01), max(newScale.z, 0.01))
+        objects[selectedObjectIndex].scale = clamped
+        rebuildGizmoBuffer()
+    }
+
+    private static func eulerDegrees(from quaternion: simd_quatf) -> SIMD3<Float> {
+        let m = simd_float3x3(quaternion)
+        let sy = sqrt(m.columns.0.x * m.columns.0.x + m.columns.0.y * m.columns.0.y)
+        let singular = sy < 1e-6
+        let x: Float, y: Float, z: Float
+        if !singular {
+            x = atan2(m.columns.1.z, m.columns.2.z)
+            y = atan2(-m.columns.0.z, sy)
+            z = atan2(m.columns.0.y, m.columns.0.x)
+        } else {
+            x = atan2(-m.columns.2.y, m.columns.1.y)
+            y = atan2(-m.columns.0.z, sy)
+            z = 0
+        }
+        let toDegrees: Float = 180 / .pi
+        return SIMD3(x * toDegrees, y * toDegrees, z * toDegrees)
+    }
+
+    private static func quaternion(fromEulerDegrees degrees: SIMD3<Float>) -> simd_quatf {
+        let toRadians: Float = .pi / 180
+        let r = degrees * toRadians
+        let qx = simd_quatf(angle: r.x, axis: SIMD3(1, 0, 0))
+        let qy = simd_quatf(angle: r.y, axis: SIMD3(0, 1, 0))
+        let qz = simd_quatf(angle: r.z, axis: SIMD3(0, 0, 1))
+        return qz * qy * qx
     }
 
     /// "Drag-and-Drop Asset Palette" (blueprint 6.2): appends a new
@@ -967,15 +1117,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         return newIndex
     }
 
-    /// Real, low-frequency (not per-frame — this only fires when the
-    /// drawable actually gets/changes a size, e.g. once on first layout and
-    /// again on window resize) diagnostic: a viewport that's genuinely
-    /// "blank because it has zero area" shows up here as `size = (0.0, 0.0)`
-    /// and never anything else, which is a different, distinguishable
-    /// symptom from a real Metal/shader failure.
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-        print("DIAG: \(type(of: self)) drawableSizeWillChange -> \(size)")
-    }
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     /// The exact camera math `draw(in:)` uses, factored out so the gizmo
     /// hit test and drag math (`gizmoAxis(at:viewSize:)`,
@@ -1031,7 +1173,13 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         encoder.setFragmentSamplerState(context.samplerState, index: 0)
 
         for object in objects {
+            // T * R * S: scale and rotate the local mesh first, then place
+            // the result at the object's world position — the standard
+            // TRS composition order (reversed relative to how it reads
+            // left-to-right, since these matrices apply right-to-left).
             let model = simd_float4x4(translation: object.worldPosition)
+                * simd_float4x4(object.rotation)
+                * simd_float4x4(diagonal: SIMD4(object.scale.x, object.scale.y, object.scale.z, 1))
             var uniforms = Uniforms(modelViewProjection: viewProjection * model, modelMatrix: model, lightDirection: lightDirection)
             for submesh in object.submeshes {
                 encoder.setVertexBuffer(submesh.vertexBuffer, offset: 0, index: 0)
@@ -1074,34 +1222,65 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         }
         let origin = objects[selectedObjectIndex].worldPosition
         let armLength = gizmoArmLength
-        let headSize = armLength * 0.18
 
         var floats: [Float] = []
         func appendVertex(_ position: SIMD3<Float>, _ color: SIMD3<Float>) {
             floats.append(contentsOf: [position.x, position.y, position.z, color.x, color.y, color.z])
         }
 
-        for axis in GizmoAxis.allCases {
-            let tip = origin + axis.unitVector * armLength
-            appendVertex(origin, axis.color)
-            appendVertex(tip, axis.color)
+        switch gizmoMode {
+        case .translate, .scale:
+            // Scale mode reuses the exact same arrow geometry as
+            // translate — a real cube/box tip to distinguish them
+            // visually is more line-pipeline complexity than the
+            // distinction is worth; the sidebar's mode picker (and the
+            // fields it drives) already make it unambiguous which one is
+            // active.
+            let headSize = armLength * 0.18
+            for axis in GizmoAxis.allCases {
+                let tip = origin + axis.unitVector * armLength
+                appendVertex(origin, axis.color)
+                appendVertex(tip, axis.color)
 
-            // A tiny 2-line "V" arrowhead, angled back from the tip along
-            // the other two axes — enough to read as a direction marker
-            // without needing a real cone mesh in a line-only pipeline.
-            let others = GizmoAxis.allCases.filter { $0.unitVector != axis.unitVector }
-            for other in others.prefix(1) {
-                let back = tip - axis.unitVector * headSize
-                appendVertex(tip, axis.color)
-                appendVertex(back + other.unitVector * headSize, axis.color)
-                appendVertex(tip, axis.color)
-                appendVertex(back - other.unitVector * headSize, axis.color)
+                // A tiny 2-line "V" arrowhead, angled back from the tip
+                // along one other axis — enough to read as a direction
+                // marker without needing a real cone mesh in a line-only
+                // pipeline.
+                let others = GizmoAxis.allCases.filter { $0.unitVector != axis.unitVector }
+                for other in others.prefix(1) {
+                    let back = tip - axis.unitVector * headSize
+                    appendVertex(tip, axis.color)
+                    appendVertex(back + other.unitVector * headSize, axis.color)
+                    appendVertex(tip, axis.color)
+                    appendVertex(back - other.unitVector * headSize, axis.color)
+                }
+            }
+
+        case .rotate:
+            // Three rings, one per axis, each drawn flat in that axis's
+            // own perpendicular plane (see `GizmoAxis.planeBasis`) —
+            // approximated as `ringSegments` short line segments rather
+            // than a real curved primitive, same "good enough for a line
+            // pipeline" approach as the arrowheads above.
+            let ringSegments = Self.gizmoRingSegments
+            for axis in GizmoAxis.allCases {
+                let (u, v) = axis.planeBasis
+                for i in 0..<ringSegments {
+                    let theta0 = Float(i) / Float(ringSegments) * 2 * .pi
+                    let theta1 = Float(i + 1) / Float(ringSegments) * 2 * .pi
+                    let p0 = origin + armLength * (cos(theta0) * u + sin(theta0) * v)
+                    let p1 = origin + armLength * (cos(theta1) * u + sin(theta1) * v)
+                    appendVertex(p0, axis.color)
+                    appendVertex(p1, axis.color)
+                }
             }
         }
 
         gizmoVertexCount = floats.count / 6
         gizmoBuffer = device.makeBuffer(bytes: floats, length: floats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
     }
+
+    private static let gizmoRingSegments = 48
 
     private static func project(_ worldPosition: SIMD3<Float>, viewProjection: simd_float4x4, viewSize: CGSize) -> CGPoint? {
         let clip = viewProjection * SIMD4<Float>(worldPosition, 1)
@@ -1133,18 +1312,44 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return nil }
         let origin = objects[selectedObjectIndex].worldPosition
         let viewProjection = currentViewProjection(viewSize: viewSize)
-        guard let originScreen = Self.project(origin, viewProjection: viewProjection, viewSize: viewSize) else { return nil }
 
-        var best: (axis: GizmoAxis, distance: CGFloat)?
-        for axis in GizmoAxis.allCases {
-            let tip = origin + axis.unitVector * gizmoArmLength
-            guard let tipScreen = Self.project(tip, viewProjection: viewProjection, viewSize: viewSize) else { continue }
-            let d = Self.distance(from: point, toSegmentFrom: originScreen, to: tipScreen)
-            if d < 14, (best == nil || d < best!.distance) {
-                best = (axis, d)
+        switch gizmoMode {
+        case .translate, .scale:
+            guard let originScreen = Self.project(origin, viewProjection: viewProjection, viewSize: viewSize) else { return nil }
+            var best: (axis: GizmoAxis, distance: CGFloat)?
+            for axis in GizmoAxis.allCases {
+                let tip = origin + axis.unitVector * gizmoArmLength
+                guard let tipScreen = Self.project(tip, viewProjection: viewProjection, viewSize: viewSize) else { continue }
+                let d = Self.distance(from: point, toSegmentFrom: originScreen, to: tipScreen)
+                if d < 14, (best == nil || d < best!.distance) {
+                    best = (axis, d)
+                }
             }
+            return best?.axis
+
+        case .rotate:
+            var best: (axis: GizmoAxis, distance: CGFloat)?
+            for axis in GizmoAxis.allCases {
+                let (u, v) = axis.planeBasis
+                var previousScreen: CGPoint?
+                for i in 0...Self.gizmoRingSegments {
+                    let theta = Float(i) / Float(Self.gizmoRingSegments) * 2 * .pi
+                    let p = origin + gizmoArmLength * (cos(theta) * u + sin(theta) * v)
+                    guard let screen = Self.project(p, viewProjection: viewProjection, viewSize: viewSize) else {
+                        previousScreen = nil
+                        continue
+                    }
+                    if let previousScreen {
+                        let d = Self.distance(from: point, toSegmentFrom: previousScreen, to: screen)
+                        if d < 10, (best == nil || d < best!.distance) {
+                            best = (axis, d)
+                        }
+                    }
+                    previousScreen = screen
+                }
+            }
+            return best?.axis
         }
-        return best?.axis
     }
 
     /// Standard screen-space axis-constrained drag: project the selected
@@ -1152,33 +1357,46 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// the mouse's raw delta, and scalar-project it onto that screen-space
     /// axis direction to get "how far along the arrow did the mouse move"
     /// — then convert that back into world units using the known
-    /// world-length/screen-length ratio of the same arrow.
-    ///
-    /// `event.deltaY` is positive for *downward* mouse motion (matching
-    /// this file's existing orbit-drag code, `renderer.pitch += deltaY *
-    /// 0.01`), while `project(...)`'s screen space is y-up — so `dy` is
-    /// negated before use. This (and the overall drag feel) is derived from
-    /// the documented Metal NDC/AppKit coordinate conventions, not verified
-    /// interactively — there's no way to drive a real mouse-drag gesture
-    /// from this build environment, so test the actual feel by hand.
-    func dragSelectedObject(axis: GizmoAxis, viewportDelta: CGVector, viewSize: CGSize) {
-        guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return }
-        let origin = objects[selectedObjectIndex].worldPosition
-        let viewProjection = currentViewProjection(viewSize: viewSize)
-        guard let originScreen = Self.project(origin, viewProjection: viewProjection, viewSize: viewSize) else { return }
-        let tip = origin + axis.unitVector * gizmoArmLength
-        guard let tipScreen = Self.project(tip, viewProjection: viewProjection, viewSize: viewSize) else { return }
-
+    /// world-length/screen-length ratio of the same arrow. Shared by
+    /// translate and scale drags; rotate uses a different (simpler)
+    /// technique — see `dragRotate`.
+    private static func axisProjectedWorldDelta(viewportDelta: CGVector, originScreen: CGPoint, tipScreen: CGPoint, armLength: Float) -> Float? {
         let axisScreenX = tipScreen.x - originScreen.x
         let axisScreenY = tipScreen.y - originScreen.y
         let axisScreenLength = hypot(axisScreenX, axisScreenY)
-        guard axisScreenLength > 0.5 else { return }
+        guard axisScreenLength > 0.5 else { return nil }
 
+        // `event.deltaY` is positive for *downward* mouse motion (matching
+        // this file's existing orbit-drag code, `renderer.pitch += deltaY *
+        // 0.01`), while `project(...)`'s screen space is y-up — so `dy` is
+        // negated before use. This (and the overall drag feel) is derived
+        // from the documented Metal NDC/AppKit coordinate conventions, not
+        // verified interactively — there's no way to drive a real
+        // mouse-drag gesture from this build environment, so test the
+        // actual feel by hand.
         let mouseX = viewportDelta.dx
         let mouseY = -viewportDelta.dy
         let projectedLength = (mouseX * axisScreenX + mouseY * axisScreenY) / axisScreenLength
-        let worldPerScreenPoint = Double(gizmoArmLength) / Double(axisScreenLength)
-        let worldDelta = Float(projectedLength * worldPerScreenPoint)
+        let worldPerScreenPoint = Double(armLength) / Double(axisScreenLength)
+        return Float(projectedLength * worldPerScreenPoint)
+    }
+
+    func dragSelectedObject(axis: GizmoAxis, viewportDelta: CGVector, viewSize: CGSize) {
+        guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return }
+        switch gizmoMode {
+        case .translate: dragTranslate(axis: axis, viewportDelta: viewportDelta, viewSize: viewSize, index: selectedObjectIndex)
+        case .scale: dragScale(axis: axis, viewportDelta: viewportDelta, viewSize: viewSize, index: selectedObjectIndex)
+        case .rotate: dragRotate(axis: axis, viewportDelta: viewportDelta, index: selectedObjectIndex)
+        }
+    }
+
+    private func dragTranslate(axis: GizmoAxis, viewportDelta: CGVector, viewSize: CGSize, index: Int) {
+        let origin = objects[index].worldPosition
+        let viewProjection = currentViewProjection(viewSize: viewSize)
+        guard let originScreen = Self.project(origin, viewProjection: viewProjection, viewSize: viewSize),
+              let tipScreen = Self.project(origin + axis.unitVector * gizmoArmLength, viewProjection: viewProjection, viewSize: viewSize),
+              let worldDelta = Self.axisProjectedWorldDelta(viewportDelta: viewportDelta, originScreen: originScreen, tipScreen: tipScreen, armLength: gizmoArmLength)
+        else { return }
 
         var newPosition = origin + axis.unitVector * worldDelta
         if snapToGrid, gridSize > 0.0001 {
@@ -1189,7 +1407,65 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             case .z: newPosition.z = snap(newPosition.z)
             }
         }
-        objects[selectedObjectIndex].worldPosition = newPosition
+        objects[index].worldPosition = newPosition
+        rebuildGizmoBuffer()
+    }
+
+    /// Same screen-space axis-projection technique as `dragTranslate`, but
+    /// the resulting world-space delta is interpreted as a *fraction of
+    /// the gizmo's own arm length* added to the current scale on that axis
+    /// — dragging the full visible length of the arrow roughly doubles the
+    /// scale, which reads as a reasonably proportional "how far I dragged
+    /// maps to how much bigger it got" feel without needing a separate
+    /// calibration constant.
+    private func dragScale(axis: GizmoAxis, viewportDelta: CGVector, viewSize: CGSize, index: Int) {
+        let origin = objects[index].worldPosition
+        let viewProjection = currentViewProjection(viewSize: viewSize)
+        guard let originScreen = Self.project(origin, viewProjection: viewProjection, viewSize: viewSize),
+              let tipScreen = Self.project(origin + axis.unitVector * gizmoArmLength, viewProjection: viewProjection, viewSize: viewSize),
+              let worldDelta = Self.axisProjectedWorldDelta(viewportDelta: viewportDelta, originScreen: originScreen, tipScreen: tipScreen, armLength: gizmoArmLength)
+        else { return }
+
+        let scaleDelta = worldDelta / gizmoArmLength
+        var newScale = objects[index].scale
+        switch axis {
+        case .x: newScale.x += scaleDelta
+        case .y: newScale.y += scaleDelta
+        case .z: newScale.z += scaleDelta
+        }
+        if snapToGrid, gridSize > 0.0001 {
+            func snap(_ value: Float) -> Float { (value / gridSize).rounded() * gridSize }
+            switch axis {
+            case .x: newScale.x = snap(newScale.x)
+            case .y: newScale.y = snap(newScale.y)
+            case .z: newScale.z = snap(newScale.z)
+            }
+        }
+        // Same reasoning as `setSelectedScale`'s clamp: a zero/negative
+        // scale is visually indistinguishable from "nothing renders."
+        objects[index].scale = SIMD3(max(newScale.x, 0.01), max(newScale.y, 0.01), max(newScale.z, 0.01))
+        rebuildGizmoBuffer()
+    }
+
+    /// Deliberately simpler than translate/scale: rather than computing
+    /// the exact angle swept around a screen-projected ring (a circle in
+    /// world space becomes an ellipse in screen space under perspective,
+    /// and the angle math to invert that correctly is real extra
+    /// complexity), horizontal mouse motion directly drives rotation
+    /// speed around the grabbed axis — the same simplified "drag to spin"
+    /// interaction most lightweight in-house gizmos actually use.
+    private func dragRotate(axis: GizmoAxis, viewportDelta: CGVector, index: Int) {
+        let degreesPerPoint: Float = 0.5
+        let deltaRadians = Float(viewportDelta.dx) * degreesPerPoint * .pi / 180
+        let deltaRotation = simd_quatf(angle: deltaRadians, axis: axis.unitVector)
+        var newRotation = simd_normalize(deltaRotation * objects[index].rotation)
+
+        if snapToGrid, rotationSnapDegrees > 0.0001 {
+            let euler = Self.eulerDegrees(from: newRotation)
+            func snap(_ value: Float) -> Float { (value / rotationSnapDegrees).rounded() * rotationSnapDegrees }
+            newRotation = Self.quaternion(fromEulerDegrees: SIMD3(snap(euler.x), snap(euler.y), snap(euler.z)))
+        }
+        objects[index].rotation = newRotation
         rebuildGizmoBuffer()
     }
 }

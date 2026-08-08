@@ -15,6 +15,11 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
         guard FileManager.default.fileExists(atPath: bhURL.path) else {
             throw XCTSkip("Disc image not mounted")
         }
+        // Force a real scan rather than risk a cache hit from a previous
+        // test/run in the same process — a cache hit skips straight past
+        // the `isScanning` true/false transition and the tree-expansion
+        // work this test is actually exercising.
+        ScanCache.clearAll()
 
         let workspace = WorkspaceViewModel()
         workspace.open(url: bhURL)
@@ -45,6 +50,8 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
         guard FileManager.default.fileExists(atPath: bhURL.path) else {
             throw XCTSkip("Disc image not mounted")
         }
+        // See the matching comment in `testLoadingArchiveAutoScansAndPopulatesModelsHub`.
+        ScanCache.clearAll()
 
         let workspace = WorkspaceViewModel()
         workspace.open(url: bhURL)

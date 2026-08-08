@@ -25,7 +25,7 @@ public struct GraphicsAssetIndex: Sendable {
 
 /// One submesh's resolved texture, if its material/texture chain resolved
 /// successfully. Aligned index-for-index with `ResolvedModelAsset.mesh.submeshes`.
-public struct ResolvedSubmeshMaterial: Sendable {
+public struct ResolvedSubmeshMaterial: Sendable, Codable {
     public var materialID: UInt32?
     public var textureID: UInt32?
     public var texture: TextureAsset?
@@ -42,7 +42,7 @@ public struct ResolvedSubmeshMaterial: Sendable {
 /// and the animations available to preview against it. This is the single
 /// logical asset the Model Viewer renders, replacing the "mesh here, texture
 /// floating separately over there" experience of browsing raw chunk records.
-public struct ResolvedModelAsset: Sendable, Identifiable {
+public struct ResolvedModelAsset: Sendable, Identifiable, Codable {
     /// Synthesized, globally unique — deliberately *not* `recordID`.
     /// RigidModel IDs and Skeleton IDs are independent on-disk namespaces
     /// (a RigidModel and a Skeleton can legitimately share the same numeric

@@ -35,6 +35,55 @@ final class ModelViewerRendererTests: XCTestCase {
         XCTAssertNotNil(renderer, "ModelViewerRenderer failed to initialize — likely a shader compile error swallowed by the init? guard chain")
     }
 
+    /// The Euler-degrees<->quaternion conversion behind the Level Viewer's
+    /// rotate gizmo and rotation nudge fields (`LevelViewerRenderer.
+    /// setSelectedRotation`/`selectedRotationDegrees`) is new, non-trivial
+    /// math (XYZ Euler decomposition from a rotation matrix) with a real
+    /// failure mode — a wrong axis order or sign flip wouldn't crash, it'd
+    /// just silently show the wrong angle in the UI. Round-tripping through
+    /// the actual renderer (not a standalone math check) exercises the
+    /// exact path the UI uses.
+    func testRotationRoundTripsThroughEulerDegrees() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device available in this environment")
+        }
+        let asset = makeTestAsset()
+        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), asset)]))
+        renderer.select(index: 0)
+
+        // Deliberately away from 90°-multiple angles, where gimbal lock
+        // makes the decomposition genuinely ambiguous (multiple valid
+        // Euler triples for the same rotation) rather than just "a hard
+        // case this implementation gets slightly wrong."
+        let input = SIMD3<Float>(30, 45, 60)
+        renderer.setSelectedRotation(eulerDegrees: input)
+        let output = try XCTUnwrap(renderer.selectedRotationDegrees)
+
+        XCTAssertEqual(output.x, input.x, accuracy: 0.01)
+        XCTAssertEqual(output.y, input.y, accuracy: 0.01)
+        XCTAssertEqual(output.z, input.z, accuracy: 0.01)
+    }
+
+    func testScaleClampsAwayFromZeroAndNegative() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device available in this environment")
+        }
+        let asset = makeTestAsset()
+        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), asset)]))
+        renderer.select(index: 0)
+
+        // A zero/negative scale collapses or flips the mesh in a way
+        // that's visually indistinguishable from "nothing renders" — the
+        // exact class of bug the blank-viewport investigation spent a long
+        // time chasing down elsewhere in this renderer, so this is a real
+        // regression to guard, not a hypothetical one.
+        renderer.setSelectedScale(to: SIMD3(-5, 0, 2))
+        let scale = try XCTUnwrap(renderer.selectedScale)
+        XCTAssertGreaterThan(scale.x, 0)
+        XCTAssertGreaterThan(scale.y, 0)
+        XCTAssertEqual(scale.z, 2, accuracy: 0.01)
+    }
+
     func testRendererHandlesEmptyMeshWithoutCrashing() {
         guard MTLCreateSystemDefaultDevice() != nil else { return }
         let mesh = MeshAsset(id: 1, isSkinned: false, submeshes: [])

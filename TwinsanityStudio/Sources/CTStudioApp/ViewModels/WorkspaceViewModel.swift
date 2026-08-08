@@ -4,6 +4,45 @@ import CTModels
 import CTParsers
 import CTExport
 
+/// One entry in the Textures Hub (QoL sweep) — a decoded texture plus which
+/// file it came from. Own type rather than reusing `TextureAsset.id`
+/// directly as `Identifiable`: `TextureAsset.id` is the on-disk record ID,
+/// which (same reasoning as `ResolvedModelAsset.id`) recurs constantly
+/// across hundreds of different files in a global, workspace-wide list.
+public struct TextureHubEntry: Sendable, Identifiable, Codable {
+    public let id = UUID()
+    public var sourceLabel: String
+    public var texture: TextureAsset
+
+    public init(sourceLabel: String, texture: TextureAsset) {
+        self.sourceLabel = sourceLabel
+        self.texture = texture
+    }
+}
+
+/// One entry in the Levels Hub — a decoded `SceneryData` record (a level's
+/// static-geometry placement tree) plus the `ChunkNode` it came from, so
+/// clicking a card can both resolve its placements (`resolvedLevelPlacements`)
+/// and look up sibling `Instance` records in the same file for the Level
+/// Viewer's markers. Deliberately *not* `Codable`/cached through
+/// `ScanCache` like `ResolvedModelAsset`/`TextureHubEntry` are: `ChunkNode`
+/// is a reference-type chunk tree, not a value snapshot, so this only ever
+/// exists for files that are actually parsed and held in memory this
+/// session — same as browsing the sidebar tree itself, `levelsHub` is empty
+/// again after a cache-hit load until something re-parses the file.
+public struct LevelHubEntry: Sendable, Identifiable {
+    public let id = UUID()
+    public var sourceLabel: String
+    public var scenery: SceneryAsset
+    public var node: ChunkNode
+
+    public init(sourceLabel: String, scenery: SceneryAsset, node: ChunkNode) {
+        self.sourceLabel = sourceLabel
+        self.scenery = scenery
+        self.node = node
+    }
+}
+
 /// One line in the Engine Console (blueprint 7.5) — a real status/error
 /// event this session actually produced, timestamped when it happened.
 public struct EngineLogEntry: Identifiable, Sendable {
@@ -90,6 +129,16 @@ public final class WorkspaceViewModel: ObservableObject {
     /// never requires manually parsing/resolving a specific chunk first.
     @Published public var modelsHub: [ResolvedModelAsset] = []
     @Published public var isModelsHubPresented = false
+    /// "Textures Hub" (QoL sweep) — every decoded texture across every
+    /// scanned file, populated alongside `modelsHub` the same way.
+    @Published public var texturesHub: [TextureHubEntry] = []
+    @Published public var isTexturesHubPresented = false
+    /// "Visual Levels Hub" — every decoded `SceneryData` record (one per
+    /// level file that actually has an assembled scenery tree) across every
+    /// parsed file, populated alongside `modelsHub`/`texturesHub`. See
+    /// `LevelHubEntry`'s doc comment for why this one isn't cache-backed.
+    @Published public var levelsHub: [LevelHubEntry] = []
+    @Published public var isLevelsHubPresented = false
     /// Every dangling reference / unreferenced record flagged by the
     /// "Scrapped Content Scanner" across every scanned file — populated
     /// alongside `modelsHub` so cut content surfaces automatically as
@@ -108,7 +157,36 @@ public final class WorkspaceViewModel: ObservableObject {
     /// entries) for now; see `WorldPlacementWriter`'s doc comment.
     private var rawFileBytesByRootID: [UUID: Data] = [:]
 
-    public init() {}
+    // MARK: - Recent Files (QoL sweep)
+
+    private static let recentFilesDefaultsKey = "TwinsanityStudio.RecentFileURLs"
+    private static let maxRecentFiles = 10
+
+    /// Backs the app's "Open Recent" menu (see `CTStudioApp`'s `.commands`)
+    /// — persisted to `UserDefaults` as bookmark-free path strings, most
+    /// recent first, deduplicated by path.
+    @Published public private(set) var recentFileURLs: [URL] = []
+
+    private func loadRecentFiles() {
+        let paths = UserDefaults.standard.stringArray(forKey: Self.recentFilesDefaultsKey) ?? []
+        recentFileURLs = paths.map { URL(fileURLWithPath: $0) }
+    }
+
+    private func addRecentFile(_ url: URL) {
+        var urls = recentFileURLs.filter { $0.path != url.path }
+        urls.insert(url, at: 0)
+        recentFileURLs = Array(urls.prefix(Self.maxRecentFiles))
+        UserDefaults.standard.set(recentFileURLs.map(\.path), forKey: Self.recentFilesDefaultsKey)
+    }
+
+    public func clearRecentFiles() {
+        recentFileURLs = []
+        UserDefaults.standard.removeObject(forKey: Self.recentFilesDefaultsKey)
+    }
+
+    public init() {
+        loadRecentFiles()
+    }
 
     /// The tree the sidebar actually renders: `rootNodes` narrowed by the
     /// type filter (see `ChunkNode.filtered(byKind:)`) and then by the
@@ -174,10 +252,19 @@ public final class WorkspaceViewModel: ObservableObject {
                 }
                 archiveIndexByRootID[node.id] = index
                 rootNodes.append(node)
-                statusMessage = "Loaded \(file.url.lastPathComponent) — \(index.entries.count) entries. Scanning for models…"
-                // Auto-scan immediately — manual "Scan Archive" clicks
-                // shouldn't be a prerequisite for browsing/filtering to work.
-                scanAllArchives()
+
+                if let cached = ScanCache.load(for: index.bdURL) {
+                    modelsHub.append(contentsOf: cached.modelsHub)
+                    orphanedContent.append(contentsOf: cached.orphanedContent)
+                    texturesHub.append(contentsOf: cached.texturesHub)
+                    statusMessage = "Loaded \(file.url.lastPathComponent) from cache — \(cached.modelsHub.count) model(s), \(cached.texturesHub.count) texture(s) available instantly. Individual files still parse on selection; Scan Archive refreshes the cache."
+                } else {
+                    statusMessage = "Loaded \(file.url.lastPathComponent) — \(index.entries.count) entries. Scanning for models…"
+                    // Auto-scan immediately — manual "Scan Archive" clicks
+                    // shouldn't be a prerequisite for browsing/filtering to work.
+                    scanAllArchives()
+                }
+                addRecentFile(file.url)
 
             case .levelResource, .sceneryResource:
                 // "Memory-Mapped Hex Engine" (blueprint 5.2): `.mappedIfSafe`
@@ -198,6 +285,9 @@ public final class WorkspaceViewModel: ObservableObject {
                 statusMessage = "Loaded \(file.url.lastPathComponent) — \(node.children.count) top-level chunks."
                 modelsHub.append(contentsOf: Self.resolveModels(inFileRoot: node, sourceLabel: file.url.lastPathComponent))
                 orphanedContent.append(contentsOf: AssetResolver.scanForOrphans(fileRoot: node, sourceLabel: file.url.lastPathComponent))
+                texturesHub.append(contentsOf: Self.collectTextures(inFileRoot: node, sourceLabel: file.url.lastPathComponent))
+                levelsHub.append(contentsOf: Self.collectLevels(inFileRoot: node, sourceLabel: file.url.lastPathComponent))
+                addRecentFile(file.url)
 
             case .archiveData:
                 statusMessage = "Drop the matching .BH file to browse \(file.url.lastPathComponent) (a .BD alone has no index)."
@@ -280,6 +370,8 @@ public final class WorkspaceViewModel: ObservableObject {
             var resultsByRoot: [UUID: [String: ChunkNode]] = [:]
             var resolvedModels: [ResolvedModelAsset] = []
             var orphans: [OrphanedAsset] = []
+            var textures: [TextureHubEntry] = []
+            var levels: [LevelHubEntry] = []
 
             for (rootID, index) in targets {
                 guard let reader = try? BDArchiveReader(index: index) else { continue }
@@ -295,7 +387,9 @@ public final class WorkspaceViewModel: ObservableObject {
                             guard let node = try? RM2Parser.parse(data: pending.data, fileKind: pending.kind, fileName: pending.name) else { return nil }
                             let models = Self.resolveModels(inFileRoot: node, sourceLabel: pending.name)
                             let entryOrphans = AssetResolver.scanForOrphans(fileRoot: node, sourceLabel: pending.name)
-                            return ParsedEntryResult(name: pending.name, node: node, models: models, orphans: entryOrphans)
+                            let entryTextures = Self.collectTextures(inFileRoot: node, sourceLabel: pending.name)
+                            let entryLevels = Self.collectLevels(inFileRoot: node, sourceLabel: pending.name)
+                            return ParsedEntryResult(name: pending.name, node: node, models: models, orphans: entryOrphans, textures: entryTextures, levels: entryLevels)
                         }
                     }
                     var collected: [ParsedEntryResult] = []
@@ -307,15 +401,30 @@ public final class WorkspaceViewModel: ObservableObject {
                 }
 
                 var parsedByName: [String: ChunkNode] = [:]
+                var modelsForThisArchive: [ResolvedModelAsset] = []
+                var orphansForThisArchive: [OrphanedAsset] = []
+                var texturesForThisArchive: [TextureHubEntry] = []
+                var levelsForThisArchive: [LevelHubEntry] = []
                 for result in parsed {
                     parsedByName[result.name] = result.node
-                    resolvedModels.append(contentsOf: result.models)
-                    orphans.append(contentsOf: result.orphans)
+                    modelsForThisArchive.append(contentsOf: result.models)
+                    orphansForThisArchive.append(contentsOf: result.orphans)
+                    texturesForThisArchive.append(contentsOf: result.textures)
+                    levelsForThisArchive.append(contentsOf: result.levels)
                 }
                 resultsByRoot[rootID] = parsedByName
+                resolvedModels.append(contentsOf: modelsForThisArchive)
+                orphans.append(contentsOf: orphansForThisArchive)
+                textures.append(contentsOf: texturesForThisArchive)
+                levels.append(contentsOf: levelsForThisArchive)
+                // Cached per archive, right after its own scan finishes,
+                // rather than waiting for every archive in this batch —
+                // pure file I/O over already-`Sendable` value types, safe
+                // to do straight from this background task.
+                ScanCache.save(ScanCachePayload(modelsHub: modelsForThisArchive, orphanedContent: orphansForThisArchive, texturesHub: texturesForThisArchive), for: index.bdURL)
             }
 
-            await self?.applyBulkScan(resultsByRoot, resolvedModels: resolvedModels, orphans: orphans)
+            await self?.applyBulkScan(resultsByRoot, resolvedModels: resolvedModels, orphans: orphans, textures: textures, levels: levels)
         }
     }
 
@@ -327,9 +436,11 @@ public final class WorkspaceViewModel: ObservableObject {
         let node: ChunkNode
         let models: [ResolvedModelAsset]
         let orphans: [OrphanedAsset]
+        let textures: [TextureHubEntry]
+        let levels: [LevelHubEntry]
     }
 
-    private func applyBulkScan(_ resultsByRoot: [UUID: [String: ChunkNode]], resolvedModels: [ResolvedModelAsset], orphans: [OrphanedAsset]) {
+    private func applyBulkScan(_ resultsByRoot: [UUID: [String: ChunkNode]], resolvedModels: [ResolvedModelAsset], orphans: [OrphanedAsset], textures: [TextureHubEntry], levels: [LevelHubEntry]) {
         defer { isScanning = false }
         var parsedCount = 0
         var failedCount = 0
@@ -356,6 +467,8 @@ public final class WorkspaceViewModel: ObservableObject {
         rootNodes = rootNodes
         modelsHub.append(contentsOf: resolvedModels)
         orphanedContent.append(contentsOf: orphans)
+        texturesHub.append(contentsOf: textures)
+        levelsHub.append(contentsOf: levels)
         statusMessage = failedCount == 0
             ? "Scan complete — parsed \(parsedCount) level file(s), found \(resolvedModels.count) model(s) and \(orphans.count) orphaned/cut record(s)."
             : "Scan complete — parsed \(parsedCount) level file(s), \(failedCount) failed to parse, found \(resolvedModels.count) model(s) and \(orphans.count) orphaned/cut record(s)."
@@ -380,6 +493,57 @@ public final class WorkspaceViewModel: ObservableObject {
                 results.append(resolved)
             }
         }
+        return results
+    }
+
+    /// "Textures Hub" (QoL sweep) — every decoded texture in one already-
+    /// parsed file, mirroring `resolveModels`' pattern exactly (same
+    /// `nonisolated`/background-scan-safe shape, same per-file population
+    /// point in both `load(_:)` and `scanAllArchives`).
+    private nonisolated static func collectTextures(inFileRoot fileRoot: ChunkNode, sourceLabel: String) -> [TextureHubEntry] {
+        AssetResolver.buildIndex(fileRoot: fileRoot).textures.values.map {
+            TextureHubEntry(sourceLabel: sourceLabel, texture: $0)
+        }
+    }
+
+    /// "Visual Levels Hub": every decoded `SceneryData` record with a
+    /// non-empty placement tree in one already-parsed file — same shape as
+    /// `collectTextures`, but a direct tree walk rather than an
+    /// `AssetResolver.buildIndex` lookup, since `SceneryData` lives under a
+    /// file's `Code`/level-data sections that index doesn't cover (it's
+    /// scoped to `Graphics`/skeleton/animation lookups only). Skips scenery
+    /// records with zero placements — an empty/degenerate tree isn't a
+    /// level worth a gallery card.
+    private nonisolated static func collectLevels(inFileRoot fileRoot: ChunkNode, sourceLabel: String) -> [LevelHubEntry] {
+        var results: [LevelHubEntry] = []
+        func walk(_ node: ChunkNode) {
+            if case .scenery(let scenery) = node.payload, !scenery.placements.isEmpty {
+                results.append(LevelHubEntry(sourceLabel: sourceLabel, scenery: scenery, node: node))
+            }
+            for child in node.children { walk(child) }
+        }
+        walk(fileRoot)
+        return results
+    }
+
+    /// Every `Instance` record (placed entity — crate, enemy, platform, …)
+    /// in the same file `levelNode` came from, paired with its `ChunkNode`
+    /// so an edited transform can be patched straight back to this exact
+    /// record's byte offset. Used by the Level Viewer to draw placeholder
+    /// markers for objects this build has no verified mesh mapping for (see
+    /// `LevelViewerContext.instanceMarkers`'s doc comment) — a live tree
+    /// walk, not cached, since it's only ever called once per "Open Level
+    /// Viewer" click.
+    public func instanceRecords(inSameFileAs levelNode: ChunkNode) -> [(node: ChunkNode, instance: PlacedInstance)] {
+        guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes) else { return [] }
+        var results: [(node: ChunkNode, instance: PlacedInstance)] = []
+        func walk(_ node: ChunkNode) {
+            if case .instance(let placed) = node.payload {
+                results.append((node, placed))
+            }
+            for child in node.children { walk(child) }
+        }
+        walk(fileRoot)
         return results
     }
 
@@ -571,6 +735,65 @@ public final class WorkspaceViewModel: ObservableObject {
         return bytes
     }
 
+    /// Same idea as `patchedFileBytes(replacing:with:)`, but for a record
+    /// where only a *leading* fixed-layout portion is being overwritten —
+    /// `Instance`'s 28-byte transform prefix (`WorldPlacementWriter.
+    /// writeInstanceTransform`), ahead of its variable-length ID/unknown
+    /// lists. Safe for the same reason: the prefix's on-disk size never
+    /// changes, so nothing after it — inside this record or later in the
+    /// file — needs its offset adjusted. Requires `encoded.count <=
+    /// node.byteSize`, not `==`: unlike the fixed-size `Position` case,
+    /// `node.byteSize` here is the *whole* variable-length record.
+    public func patchedFileBytes(replacingPrefixOf node: ChunkNode, with encoded: Data) -> Data? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes),
+              var bytes = rawFileBytesByRootID[fileRoot.id]
+        else {
+            lastError = "Can't save edits here — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return nil
+        }
+        guard encoded.count <= node.byteSize else {
+            lastError = "Internal error: encoded prefix is \(encoded.count) bytes, longer than the record's own \(node.byteSize) bytes — refusing to save."
+            return nil
+        }
+        guard node.fileOffset >= 0, node.fileOffset + encoded.count <= bytes.count else {
+            lastError = "Internal error: this record's offset is outside its file's bounds."
+            return nil
+        }
+        bytes.replaceSubrange(node.fileOffset..<(node.fileOffset + encoded.count), with: encoded)
+        return bytes
+    }
+
+    /// The "Save Level Overrides" pipeline: applies every `(node, encoded
+    /// prefix)` edit into *one* copy of their shared owning file's bytes,
+    /// so moving several objects in the Level Viewer and saving once
+    /// produces one consistent file, not one save per object. All edits
+    /// must belong to the same standalone-opened file — a level's `Instance`
+    /// records always do, since they're read from the same `.RM2`/`.SM2`
+    /// the level's `SceneryData` came from — but this still checks rather
+    /// than assuming it, since patching the wrong file silently would be
+    /// far worse than refusing.
+    public func patchedFileBytes(applyingPrefixPatches edits: [(node: ChunkNode, encoded: Data)]) -> Data? {
+        guard let first = edits.first,
+              let fileRoot = findFileRoot(containing: first.node, in: rootNodes),
+              var bytes = rawFileBytesByRootID[fileRoot.id]
+        else {
+            lastError = "Can't save edits here — this level's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return nil
+        }
+        for (node, encoded) in edits {
+            guard findFileRoot(containing: node, in: rootNodes)?.id == fileRoot.id else {
+                lastError = "Internal error: level edits spanned more than one file — refusing to save a partial result."
+                return nil
+            }
+            guard encoded.count <= node.byteSize, node.fileOffset >= 0, node.fileOffset + encoded.count <= bytes.count else {
+                lastError = "Internal error: an edited record's offset/size didn't check out — refusing to save."
+                return nil
+            }
+            bytes.replaceSubrange(node.fileOffset..<(node.fileOffset + encoded.count), with: encoded)
+        }
+        return bytes
+    }
+
     /// Packages an edited file's patched bytes (see `patchedFileBytes`) into
     /// a real, installable `CrateModLoader` `.crate` — the "Crate Mod
     /// Loader & Multi-Game Packager" export path (blueprint 3.3), built on
@@ -659,6 +882,19 @@ public final class WorkspaceViewModel: ObservableObject {
             }
             return results
         }.value
+    }
+
+    /// "Visual Levels Hub" / "Direct .RM2 Write-Back": the one call both the
+    /// Levels Hub gallery and the Scenery inspector's "Open Level Viewer"
+    /// button make — resolves the scenery placements (see
+    /// `resolvedLevelPlacements`), gathers every `Instance` record from the
+    /// same file for the marker layer, and opens the Level Viewer with
+    /// both. Kept in one place so the two entry points can't drift into
+    /// gathering different data for what's supposed to be the same view.
+    public func openLevelViewer(for scenery: SceneryAsset, node: ChunkNode) async {
+        let placements = await resolvedLevelPlacements(for: scenery, node: node)
+        let markers = instanceRecords(inSameFileAs: node)
+        levelViewerContext = LevelViewerContext(scenery: scenery, placements: placements, instanceMarkers: markers)
     }
 
     /// "Deep Hierarchy & Linked Asset Resolution": the parent composite

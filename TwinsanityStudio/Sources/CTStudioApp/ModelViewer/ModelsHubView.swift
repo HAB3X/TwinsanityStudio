@@ -15,6 +15,23 @@ struct ModelsHubView: View {
     @State private var onlyFullyTextured = false
     @State private var isBatchSelectionMode = false
     @State private var selectedIDs: Set<ResolvedModelAsset.ID> = []
+    /// "Parent Objects Gallery": a second, visual presentation of the exact
+    /// same `workspace.modelsHub` data the list view already shows —
+    /// `modelsHub` is already every *resolved composite* (a complete
+    /// character/vehicle/prop: mesh + skeleton + textures), never a loose
+    /// texture/bone/collision mesh, so it's already the "parent objects,
+    /// clutter filtered out" set this needs; no separate data source or
+    /// filtering logic to build.
+    @State private var displayMode: DisplayMode = .list
+    /// Rendered lazily (only for cards actually scrolled into view — see
+    /// `GalleryCard.onAppear`) and cached here for the rest of this sheet's
+    /// lifetime, so scrolling back to an already-seen card is instant
+    /// instead of re-running a full offscreen Metal render.
+    @State private var thumbnailCache: [ResolvedModelAsset.ID: NSImage] = [:]
+
+    private enum DisplayMode {
+        case list, gallery
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -60,6 +77,13 @@ struct ModelsHubView: View {
                 Button("Select…") { isBatchSelectionMode = true }
                     .disabled(workspace.modelsHub.isEmpty)
             }
+            Picker("", selection: $displayMode) {
+                Image(systemName: "list.bullet").tag(DisplayMode.list)
+                Image(systemName: "square.grid.2x2").tag(DisplayMode.gallery)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 90)
             Button("Close") { dismiss() }
         }
         .padding()
@@ -92,6 +116,8 @@ struct ModelsHubView: View {
         } else if filteredModels.isEmpty {
             ContentUnavailableView("No Matches", systemImage: "line.3.horizontal.decrease.circle", description: Text("Try a different search or clear the filters above."))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if displayMode == .gallery {
+            gallery
         } else {
             List(filteredModels) { model in
                 if isBatchSelectionMode {
@@ -124,6 +150,66 @@ struct ModelsHubView: View {
                 }
             }
             .listStyle(.plain)
+        }
+    }
+
+    /// "Parent Objects Gallery": a `LazyVGrid` of thumbnail cards, one per
+    /// resolved composite — `LazyVGrid` (not `VGrid`/a plain `HStack`
+    /// wrapping) is load-bearing here, not decorative, same reasoning as
+    /// the hex viewer's `LazyVStack`: a full workspace can resolve
+    /// hundreds of models, and only cards actually scrolled into view
+    /// should exist as real views (and, by extension, only those should
+    /// ever trigger a real offscreen 3D thumbnail render).
+    private var gallery: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 140, maximum: 180), spacing: 14)], spacing: 14) {
+                ForEach(filteredModels) { model in
+                    GalleryCard(
+                        model: model,
+                        thumbnail: thumbnailCache[model.id],
+                        isBatchSelectionMode: isBatchSelectionMode,
+                        isSelected: selectedIDs.contains(model.id),
+                        onTap: { galleryCardTapped(model) }
+                    )
+                    .onAppear { loadThumbnailIfNeeded(for: model) }
+                    .draggable(model.id.uuidString)
+                }
+            }
+            .padding(14)
+        }
+    }
+
+    private func galleryCardTapped(_ model: ResolvedModelAsset) {
+        if isBatchSelectionMode {
+            toggleSelection(model.id)
+        } else {
+            // Opens straight into the Metal Asset Viewer, which is itself
+            // the "deep hierarchy" view for an already-resolved composite
+            // — its own Components section lists every linked material/
+            // texture (and, for rigged models, skeleton/animations), the
+            // same relationship the sidebar's Relational Chain panel shows
+            // for a tree-selected node. A gallery card only carries a
+            // `ResolvedModelAsset`, not a specific source `ChunkNode` (the
+            // same composite can legitimately resolve from more than one
+            // reference in the workspace), so there's no single sidebar
+            // tree node to jump the main selection to here.
+            workspace.modelViewerAsset = model
+            dismiss()
+        }
+    }
+
+    /// Renders one thumbnail off the main thread (`ModelViewerRenderer`'s
+    /// offscreen path is plain Metal + CoreGraphics, no AppKit/SwiftUI
+    /// state touched, and `MTLCommandQueue` is documented safe to use
+    /// concurrently from multiple threads) so scrolling through a large
+    /// gallery doesn't stall on GPU work — only skipped if already cached.
+    private func loadThumbnailIfNeeded(for model: ResolvedModelAsset) {
+        guard thumbnailCache[model.id] == nil else { return }
+        Task.detached(priority: .userInitiated) {
+            let image = ModelThumbnailRenderer.render(model, size: 256)
+            await MainActor.run {
+                thumbnailCache[model.id] = image ?? ModelThumbnailRenderer.placeholder
+            }
         }
     }
 
@@ -192,5 +278,96 @@ private struct ModelsHubRow: View {
         }
         .contentShape(Rectangle())
         .padding(.vertical, 4)
+    }
+}
+
+/// "YouTube-style" parent-object gallery card: a square thumbnail (a real
+/// offscreen 3D render of the resolved model — see `ModelThumbnailRenderer`
+/// — not a generic placeholder icon) plus a title/subtitle strip underneath,
+/// the same two-tier layout video-thumbnail grids use.
+private struct GalleryCard: View {
+    let model: ResolvedModelAsset
+    let thumbnail: NSImage?
+    let isBatchSelectionMode: Bool
+    let isSelected: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(alignment: .leading, spacing: 6) {
+                thumbnailView
+                    .frame(height: 140)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(nsColor: .underPageBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(isSelected ? Color.accentColor : Color(.separatorColor), lineWidth: isSelected ? 2 : 1)
+                    )
+                    .overlay(alignment: .topTrailing) {
+                        if isBatchSelectionMode {
+                            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(isSelected ? Color.accentColor : Color.white)
+                                .shadow(radius: 2)
+                                .padding(6)
+                        }
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if model.skeleton != nil {
+                            Image(systemName: "figure.stand")
+                                .font(.caption2)
+                                .padding(4)
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 4))
+                                .padding(4)
+                        }
+                    }
+
+                Text(model.displayName)
+                    .font(.caption.bold())
+                    .lineLimit(2)
+                    .foregroundStyle(.primary)
+                Text("\(model.mesh.totalVertexCount) verts\(model.isFullyTextured ? "" : " · untextured")")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var thumbnailView: some View {
+        if let thumbnail {
+            Image(nsImage: thumbnail)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .padding(6)
+        } else {
+            ProgressView()
+                .controlSize(.small)
+        }
+    }
+}
+
+/// Real offscreen 3D thumbnails for the Parent Objects Gallery — reuses
+/// `ModelViewerRenderer.renderOffscreen`, the exact same rendering path
+/// this session's own automated snapshot test uses to verify the Metal
+/// pipeline against real game data, rather than a fabricated placeholder
+/// icon standing in for "the model itself."
+enum ModelThumbnailRenderer {
+    static func render(_ asset: ResolvedModelAsset, size: Int) -> NSImage? {
+        guard let renderer = ModelViewerRenderer(asset: asset), renderer.hasGeometry,
+              let cgImage = renderer.renderOffscreen(width: size, height: size)
+        else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: size, height: size))
+    }
+
+    /// Shown (once, then cached like any other result) for a resolved
+    /// composite whose renderer failed to build or produced no drawable
+    /// geometry — a real, if rare, case (see `ModelViewerWindow`'s own
+    /// "No Drawable Geometry" state for the same situation) that a card
+    /// should say something about rather than spin forever.
+    static var placeholder: NSImage {
+        NSImage(systemSymbolName: "cube.transparent", accessibilityDescription: "No preview available")
+            ?? NSImage(size: NSSize(width: 1, height: 1))
     }
 }

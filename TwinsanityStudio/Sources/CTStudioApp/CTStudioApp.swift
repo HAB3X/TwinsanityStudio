@@ -19,6 +19,23 @@ struct CTStudioApp: App {
                     NotificationCenter.default.post(name: .ctStudioOpenRequested, object: nil)
                 }
                 .keyboardShortcut("o", modifiers: [.command])
+                // "Recent Files" (QoL sweep): a real macOS-style Open Recent
+                // submenu, rebuilt from `workspace.recentFileURLs` — which
+                // stays current since `Menu`'s content closure re-evaluates
+                // whenever the `@Published` array it reads changes.
+                Menu("Open Recent") {
+                    if workspace.recentFileURLs.isEmpty {
+                        Text("No Recent Files")
+                    } else {
+                        ForEach(workspace.recentFileURLs, id: \.path) { url in
+                            Button(url.lastPathComponent) {
+                                NotificationCenter.default.post(name: .ctStudioOpenRecentRequested, object: url)
+                            }
+                        }
+                        Divider()
+                        Button("Clear Menu") { workspace.clearRecentFiles() }
+                    }
+                }
             }
             CommandGroup(after: .textEditing) {
                 Button("Search Everything…") {
@@ -51,6 +68,8 @@ struct CTStudioApp: App {
 extension Notification.Name {
     static let ctStudioOpenRequested = Notification.Name("CTStudioOpenRequested")
     static let ctStudioCommandPaletteRequested = Notification.Name("CTStudioCommandPaletteRequested")
+    /// `object` is the `URL` to reopen — see `CTStudioApp`'s "Open Recent" submenu.
+    static let ctStudioOpenRecentRequested = Notification.Name("CTStudioOpenRecentRequested")
 }
 
 /// Plain SPM executable targets (as opposed to a proper `.app` bundle

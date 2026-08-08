@@ -3,12 +3,24 @@ import CTModels
 
 struct SidebarView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
+    /// "Multi-Select & Batch Operations" (QoL sweep) — a separate toggled
+    /// mode rather than switching `List`'s own selection to a `Set`
+    /// binding: the single-selection binding below is what drives
+    /// `InspectorView`/`ViewportPanel` throughout the rest of the app, and
+    /// this mirrors the exact same batch-mode pattern `ModelsHubView`
+    /// already uses rather than touching that wiring.
+    @State private var isBatchSelectionMode = false
+    @State private var batchSelectedIDs: Set<UUID> = []
 
     var body: some View {
         VStack(spacing: 0) {
             if !workspace.rootNodes.isEmpty {
                 filterBar
                 Divider()
+                if isBatchSelectionMode {
+                    batchActionBar
+                    Divider()
+                }
             }
 
             List(selection: Binding(
@@ -19,7 +31,7 @@ struct SidebarView: View {
             )) {
                 ForEach(workspace.filteredRootNodes) { root in
                     OutlineGroup(root, children: \.displayChildren) { node in
-                        SidebarRow(node: node, rootID: root.id)
+                        SidebarRow(node: node, rootID: root.id, isBatchSelectionMode: isBatchSelectionMode, batchSelectedIDs: $batchSelectedIDs)
                             .tag(node.id)
                     }
                 }
@@ -64,9 +76,59 @@ struct SidebarView: View {
                 .buttonStyle(.borderless)
                 .help("Parse every level file so the type filter and search can find assets anywhere in the archive.")
             }
+
+            Button {
+                isBatchSelectionMode.toggle()
+                if !isBatchSelectionMode { batchSelectedIDs.removeAll() }
+            } label: {
+                Image(systemName: isBatchSelectionMode ? "checklist.checked" : "checklist")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .help("Select multiple chunks for batch export.")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+    }
+
+    private var batchActionBar: some View {
+        HStack {
+            Text("\(batchSelectedIDs.count) selected")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Export Selected…") { exportBatchSelection() }
+                .disabled(batchSelectedIDs.isEmpty)
+            Button("Done") {
+                isBatchSelectionMode = false
+                batchSelectedIDs.removeAll()
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    /// Resolves every selected node into a composite asset (same
+    /// `resolveComposite` the single-node "Export as Group…" context menu
+    /// action already uses) and hands the resolvable ones to
+    /// `WorkspaceViewModel.exportBatch` — a node with no resolvable
+    /// composite (a raw/undecoded record, a `Position`/`Trigger`, …) is
+    /// silently skipped from the export rather than failing the whole
+    /// batch, but the status message says how many that was so it isn't a
+    /// silent surprise.
+    private func exportBatchSelection() {
+        let nodes = batchSelectedIDs.compactMap { findNode(id: $0, in: workspace.rootNodes) }
+        let resolved = nodes.compactMap { workspace.resolveComposite(for: $0) }
+        let skipped = nodes.count - resolved.count
+        guard !resolved.isEmpty, let directory = ExportPanel.chooseFolder(message: "Choose a folder to export \(resolved.count) selected object(s) into — each gets its own subfolder.") else { return }
+        isBatchSelectionMode = false
+        batchSelectedIDs.removeAll()
+        Task {
+            await workspace.exportBatch(resolved, to: directory)
+            if skipped > 0 {
+                workspace.statusMessage += " (\(skipped) selected record(s) had no resolvable model/texture and were skipped.)"
+            }
+        }
     }
 
     private var filteredEmptyState: some View {
@@ -91,6 +153,17 @@ struct SidebarView: View {
             Text("No archives or level files open")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            // "Persist last-opened file" (QoL sweep): offered, not
+            // auto-loaded on launch — silently kicking off a scan of a
+            // potentially large archive the moment the app opens would be
+            // a surprising thing for the app to decide on its own.
+            if let mostRecent = workspace.recentFileURLs.first {
+                Button("Reopen \(mostRecent.lastPathComponent)") {
+                    workspace.open(url: mostRecent)
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 24)
@@ -110,9 +183,29 @@ private struct SidebarRow: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     let node: ChunkNode
     let rootID: UUID
+    let isBatchSelectionMode: Bool
+    @Binding var batchSelectedIDs: Set<UUID>
 
     var body: some View {
         HStack {
+            if isBatchSelectionMode {
+                // A `Button` here (not a bare tap gesture on the row) so the
+                // tap is consumed by this control instead of also
+                // triggering the enclosing `List`'s own row-selection —
+                // the exact same trick the "Parse" button below already
+                // relies on to coexist with `List(selection:)`.
+                Button {
+                    if batchSelectedIDs.contains(node.id) {
+                        batchSelectedIDs.remove(node.id)
+                    } else {
+                        batchSelectedIDs.insert(node.id)
+                    }
+                } label: {
+                    Image(systemName: batchSelectedIDs.contains(node.id) ? "checkmark.square.fill" : "square")
+                        .foregroundStyle(batchSelectedIDs.contains(node.id) ? Color.accentColor : Color.secondary)
+                }
+                .buttonStyle(.plain)
+            }
             Image(systemName: icon)
                 .foregroundStyle(node.isUninteresting ? AnyShapeStyle(.tertiary) : AnyShapeStyle(iconColor))
                 .frame(width: 18)

@@ -7,7 +7,7 @@ import CTCore
 /// *unreferenced* record is content that's still fully present in the file
 /// but that nothing in it points to, which is exactly what cut/prototype
 /// content looks like once whatever used it was removed from the level.
-public enum OrphanReason: String, Sendable, CaseIterable {
+public enum OrphanReason: String, Sendable, CaseIterable, Codable {
     case danglingMeshReference = "Dangling Mesh Reference"
     case danglingSkinReference = "Dangling Skin Reference"
     case unreferencedGeometry = "Unreferenced Geometry"
@@ -19,7 +19,7 @@ public enum OrphanReason: String, Sendable, CaseIterable {
 /// parsed file. `modelPreview`/`texturePreview` are populated only when
 /// there's actually something to look at — a dangling reference has no live
 /// target, so both stay `nil` and the UI shows it as a text-only entry.
-public struct OrphanedAsset: Sendable, Identifiable {
+public struct OrphanedAsset: Sendable, Identifiable, Codable {
     public let id = UUID()
     public var recordID: UInt32
     public var reason: OrphanReason

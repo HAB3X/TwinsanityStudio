@@ -107,49 +107,128 @@ struct PositionInspectorView: View {
     }
 }
 
+/// "Direct .RM2 Write-Back": position/rotation are editable and save
+/// through the same decode -> edit -> encode -> patch -> save-as-copy loop
+/// `PositionInspectorView` established — see `WorldPlacementWriter.
+/// writeInstanceTransform`'s doc comment for why only this leading
+/// transform prefix (not the whole variable-length `Instance` record) is
+/// writable. Everything else on the record (identity/child-reference
+/// fields) stays read-only, same as before.
 struct InstanceInspectorView: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    let node: ChunkNode
     let instance: PlacedInstance
 
+    @State private var x: String = ""
+    @State private var y: String = ""
+    @State private var z: String = ""
+    @State private var w: String = ""
+    @State private var rotX: String = ""
+    @State private var rotY: String = ""
+    @State private var rotZ: String = ""
+
     var body: some View {
-        Form {
-            Section("Placement") {
-                LabeledContent("Position", value: vectorString(instance.position))
-                LabeledContent("Rotation", value: degreesString(instance.rotationDegrees))
-                LabeledContent("COM Rotation", value: degreesString(SIMD3(
-                    PlacedInstance.degrees(fromRawAngle: instance.comRotationRaw.x),
-                    PlacedInstance.degrees(fromRawAngle: instance.comRotationRaw.y),
-                    PlacedInstance.degrees(fromRawAngle: instance.comRotationRaw.z)
-                )))
-            }
-            Section("Identity") {
-                LabeledContent("Object ID", value: "\(instance.objectID)")
-                LabeledContent("Script ID", value: instance.scriptID == -1 ? "None" : "\(instance.scriptID)")
-                LabeledContent("Ref List", value: instance.refList == -1 ? "None" : "\(instance.refList)")
-                LabeledContent("Flags", value: "0x\(String(instance.flags, radix: 16))")
-            }
-            if !instance.childInstanceIDs.isEmpty {
-                Section("Child Instances (\(instance.childInstanceIDs.count))") {
-                    idList(instance.childInstanceIDs)
+        VStack(alignment: .leading, spacing: 0) {
+            Form {
+                Section("Placement") {
+                    LabeledContent("X") { TextField("X", text: $x).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Y") { TextField("Y", text: $y).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Z") { TextField("Z", text: $z).textFieldStyle(.roundedBorder) }
+                    LabeledContent("W") { TextField("W", text: $w).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Rotation X°") { TextField("X°", text: $rotX).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Rotation Y°") { TextField("Y°", text: $rotY).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Rotation Z°") { TextField("Z°", text: $rotZ).textFieldStyle(.roundedBorder) }
+                    LabeledContent("COM Rotation", value: degreesString(SIMD3(
+                        PlacedInstance.degrees(fromRawAngle: instance.comRotationRaw.x),
+                        PlacedInstance.degrees(fromRawAngle: instance.comRotationRaw.y),
+                        PlacedInstance.degrees(fromRawAngle: instance.comRotationRaw.z)
+                    )))
+                }
+                Section("Identity") {
+                    LabeledContent("Object ID", value: "\(instance.objectID)")
+                    LabeledContent("Script ID", value: instance.scriptID == -1 ? "None" : "\(instance.scriptID)")
+                    LabeledContent("Ref List", value: instance.refList == -1 ? "None" : "\(instance.refList)")
+                    LabeledContent("Flags", value: "0x\(String(instance.flags, radix: 16))")
+                }
+                if !instance.childInstanceIDs.isEmpty {
+                    Section("Child Instances (\(instance.childInstanceIDs.count))") {
+                        idList(instance.childInstanceIDs)
+                    }
+                }
+                if !instance.childPositionIDs.isEmpty {
+                    Section("Referenced Positions (\(instance.childPositionIDs.count))") {
+                        idList(instance.childPositionIDs)
+                    }
+                }
+                if !instance.childPathIDs.isEmpty {
+                    Section("Referenced Paths (\(instance.childPathIDs.count))") {
+                        idList(instance.childPathIDs)
+                    }
                 }
             }
-            if !instance.childPositionIDs.isEmpty {
-                Section("Referenced Positions (\(instance.childPositionIDs.count))") {
-                    idList(instance.childPositionIDs)
-                }
+            .formStyle(.grouped)
+            .onAppear { loadFields() }
+            .onChange(of: node.id) { _, _ in loadFields() }
+
+            HStack {
+                Button("Save Edited Copy…") { save() }
+                    .disabled(editedTransform == nil || !workspace.canSaveEdits(for: node))
+                Spacer()
             }
-            if !instance.childPathIDs.isEmpty {
-                Section("Referenced Paths (\(instance.childPathIDs.count))") {
-                    idList(instance.childPathIDs)
-                }
+            .padding(.horizontal)
+
+            if !workspace.canSaveEdits(for: node) {
+                Text("Editing only saves for a standalone-opened .RM2/.SM2 file — this record's file is archive-packed, which this build doesn't have a write path for yet.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+            } else {
+                Text("Saves an edited copy under a new name — the file you opened is never modified in place. Only position/rotation are writable; everything else on this record round-trips unchanged.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
             }
         }
-        .formStyle(.grouped)
     }
 
     private func idList(_ ids: [UInt16]) -> some View {
         Text(ids.map { "#\($0)" }.joined(separator: ", "))
             .font(.system(.body, design: .monospaced))
             .foregroundStyle(.secondary)
+    }
+
+    private func loadFields() {
+        x = String(instance.position.x)
+        y = String(instance.position.y)
+        z = String(instance.position.z)
+        w = String(instance.position.w)
+        rotX = String(format: "%.2f", instance.rotationDegrees.x)
+        rotY = String(format: "%.2f", instance.rotationDegrees.y)
+        rotZ = String(format: "%.2f", instance.rotationDegrees.z)
+    }
+
+    private var editedTransform: (position: SIMD4<Float>, rotationRaw: SIMD3<UInt16>)? {
+        guard let fx = Float(x), let fy = Float(y), let fz = Float(z), let fw = Float(w),
+              let frx = Float(rotX), let fry = Float(rotY), let frz = Float(rotZ)
+        else { return nil }
+        return (SIMD4(fx, fy, fz, fw), SIMD3(
+            PlacedInstance.rawAngle(fromDegrees: frx),
+            PlacedInstance.rawAngle(fromDegrees: fry),
+            PlacedInstance.rawAngle(fromDegrees: frz)
+        ))
+    }
+
+    private func save() {
+        guard let edited = editedTransform else { return }
+        let encoded = WorldPlacementWriter.writeInstanceTransform(position: edited.position, rotationRaw: edited.rotationRaw, comRotationRaw: instance.comRotationRaw)
+        guard let patchedBytes = workspace.patchedFileBytes(replacingPrefixOf: node, with: encoded) else { return }
+        guard let url = ExportPanel.chooseSaveLocation(suggestedName: "\(node.displayName)_edited.rm2", message: "Save the edited copy of this file. The original file on disk is not modified.") else { return }
+        do {
+            try patchedBytes.write(to: url)
+            workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent). The original file was not modified."
+        } catch {
+            workspace.lastError = "Save failed: \(error)"
+        }
     }
 }
 
