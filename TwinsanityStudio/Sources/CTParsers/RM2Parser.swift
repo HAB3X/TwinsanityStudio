@@ -230,6 +230,17 @@ public enum RM2Parser {
                 return .skeleton(try GraphicsInfoParser.parse(&cursor, recordID: recordID))
             case .animation:
                 return .animation(try AnimationParser.parse(&cursor, recordID: recordID))
+            case .position:
+                return .position(try WorldPlacementParser.parsePosition(&cursor, recordID: recordID))
+            case .objectInstance:
+                // Demo (`.objectInstanceDemo`) and multiplayer (`.objectInstanceMB`)
+                // variants diverge in their tail layout after `ObjectID`
+                // (`Twinsanity/Items/Instances/InstanceDemo.cs` /
+                // `InstanceMB.cs`) — only the retail layout is decoded here;
+                // those fall through to `.raw` like other unattempted formats.
+                return .instance(try WorldPlacementParser.parseInstance(&cursor, recordID: recordID))
+            case .trigger:
+                return .trigger(try WorldPlacementParser.parseTrigger(&cursor, recordID: recordID))
             default:
                 return .raw(byteCount: size)
             }

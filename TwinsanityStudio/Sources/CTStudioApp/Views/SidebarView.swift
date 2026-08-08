@@ -143,6 +143,9 @@ private struct SidebarRow: View {
         case .material: return "paintpalette"
         case .skeleton: return "figure.stand"
         case .animation: return "play.circle"
+        case .position: return "mappin"
+        case .instance: return "cube.transparent.fill"
+        case .trigger: return "square.dashed"
         case .raw, .none: return node.children.isEmpty ? "doc" : "folder"
         }
     }
@@ -155,6 +158,9 @@ private struct SidebarRow: View {
         case .material: return .pink
         case .skeleton: return .orange
         case .animation: return .green
+        case .position: return .mint
+        case .instance: return .indigo
+        case .trigger: return .red
         case .raw, .none: return .secondary
         }
     }
@@ -172,8 +178,8 @@ extension ChunkNode {
     /// undecoded Object/Script/Trigger/Position records to find it.
     private var displaySortRank: Int {
         switch payload {
-        case .texture, .mesh, .rigidModel, .skeleton, .animation: return 0
-        case .material: return 1
+        case .texture, .mesh, .rigidModel, .skeleton, .animation, .instance, .trigger: return 0
+        case .material, .position: return 1
         case .none: return children.isEmpty ? 3 : 2
         case .raw: return 3
         }

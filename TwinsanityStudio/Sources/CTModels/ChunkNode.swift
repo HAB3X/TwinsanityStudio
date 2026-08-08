@@ -10,6 +10,9 @@ public enum ChunkPayload: Sendable {
     case material(MaterialInfo)
     case skeleton(SkeletonAsset)
     case animation(AnimationAsset)
+    case position(PositionMarker)
+    case instance(PlacedInstance)
+    case trigger(TriggerVolume)
     /// Understood record kind, but not (yet) decoded into a typed model —
     /// still browsable/exportable as a hex/raw blob.
     case raw(byteCount: Int)
@@ -25,6 +28,8 @@ public enum ChunkPayload: Sendable {
         case model = "Models"
         case skeleton = "Skeletons"
         case animation = "Animations"
+        case instance = "Entities"
+        case trigger = "Triggers"
         public var id: String { rawValue }
     }
 
@@ -34,7 +39,9 @@ public enum ChunkPayload: Sendable {
         case .mesh, .rigidModel: return .model
         case .skeleton: return .skeleton
         case .animation: return .animation
-        case .material, .raw: return nil
+        case .instance: return .instance
+        case .trigger: return .trigger
+        case .material, .position, .raw: return nil
         }
     }
 }

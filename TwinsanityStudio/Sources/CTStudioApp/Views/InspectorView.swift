@@ -27,6 +27,12 @@ struct InspectorView: View {
                             SkeletonInspectorView(node: node, skeleton: skeleton)
                         case .animation(let animation):
                             AnimationInspectorView(animation: animation)
+                        case .position(let position):
+                            PositionInspectorView(position: position)
+                        case .instance(let instance):
+                            InstanceInspectorView(instance: instance)
+                        case .trigger(let trigger):
+                            TriggerInspectorView(trigger: trigger)
                         case .raw, .none:
                             RawInspectorView(node: node)
                         }
