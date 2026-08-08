@@ -142,8 +142,18 @@ public final class WorkspaceViewModel: ObservableObject {
     }
 
     /// Extracts an archived entry's bytes from its `.BD` and parses it as a
-    /// chunk tree in place, so levels packed inside a master archive are
-    /// browsable without a separate manual extract step.
+    /// chunk tree, so levels packed inside a master archive are browsable
+    /// without a separate manual extract step.
+    ///
+    /// This *replaces* `node` in the tree with a brand-new `ChunkNode`
+    /// (fresh `UUID`) rather than mutating `node.children`/`.payload` in
+    /// place. `ChunkNode` isn't `ObservableObject` — `List`/`OutlineGroup`
+    /// diff the tree using each node's `Identifiable.id`, and mutating an
+    /// already-diffed reference-type instance's contents in place is not
+    /// guaranteed to be picked back up (SwiftUI has no way to know a
+    /// property on a plain class changed). Giving the replacement a new
+    /// identity makes the change unambiguous to SwiftUI's diffing instead of
+    /// relying on it noticing an in-place mutation.
     public func expandArchiveEntry(_ node: ChunkNode, rootID: UUID) {
         guard let index = archiveIndexByRootID[rootID] else { return }
         guard let entry = index.entries.first(where: { $0.name == node.displayName }) else { return }
@@ -155,22 +165,41 @@ public final class WorkspaceViewModel: ObservableObject {
         do {
             let data = try BDArchiveParser.readEntryData(entry, index: index)
             let parsed = try RM2Parser.parse(data: data, fileKind: kind, fileName: entry.name)
-            node.sectionType = parsed.sectionType
-            node.children = parsed.children
-            node.payload = parsed.payload
-            // Belt-and-suspenders: `node` is a nested reference type inside
-            // `rootNodes`, so mutating it in place doesn't itself satisfy
-            // `@Published`'s change detection. `objectWillChange.send()`
-            // covers observers of the view model directly; reassigning
-            // `rootNodes` to itself additionally forces any diffing keyed on
-            // that array (List/OutlineGroup's data source) to re-derive from
-            // the mutated tree rather than relying on it noticing nested
-            // mutations on its own.
-            objectWillChange.send()
-            rootNodes = rootNodes
+            let replacement = ChunkNode(
+                recordID: node.recordID,
+                sectionType: parsed.sectionType,
+                displayName: node.displayName,
+                byteSize: node.byteSize,
+                fileOffset: node.fileOffset,
+                children: parsed.children,
+                payload: parsed.payload
+            )
+            rootNodes = rootNodes.map { replacingDescendant(node, with: replacement, in: $0) }
+            if selectedNode === node {
+                selectedNode = replacement
+            }
         } catch {
             lastError = "\(entry.name): \(error)"
         }
+    }
+
+    /// Returns a tree equal to `root` except that `target` (found anywhere
+    /// in it, by identity) is swapped for `replacement`. `root` itself is
+    /// returned unchanged (same identity) when `target` isn't inside it —
+    /// only nodes on the path to `target` get their `children` array
+    /// reassigned, so unrelated branches of a large tree (e.g. the other 696
+    /// archive entries) aren't touched.
+    private func replacingDescendant(_ target: ChunkNode, with replacement: ChunkNode, in root: ChunkNode) -> ChunkNode {
+        if root === target { return replacement }
+        guard !root.children.isEmpty else { return root }
+        var changed = false
+        let newChildren = root.children.map { child -> ChunkNode in
+            let updated = replacingDescendant(target, with: replacement, in: child)
+            if updated !== child { changed = true }
+            return updated
+        }
+        if changed { root.children = newChildren }
+        return root
     }
 
     // MARK: - Export
