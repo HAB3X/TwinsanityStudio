@@ -7,6 +7,19 @@ struct InspectorView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     let node: ChunkNode?
     @State private var showComposite = false
+    /// Cached, not recomputed in `body`: `resolveComposite` mints a fresh
+    /// `ResolvedModelAsset` (fresh `UUID`, by design — see that type's own
+    /// doc comment) on every call, and `body` re-evaluates on *any*
+    /// `@Published` change anywhere in `workspace` (this view holds it as
+    /// an `@EnvironmentObject`) — not just when `node` changes. Computing
+    /// this inline in `compositeContent` used to hand `CompositePreviewView`
+    /// a new asset identity on every unrelated workspace update, which
+    /// tore down and rebuilt its GPU renderer in a loop for as long as the
+    /// composite toggle was on — expensive on its own, and (observed
+    /// directly, via the diagnostic logging added for the blank-viewport
+    /// investigation) severe enough to visibly interfere with a
+    /// `ModelViewerWindow` sheet open at the same time.
+    @State private var resolvedComposite: ResolvedModelAsset?
 
     var body: some View {
         Group {
@@ -23,7 +36,7 @@ struct InspectorView: View {
                         }
                         Divider()
                         if showComposite, Self.isCompositeEligible(node.payload) {
-                            compositeContent(for: node)
+                            compositeContent
                         } else {
                             switch node.payload {
                             case .texture(let texture):
@@ -61,7 +74,11 @@ struct InspectorView: View {
                     }
                     .padding(20)
                 }
-                .onChange(of: node.id) { _, _ in showComposite = false }
+                .onChange(of: node.id) { _, _ in
+                    showComposite = false
+                    updateResolvedComposite(for: node)
+                }
+                .onAppear { updateResolvedComposite(for: node) }
             } else {
                 ContentUnavailableView(
                     "No Selection",
@@ -83,10 +100,19 @@ struct InspectorView: View {
         }
     }
 
+    /// Only actually calls the expensive `resolveComposite` (rebuilds the
+    /// whole file's Graphics/Code index) for payload kinds the composite
+    /// toggle can even apply to — same guard `isCompositeEligible` already
+    /// uses for whether to show the toggle at all, now also covering
+    /// whether to eagerly resolve it.
+    private func updateResolvedComposite(for node: ChunkNode) {
+        resolvedComposite = Self.isCompositeEligible(node.payload) ? workspace.resolveComposite(for: node) : nil
+    }
+
     @ViewBuilder
-    private func compositeContent(for node: ChunkNode) -> some View {
-        if let asset = workspace.resolveComposite(for: node) {
-            CompositePreviewView(asset: asset)
+    private var compositeContent: some View {
+        if let resolvedComposite {
+            CompositePreviewView(asset: resolvedComposite)
         } else {
             ContentUnavailableView(
                 "No Parent Found",
