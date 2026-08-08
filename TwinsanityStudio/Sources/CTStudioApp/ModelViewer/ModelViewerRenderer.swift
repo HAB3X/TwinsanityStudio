@@ -425,9 +425,19 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
                                    sampler textureSampler [[sampler(0)]],
                                    constant Uniforms &uniforms [[buffer(1)]]) {
         float4 texColor = colorTexture.sample(textureSampler, in.uv);
-        float3 n = normalize(in.worldNormal);
-        float diffuse = max(dot(n, normalize(-uniforms.lightDirection)), 0.0);
-        float lighting = min(0.35 + diffuse * 0.75, 1.0);
+        // Skinned vertices don't currently decode a real normal (SkinParser
+        // leaves it zero — the Skin format's own per-vertex normal isn't
+        // wired up yet); normalize()-ing a zero vector is undefined, so
+        // treat a degenerate normal as "ambient only" instead of feeding it
+        // into the dot product. `abs(dot(...))` rather than `max(...,0)`:
+        // there's no back-face culling in this viewer (both sides of thin
+        // geometry are visible), so lighting both faces of a surface keeps
+        // the back side from reading as flat-black — appropriate for an
+        // inspection tool where seeing the geometry matters more than
+        // single-sided physical lighting accuracy.
+        float normalLength = length(in.worldNormal);
+        float diffuse = normalLength > 0.0001 ? abs(dot(in.worldNormal / normalLength, normalize(-uniforms.lightDirection))) : 0.0;
+        float lighting = min(0.6 + diffuse * 0.5, 1.0);
         float3 base = texColor.rgb * in.color.rgb;
         return float4(base * lighting, texColor.a * in.color.a);
     }

@@ -413,12 +413,28 @@ public final class WorkspaceViewModel: ObservableObject {
     /// The "View Parent / Composite" feature: resolves `node` — a texture,
     /// raw mesh, material, or animation, not just the `RigidModel`/
     /// `GraphicsInfo` link record itself — into the complete object it's
-    /// part of, by walking the same file's Graphics/Code index the rest of
-    /// linked asset resolution already builds. See
-    /// `AssetResolver.resolveComposite` for the per-payload-kind lookup.
+    /// part of. Record IDs in this format are large hash-like values (not
+    /// small per-file indices), which means they're effectively global: a
+    /// texture stored in one `.RM2` is routinely referenced by a
+    /// `RigidModel`/`Material` living in a *different* file (a shared
+    /// texture/material bank referenced from many level files is a common
+    /// layout for this engine). Restricting the search to "the file this
+    /// node happens to live in" — which is all the original implementation
+    /// did — means most cross-file references never resolve. This tries
+    /// that fast, common-case file first, then falls back to every other
+    /// already-parsed file in the workspace, stopping at the first match.
+    /// See `AssetResolver.resolveComposite` for the per-payload-kind lookup.
     public func resolveComposite(for node: ChunkNode) -> ResolvedModelAsset? {
-        guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return nil }
-        return AssetResolver.resolveComposite(for: node, fileRoot: fileRoot, displayNamePrefix: "\(fileRoot.displayName) — ")
+        if let ownFileRoot = findFileRoot(containing: node, in: rootNodes),
+           let resolved = AssetResolver.resolveComposite(for: node, fileRoot: ownFileRoot, displayNamePrefix: "\(ownFileRoot.displayName) — ") {
+            return resolved
+        }
+        for fileRoot in allFileRoots(in: rootNodes) {
+            if let resolved = AssetResolver.resolveComposite(for: node, fileRoot: fileRoot, displayNamePrefix: "\(fileRoot.displayName) — ") {
+                return resolved
+            }
+        }
+        return nil
     }
 
     /// Depth-first search for the nearest ancestor of `target` that looks
@@ -439,6 +455,25 @@ public final class WorkspaceViewModel: ObservableObject {
             }
         }
         return nil
+    }
+
+    /// Every already-parsed file root reachable from `nodes` — the
+    /// workspace-wide counterpart to `findFileRoot`, used to fall back to a
+    /// cross-file search. Doesn't descend into an unexpanded archive entry
+    /// (`isExpandableArchiveEntry`): those have no decoded payload yet, so
+    /// there's nothing in them to match against regardless.
+    private func allFileRoots(in nodes: [ChunkNode]) -> [ChunkNode] {
+        let fileRootSectionTypes: Set<SectionType> = [.graphics, .graphicsX, .graphicsD, .code, .codeX, .codeDemo]
+        var roots: [ChunkNode] = []
+        for node in nodes {
+            if node.sectionType == .null && node.children.contains(where: { fileRootSectionTypes.contains($0.sectionType) }) {
+                roots.append(node)
+            }
+            if !isExpandableArchiveEntry(node) {
+                roots.append(contentsOf: allFileRoots(in: node.children))
+            }
+        }
+        return roots
     }
 
     /// One-click bundled export: the mesh (OBJ), an `.mtl` linking each

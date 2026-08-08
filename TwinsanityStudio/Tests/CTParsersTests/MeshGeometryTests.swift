@@ -2,20 +2,29 @@ import XCTest
 import CTModels
 
 final class MeshGeometryTests: XCTestCase {
-    /// Pins the triangle-strip winding exactly as ported from
-    /// `Model.ToPLY` (`Twinsanity/Items/Graphics/Model.cs:339-345`): index
-    /// `i`'s connectivity flag gates a triangle `(i±swap, i±swap, i+2)`,
-    /// swapping the first two indices on odd `i`.
+    /// Pins the triangle-strip decode exactly as re-derived from
+    /// `Model.ToPLY`'s face-*counting* loop (`Model.cs:303`,
+    /// `Vertexes[f + 2].Conn`) rather than its inconsistent face-*writing*
+    /// loop three lines later (`Model.cs:341`, `Vertexes[i].Conn` — the two
+    /// loops in the reference tool disagree with each other): the
+    /// connectivity flag on the *apex* vertex `i+2` gates candidate
+    /// triangle `(i, i+1, i+2)`, and the first two indices swap on odd `i`.
     func testTriangleIndicesMatchReferenceWindingOrder() {
-        let vertices = (0..<5).map { StaticVertex(position: SIMD3(Float($0), 0, 0)) }
-        let submesh = MeshSubmesh(vertices: vertices, connectivity: [true, true, true, false, false])
+        let vertices = (0..<6).map { StaticVertex(position: SIMD3(Float($0), 0, 0)) }
+        // Apex flags (index 2 onward) alternate true/true/false/true; the
+        // first two entries are never read as an apex and are set false to
+        // make that explicit.
+        let submesh = MeshSubmesh(vertices: vertices, connectivity: [false, false, true, true, false, true])
         let triangles = submesh.triangleIndices()
 
-        // i=0 (even): (0, 1, 2). i=1 (odd): swap -> (2, 1, 3). i=2 (even): (2, 3, 4).
+        // i=0 (even), apex conn[2]=true: (0, 1, 2).
+        // i=1 (odd), apex conn[3]=true: swap -> (2, 1, 3).
+        // i=2 (even), apex conn[4]=false: skipped.
+        // i=3 (odd), apex conn[5]=true: swap -> (4, 3, 5).
         XCTAssertEqual(triangles.count, 3)
         XCTAssertEqual(triangles[0].0, 0); XCTAssertEqual(triangles[0].1, 1); XCTAssertEqual(triangles[0].2, 2)
         XCTAssertEqual(triangles[1].0, 2); XCTAssertEqual(triangles[1].1, 1); XCTAssertEqual(triangles[1].2, 3)
-        XCTAssertEqual(triangles[2].0, 2); XCTAssertEqual(triangles[2].1, 3); XCTAssertEqual(triangles[2].2, 4)
+        XCTAssertEqual(triangles[2].0, 4); XCTAssertEqual(triangles[2].1, 3); XCTAssertEqual(triangles[2].2, 5)
     }
 
     func testDisconnectedVerticesProduceNoTriangles() {
