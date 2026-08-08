@@ -1,8 +1,10 @@
 import SwiftUI
+import AppKit
 
 @main
 struct CTStudioApp: App {
     @StateObject private var workspace = WorkspaceViewModel()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup("Twinsanity Studio") {
@@ -24,4 +26,19 @@ struct CTStudioApp: App {
 
 extension Notification.Name {
     static let ctStudioOpenRequested = Notification.Name("CTStudioOpenRequested")
+}
+
+/// Plain SPM executable targets (as opposed to a proper `.app` bundle
+/// launched through Launch Services) don't automatically get window focus
+/// stolen from whichever app launched them — including Xcode itself when run
+/// via ⌘R. Without this, the window genuinely opens, it just sits behind
+/// Xcode until you manually ⌘Tab to it, which reads as "nothing happened."
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        for window in NSApp.windows {
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
 }
