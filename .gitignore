@@ -1,0 +1,9 @@
+# Game disc image — large, copyrighted, doesn't belong in version control
+Games Files/
+
+# Swift Package Manager / Xcode build artifacts
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/

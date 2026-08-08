@@ -1,0 +1,126 @@
+import SwiftUI
+import UniformTypeIdentifiers
+
+struct ContentView: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var isTargetedForDrop = false
+
+    var body: some View {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            SidebarView()
+                .navigationSplitViewColumnWidth(min: 260, ideal: 320)
+        } content: {
+            InspectorView(node: workspace.selectedNode)
+                .navigationSplitViewColumnWidth(min: 360, ideal: 480)
+        } detail: {
+            ViewportPanel(node: workspace.selectedNode)
+        }
+        .navigationTitle("Twinsanity Studio")
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    presentOpenPanel()
+                } label: {
+                    Label("Open…", systemImage: "folder.badge.plus")
+                }
+                if workspace.isLoading {
+                    ProgressView().controlSize(.small)
+                }
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if let error = workspace.lastError {
+                StatusBanner(text: error, isError: true) { workspace.lastError = nil }
+            } else if !workspace.statusMessage.isEmpty {
+                StatusBanner(text: workspace.statusMessage, isError: false, dismiss: nil)
+            }
+        }
+        .overlay {
+            if isTargetedForDrop {
+                DropOverlay()
+            }
+        }
+        .onDrop(of: [.fileURL], isTargeted: $isTargetedForDrop) { providers in
+            handleDrop(providers: providers)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ctStudioOpenRequested)) { _ in
+            presentOpenPanel()
+        }
+    }
+
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        var urls: [URL] = []
+        let group = DispatchGroup()
+        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                defer { group.leave() }
+                if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    urls.append(url)
+                } else if let url = item as? URL {
+                    urls.append(url)
+                }
+            }
+        }
+        group.notify(queue: .main) {
+            workspace.open(urls: urls)
+        }
+        return true
+    }
+
+    private func presentOpenPanel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.message = "Choose a .BH archive, .RM2/.SM2 file, or a folder to scan."
+        if panel.runModal() == .OK {
+            workspace.open(urls: panel.urls)
+        }
+    }
+}
+
+private struct StatusBanner: View {
+    let text: String
+    let isError: Bool
+    var dismiss: (() -> Void)?
+
+    var body: some View {
+        HStack {
+            Image(systemName: isError ? "exclamationmark.triangle.fill" : "info.circle.fill")
+            Text(text)
+                .lineLimit(2)
+            Spacer()
+            if let dismiss {
+                Button(action: dismiss) {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .foregroundStyle(isError ? .red : .primary)
+        .padding()
+    }
+}
+
+private struct DropOverlay: View {
+    var body: some View {
+        ZStack {
+            Color.accentColor.opacity(0.12)
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [10]))
+                .padding(24)
+            VStack(spacing: 8) {
+                Image(systemName: "square.and.arrow.down.on.square")
+                    .font(.system(size: 40))
+                Text("Drop .BH/.BD, .RM2/.SM2, or a folder")
+                    .font(.headline)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}

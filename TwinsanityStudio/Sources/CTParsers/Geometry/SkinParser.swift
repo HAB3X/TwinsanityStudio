@@ -1,0 +1,149 @@
+import Foundation
+import CTCore
+import CTModels
+
+/// Decodes a `Skin` record (`SectionType.skin`, skinned/weighted geometry) —
+/// ported from `Twinsanity/Items/Graphics/Skin.cs`.
+///
+/// Unlike rigid `Model` geometry, skin vertex batches hide extra data inside
+/// the raw bit pattern of otherwise-float VU lanes: position/UV lanes are
+/// signed-int32-reinterpreted-then-scaled (a fixed-point-ish encoding driven
+/// by a per-submodel scale vector), and the weight lane packs a joint index
+/// (top byte, pre-multiplied by 4 for PS2 VU address granularity) alongside a
+/// float bone weight in the same 32 bits — see the inline comments below for
+/// exactly which reinterpretation applies where; getting int-vs-float-vs-bits
+/// backwards here silently produces a plausible-looking but wrong mesh, so
+/// this mirrors `Skin.CalculateData` line for line rather than "simplifying".
+public enum SkinParser {
+    public static func parse(_ cursor: inout BinaryCursor, recordID: UInt32) throws -> MeshAsset {
+        let subModelCount = try cursor.readUInt32()
+        var submeshes: [MeshSubmesh] = []
+        submeshes.reserveCapacity(Int(subModelCount))
+
+        for _ in 0..<subModelCount {
+            let materialID = try cursor.readUInt32()
+            let codeSize = Int(try cursor.readInt32())
+            _ = try cursor.readInt32() // declared vertex amount; decoded count is authoritative
+            let vifCode = try cursor.readBytes(codeSize)
+
+            let interpreter = try VIFInterpreter.interpretCode(vifCode)
+            let vertices = decodeVertices(interpreter.getMem())
+            submeshes.append(MeshSubmesh(
+                vertices: vertices.map(\.vertex),
+                connectivity: vertices.map(\.conn),
+                materialID: materialID,
+                jointIndices: vertices.map { SIMD4(UInt16(clamping: $0.jointIndices.x), UInt16(clamping: $0.jointIndices.y), UInt16(clamping: $0.jointIndices.z), 0) },
+                jointWeights: vertices.map { SIMD4($0.jointWeights.x, $0.jointWeights.y, $0.jointWeights.z, 0) }
+            ))
+        }
+
+        return MeshAsset(id: recordID, isSkinned: true, submeshes: submeshes)
+    }
+
+    private struct DecodedVertex {
+        var vertex: StaticVertex
+        var conn: Bool
+        var jointIndices: SIMD3<Int>
+        var jointWeights: SIMD3<Float>
+    }
+
+    private static func decodeVertices(_ data: [[VIFVector4?]]) -> [DecodedVertex] {
+        var results: [DecodedVertex] = []
+        let vertDataIndex = 3
+        var i = 0
+
+        while i < data.count {
+            guard let header = data[i].first ?? nil else { break }
+            let verts = Int(header.binaryX & 0xFF)
+            guard verts > 0, i + 1 < data.count, let fieldsHeader = data[i + 1].first ?? nil else { break }
+            let totalComponents = Int(fieldsHeader.binaryX & 0xFF)
+            let fields = totalComponents / verts
+            guard i + 2 < data.count, let scale = data[i + 2].first ?? nil else { break }
+
+            let batch1Index = i + vertDataIndex       // positions
+            let batch2Index = i + vertDataIndex + 1   // UVs
+            let batch4Index = i + vertDataIndex + 2   // colors
+            let batch3Index = i + vertDataIndex + 3   // weights/joint indices
+            guard batch3Index < data.count else { break }
+
+            var positions: [VIFVector4] = []
+            var uvs: [VIFVector4] = []
+            for j in 0..<verts {
+                guard j < data[batch1Index].count, let raw1 = data[batch1Index][j],
+                      j < data[batch2Index].count, let raw2 = data[batch2Index][j] else { break }
+
+                // Position/UV lanes are stored as signed-int32 bit patterns
+                // (not floats), later scaled into real units.
+                var v1 = VIFVector4()
+                v1.x = Float(Int32(bitPattern: raw1.binaryX))
+                v1.y = Float(Int32(bitPattern: raw1.binaryY))
+                v1.z = Float(Int32(bitPattern: raw1.binaryZ))
+                v1.w = Float(Int32(bitPattern: raw1.binaryW))
+                var v2 = VIFVector4()
+                v2.x = Float(Int32(bitPattern: raw2.binaryX))
+                v2.y = Float(Int32(bitPattern: raw2.binaryY))
+                v2.z = Float(Int32(bitPattern: raw2.binaryZ))
+                v2.w = Float(Int32(bitPattern: raw2.binaryW))
+                v1 = v1.multiplied(by: scale.x)
+                v2 = v2.multiplied(by: scale.y)
+                positions.append(v1)
+                uvs.append(v2)
+            }
+
+            var connections: [Bool] = []
+            var jointIdx: [SIMD3<Int>] = []
+            var jointWeight: [SIMD3<Float>] = []
+            for j in 0..<verts {
+                guard j < data[batch3Index].count, var v1 = data[batch3Index][j] else { break }
+                let connValue = v1.binaryW & 0xFF00
+                connections.append((connValue >> 8) != 128)
+
+                let weightAmount = v1.binaryW & 0xFF
+                var weight1: Float = 0, weight2: Float = 0, weight3: Float = 0
+                var jointIndex1 = 0, jointIndex2 = 0, jointIndex3 = 0
+
+                if weightAmount > 0 {
+                    jointIndex1 = Int((v1.binaryX & 0xFF) / 4)
+                    v1.binaryX = v1.binaryX & 0xFFFF_FF00
+                    weight1 = v1.x
+                }
+                if weightAmount > 1 {
+                    jointIndex2 = Int((v1.binaryY & 0xFF) / 4)
+                    v1.binaryY = v1.binaryY & 0xFFFF_FF00
+                    weight2 = v1.y
+                }
+                if weightAmount > 2 {
+                    jointIndex3 = Int((v1.binaryZ & 0xFF) / 4)
+                    v1.binaryZ = v1.binaryZ & 0xFFFF_FF00
+                    weight3 = v1.z
+                }
+                jointIdx.append(SIMD3(jointIndex1, jointIndex2, jointIndex3))
+                jointWeight.append(SIMD3(weight1, weight2, weight3))
+            }
+
+            for j in 0..<verts {
+                guard j < positions.count, j < uvs.count, j < connections.count,
+                      j < jointIdx.count, j < jointWeight.count,
+                      batch4Index < data.count, j < data[batch4Index].count,
+                      let colorRaw = data[batch4Index][j] else { break }
+
+                let r = UInt8(clamping: Int(colorRaw.binaryX & 0xFF) + 127)
+                let g = UInt8(clamping: Int(colorRaw.binaryY & 0xFF) + 127)
+                let b = UInt8(clamping: Int(colorRaw.binaryZ & 0xFF) + 127)
+                let a = UInt8(clamping: Int(colorRaw.binaryW & 0xFF) + 127)
+
+                let vertex = StaticVertex(
+                    position: SIMD3(positions[j].x, positions[j].y, positions[j].z),
+                    normal: .zero,
+                    uv: SIMD2(uvs[j].x, uvs[j].y),
+                    color: SIMD4(r, g, b, a)
+                )
+                results.append(DecodedVertex(vertex: vertex, conn: connections[j], jointIndices: jointIdx[j], jointWeights: jointWeight[j]))
+            }
+
+            i += fields + 3
+        }
+
+        return results
+    }
+}
