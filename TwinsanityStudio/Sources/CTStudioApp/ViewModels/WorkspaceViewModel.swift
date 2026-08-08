@@ -111,11 +111,21 @@ public final class WorkspaceViewModel: ObservableObject {
     /// obvious, discoverable action — requiring a separate small "Parse"
     /// button click first (nothing else in the sidebar works that way) reads
     /// as "this file won't open" rather than "click this other thing first."
+    ///
+    /// The actual parse-and-mutate work is dispatched to the next run loop
+    /// tick rather than done inline: `select` is called from `List`'s
+    /// selection `Binding.set`, which SwiftUI invokes *during* its own view
+    /// update pass — mutating `@Published` state synchronously in there logs
+    /// "Publishing changes from within view updates is not allowed" and
+    /// produces genuinely undefined rendering (rows not updating, disclosure
+    /// state going stale), not just a console warning to ignore.
     public func select(_ node: ChunkNode?) {
         selectedNode = node
         guard let node, isExpandableArchiveEntry(node) else { return }
         guard let rootID = owningArchiveRootID(of: node) else { return }
-        expandArchiveEntry(node, rootID: rootID)
+        DispatchQueue.main.async { [weak self] in
+            self?.expandArchiveEntry(node, rootID: rootID)
+        }
     }
 
     private func owningArchiveRootID(of node: ChunkNode) -> UUID? {
