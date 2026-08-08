@@ -99,12 +99,36 @@ public final class WorkspaceViewModel: ObservableObject {
     // MARK: - Drilling into archived RM2/SM2 files
 
     /// Whether `node` is an unexpanded archive entry whose name looks like a
-    /// chunk file (`.RM2`/`.SM2`/`.RMX`/`.SMX`) — the sidebar shows a "Parse"
-    /// affordance for these instead of a byte-size-only leaf.
+    /// chunk file (`.RM2`/`.SM2`/`.RMX`/`.SMX`).
     public func isExpandableArchiveEntry(_ node: ChunkNode) -> Bool {
         guard node.children.isEmpty, node.payload == nil else { return false }
         let ext = (node.displayName as NSString).pathExtension.uppercased()
         return ["RM2", "SM2", "RMX", "SMX"].contains(ext)
+    }
+
+    /// Sets the selection and, if the node is an unparsed archive entry,
+    /// parses it in the same step. Selecting a `.RM2`/`.SM2` entry is the
+    /// obvious, discoverable action — requiring a separate small "Parse"
+    /// button click first (nothing else in the sidebar works that way) reads
+    /// as "this file won't open" rather than "click this other thing first."
+    public func select(_ node: ChunkNode?) {
+        selectedNode = node
+        guard let node, isExpandableArchiveEntry(node) else { return }
+        guard let rootID = owningArchiveRootID(of: node) else { return }
+        expandArchiveEntry(node, rootID: rootID)
+    }
+
+    private func owningArchiveRootID(of node: ChunkNode) -> UUID? {
+        for rootID in archiveIndexByRootID.keys {
+            guard let root = rootNodes.first(where: { $0.id == rootID }) else { continue }
+            if contains(root, node) { return rootID }
+        }
+        return nil
+    }
+
+    private func contains(_ subtree: ChunkNode, _ target: ChunkNode) -> Bool {
+        if subtree === target { return true }
+        return subtree.children.contains { contains($0, target) }
     }
 
     /// Extracts an archived entry's bytes from its `.BD` and parses it as a
@@ -124,7 +148,16 @@ public final class WorkspaceViewModel: ObservableObject {
             node.sectionType = parsed.sectionType
             node.children = parsed.children
             node.payload = parsed.payload
+            // Belt-and-suspenders: `node` is a nested reference type inside
+            // `rootNodes`, so mutating it in place doesn't itself satisfy
+            // `@Published`'s change detection. `objectWillChange.send()`
+            // covers observers of the view model directly; reassigning
+            // `rootNodes` to itself additionally forces any diffing keyed on
+            // that array (List/OutlineGroup's data source) to re-derive from
+            // the mutated tree rather than relying on it noticing nested
+            // mutations on its own.
             objectWillChange.send()
+            rootNodes = rootNodes
         } catch {
             lastError = "\(entry.name): \(error)"
         }

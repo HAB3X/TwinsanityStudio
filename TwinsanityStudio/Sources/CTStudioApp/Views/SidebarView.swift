@@ -9,7 +9,7 @@ struct SidebarView: View {
             List(selection: Binding(
                 get: { workspace.selectedNode?.id },
                 set: { newID in
-                    workspace.selectedNode = findNode(id: newID, in: workspace.filteredRootNodes)
+                    workspace.select(findNode(id: newID, in: workspace.filteredRootNodes))
                 }
             )) {
                 ForEach(workspace.filteredRootNodes) { root in
