@@ -207,7 +207,18 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
 
     /// Optional skeleton overlay, drawn as connected line segments between
     /// joints. Set by `AnimationPlaybackController` as playback advances.
-    var skeletonJointWorldPositions: [(SIMD3<Float>, SIMD3<Float>)] = []
+    ///
+    /// `didSet` rebuilds `skeletonLineBuffer` right here, once, instead of
+    /// `draw(in:)` calling `device.makeBuffer` from scratch on every single
+    /// rendered frame (this view renders continuously at 20 fps — see
+    /// `MetalModelView` — regardless of whether this array actually changed
+    /// since the last frame). Scrubbing an animation still rebuilds the
+    /// buffer exactly as often as the joint positions actually change; it's
+    /// the ~20/sec redundant rebuilds *between* scrub events that this cuts.
+    var skeletonJointWorldPositions: [(SIMD3<Float>, SIMD3<Float>)] = [] {
+        didSet { skeletonLineBuffer = Self.makeLineBuffer(device: device, segments: skeletonJointWorldPositions) }
+    }
+    private var skeletonLineBuffer: MTLBuffer?
 
     /// "Granular Component Visibility": submesh indices (matching
     /// `ResolvedModelAsset.mesh.submeshes`/`.submeshMaterials`) to skip
@@ -228,6 +239,14 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     /// category like "deadly"/"solid").
     private var collisionEdgeColors: [SIMD3<Float>] = []
     public var collisionColorMode: CollisionColorMode = .solid
+    /// Both buffers below are built once in `upload(collisionMesh:)` and
+    /// reused for the mesh's whole lifetime — collision geometry never
+    /// changes after load (unlike the skeleton overlay), so rebuilding
+    /// either from scratch every frame (the previous behavior) bought
+    /// nothing; `collisionColorMode` just picks which cached buffer
+    /// `draw(in:)` binds.
+    private var collisionLineBuffer: MTLBuffer?
+    private var collisionLineColoredBuffer: MTLBuffer?
     /// Every distinct raw `surfaceID` found in the currently loaded
     /// collision mesh, in first-seen order — backs the legend in
     /// `CollisionViewerWindow`.
@@ -295,11 +314,42 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         collisionEdgeWorldPositions = edges
         collisionEdgeColors = colors
         collisionSurfaceIDs = seenSurfaceIDs
+        collisionLineBuffer = Self.makeLineBuffer(device: device, segments: edges)
+        collisionLineColoredBuffer = Self.makeColoredLineBuffer(device: device, segments: edges, colors: colors)
         if minBound.x <= maxBound.x {
             boundsCenter = (minBound + maxBound) / 2
             let extent = maxBound - minBound
             boundsRadius = max(max(extent.x, extent.y), max(extent.z, 1))
         }
+    }
+
+    /// Shared by the skeleton overlay and the solid-color collision
+    /// wireframe: `count * 2` `packed_float3` positions (one pair per
+    /// segment), matching `vertex_line`'s expected buffer layout exactly.
+    private static func makeLineBuffer(device: MTLDevice, segments: [(SIMD3<Float>, SIMD3<Float>)]) -> MTLBuffer? {
+        guard !segments.isEmpty else { return nil }
+        var floats: [Float] = []
+        floats.reserveCapacity(segments.count * 6)
+        for (a, b) in segments {
+            floats.append(contentsOf: [a.x, a.y, a.z, b.x, b.y, b.z])
+        }
+        return device.makeBuffer(bytes: floats, length: floats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
+    }
+
+    /// Interleaved position+color buffer for the by-surface-ID collision
+    /// wireframe, matching `vertex_line_colored`'s `LineVertexColorIn`
+    /// layout (`packed_float3` position, `packed_float3` color, back to
+    /// back — see that shader's doc comment).
+    private static func makeColoredLineBuffer(device: MTLDevice, segments: [(SIMD3<Float>, SIMD3<Float>)], colors: [SIMD3<Float>]) -> MTLBuffer? {
+        guard !segments.isEmpty, segments.count == colors.count else { return nil }
+        var floats: [Float] = []
+        floats.reserveCapacity(segments.count * 12)
+        for (index, edge) in segments.enumerated() {
+            let color = colors[index]
+            floats.append(contentsOf: [edge.0.x, edge.0.y, edge.0.z, color.x, color.y, color.z])
+            floats.append(contentsOf: [edge.1.x, edge.1.y, edge.1.z, color.x, color.y, color.z])
+        }
+        return device.makeBuffer(bytes: floats, length: floats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
     }
 
     private func upload(asset: ResolvedModelAsset) {
@@ -486,45 +536,28 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             encoder.drawIndexedPrimitives(type: .triangle, indexCount: submesh.indexCount, indexType: .uint32, indexBuffer: submesh.indexBuffer, indexBufferOffset: 0)
         }
 
-        if let linePipelineState = context.linePipelineState, !skeletonJointWorldPositions.isEmpty {
-            var lineVertices: [Float] = []
-            for (a, b) in skeletonJointWorldPositions {
-                lineVertices.append(contentsOf: [a.x, a.y, a.z, b.x, b.y, b.z])
-            }
-            if let lineBuffer = device.makeBuffer(bytes: lineVertices, length: lineVertices.count * MemoryLayout<Float>.stride, options: .storageModeShared) {
-                encoder.setRenderPipelineState(linePipelineState)
-                encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
-                encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
-                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: skeletonJointWorldPositions.count * 2)
-            }
+        // Every buffer bound below is built once (in `upload`/the
+        // `skeletonJointWorldPositions` `didSet`) and reused here — this
+        // view redraws continuously at 20 fps (`MetalModelView`), and
+        // `device.makeBuffer` from scratch on every single frame for data
+        // that's usually unchanged since the last frame was pure waste.
+        if let linePipelineState = context.linePipelineState, let lineBuffer = skeletonLineBuffer, !skeletonJointWorldPositions.isEmpty {
+            encoder.setRenderPipelineState(linePipelineState)
+            encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: skeletonJointWorldPositions.count * 2)
         }
 
-        if collisionColorMode == .bySurfaceID, let coloredPipelineState = context.collisionLineColoredPipelineState, !collisionEdgeWorldPositions.isEmpty {
-            var lineVertices: [Float] = []
-            lineVertices.reserveCapacity(collisionEdgeWorldPositions.count * 12)
-            for (index, edge) in collisionEdgeWorldPositions.enumerated() {
-                let color = collisionEdgeColors[index]
-                lineVertices.append(contentsOf: [edge.0.x, edge.0.y, edge.0.z, color.x, color.y, color.z])
-                lineVertices.append(contentsOf: [edge.1.x, edge.1.y, edge.1.z, color.x, color.y, color.z])
-            }
-            if let lineBuffer = device.makeBuffer(bytes: lineVertices, length: lineVertices.count * MemoryLayout<Float>.stride, options: .storageModeShared) {
-                encoder.setRenderPipelineState(coloredPipelineState)
-                encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
-                encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
-                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: collisionEdgeWorldPositions.count * 2)
-            }
-        } else if let collisionLinePipelineState = context.collisionLinePipelineState, !collisionEdgeWorldPositions.isEmpty {
-            var lineVertices: [Float] = []
-            lineVertices.reserveCapacity(collisionEdgeWorldPositions.count * 6)
-            for (a, b) in collisionEdgeWorldPositions {
-                lineVertices.append(contentsOf: [a.x, a.y, a.z, b.x, b.y, b.z])
-            }
-            if let lineBuffer = device.makeBuffer(bytes: lineVertices, length: lineVertices.count * MemoryLayout<Float>.stride, options: .storageModeShared) {
-                encoder.setRenderPipelineState(collisionLinePipelineState)
-                encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
-                encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
-                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: collisionEdgeWorldPositions.count * 2)
-            }
+        if collisionColorMode == .bySurfaceID, let coloredPipelineState = context.collisionLineColoredPipelineState, let lineBuffer = collisionLineColoredBuffer, !collisionEdgeWorldPositions.isEmpty {
+            encoder.setRenderPipelineState(coloredPipelineState)
+            encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: collisionEdgeWorldPositions.count * 2)
+        } else if let collisionLinePipelineState = context.collisionLinePipelineState, let lineBuffer = collisionLineBuffer, !collisionEdgeWorldPositions.isEmpty {
+            encoder.setRenderPipelineState(collisionLinePipelineState)
+            encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: collisionEdgeWorldPositions.count * 2)
         }
 
         encoder.endEncoding()

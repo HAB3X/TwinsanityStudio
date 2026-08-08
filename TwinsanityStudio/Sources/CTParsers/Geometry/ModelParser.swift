@@ -75,7 +75,16 @@ public enum ModelParser {
             groupIndex += 1
 
             if i + 2 < data.count {
-                positions.append(contentsOf: data[i + 2].compactMap { $0 })
+                // Equivalent to `data[i + 2].compactMap { $0 }` but without
+                // allocating and immediately discarding a full intermediate
+                // array on every group — `data[i + 2]` is always a 1024-slot
+                // block (see `VIFInterpreter.vuMem`), and this loop runs once
+                // per submodel per group, so that add-up is real across a
+                // file with many submodels.
+                positions.reserveCapacity(positions.count + data[i + 2].count)
+                for optional in data[i + 2] {
+                    if let v = optional { positions.append(v) }
+                }
             }
 
             if fieldsPresent.contains(.uvColor), i + 3 < data.count {

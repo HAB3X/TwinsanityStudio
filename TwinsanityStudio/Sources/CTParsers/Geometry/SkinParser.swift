@@ -28,12 +28,33 @@ public enum SkinParser {
 
             let interpreter = try VIFInterpreter.interpretCode(vifCode)
             let vertices = decodeVertices(interpreter.getMem())
+
+            // One pass building all four parallel output arrays instead of
+            // four separate `.map`s over the same `vertices` array — same
+            // per-element transforms, same order, just one traversal instead
+            // of four (each of which was allocating its own full-size result
+            // array) per submodel.
+            var meshVertices: [StaticVertex] = []
+            var connectivity: [Bool] = []
+            var jointIndices: [SIMD4<UInt16>] = []
+            var jointWeights: [SIMD4<Float>] = []
+            meshVertices.reserveCapacity(vertices.count)
+            connectivity.reserveCapacity(vertices.count)
+            jointIndices.reserveCapacity(vertices.count)
+            jointWeights.reserveCapacity(vertices.count)
+            for v in vertices {
+                meshVertices.append(v.vertex)
+                connectivity.append(v.conn)
+                jointIndices.append(SIMD4(UInt16(clamping: v.jointIndices.x), UInt16(clamping: v.jointIndices.y), UInt16(clamping: v.jointIndices.z), 0))
+                jointWeights.append(SIMD4(v.jointWeights.x, v.jointWeights.y, v.jointWeights.z, 0))
+            }
+
             submeshes.append(MeshSubmesh(
-                vertices: vertices.map(\.vertex),
-                connectivity: vertices.map(\.conn),
+                vertices: meshVertices,
+                connectivity: connectivity,
                 materialID: materialID,
-                jointIndices: vertices.map { SIMD4(UInt16(clamping: $0.jointIndices.x), UInt16(clamping: $0.jointIndices.y), UInt16(clamping: $0.jointIndices.z), 0) },
-                jointWeights: vertices.map { SIMD4($0.jointWeights.x, $0.jointWeights.y, $0.jointWeights.z, 0) }
+                jointIndices: jointIndices,
+                jointWeights: jointWeights
             ))
         }
 

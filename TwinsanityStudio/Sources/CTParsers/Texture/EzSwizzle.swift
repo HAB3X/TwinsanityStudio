@@ -59,76 +59,103 @@ final class EzSwizzle {
         1, 1, 1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 3, 3
     ]
 
+    /// Zeroes the existing 4 MiB buffer in place rather than allocating and
+    /// zero-filling a brand-new array — every real call site (`TextureParser`)
+    /// constructs a fresh `EzSwizzle()` (whose stored-property initializer
+    /// already zero-fills `gs` once) and calls `cleanGs()` immediately after,
+    /// which used to mean *two* full 4 MiB allocate-and-zero passes per
+    /// texture for no behavioral difference — one of them entirely discarded
+    /// before a single byte was written. Zeroing in place still leaves `gs`
+    /// correctly zeroed for any future caller that reuses one instance across
+    /// multiple textures, it just no longer pays for a second allocation to
+    /// get there.
     func cleanGs() {
-        gs = [UInt8](repeating: 0, count: 1024 * 1024 * 4)
+        gs.withUnsafeMutableBytes { _ = $0.initializeMemory(as: UInt8.self, repeating: 0) }
     }
 
     /// Writes `data` into simulated GS memory using PSMCT32 addressing.
+    ///
+    /// Uses raw pointers instead of `gs[i]`/`data[i]` Array subscripting in
+    /// the per-pixel inner loop: an `Array`'s subscript setter re-checks
+    /// exclusive/unique ownership of its storage on every single element
+    /// write (real, measurable overhead across the hundreds of thousands of
+    /// byte accesses one full-size texture's swizzle/unswizzle pass makes),
+    /// even though `gs`/`data` are never shared here. The bounds checks in
+    /// the `guard` above each copy are preserved exactly as before — this
+    /// changes *how* an in-bounds byte gets copied, not which bytes do.
     func writeTexPSMCT32(dbp: Int, dbw: Int, dsax: Int, dsay: Int, rrw: Int, rrh: Int, data: [UInt8]) {
-        var src = 0
         let startBlockPos = dbp * 64
         guard rrw > 0, rrh > 0 else { return }
 
-        for y in dsay..<(dsay + rrh) {
-            for x in dsax..<(dsax + rrw) {
-                let pageX = x / 64
-                let pageY = y / 32
-                let page = pageX + pageY * dbw
+        var src = 0
+        data.withUnsafeBufferPointer { srcBuf in
+            gs.withUnsafeMutableBufferPointer { gsBuf in
+                for y in dsay..<(dsay + rrh) {
+                    for x in dsax..<(dsax + rrw) {
+                        let pageX = x / 64
+                        let pageY = y / 32
+                        let page = pageX + pageY * dbw
 
-                let px = x - (pageX * 64)
-                let py = y - (pageY * 32)
+                        let px = x - (pageX * 64)
+                        let py = y - (pageY * 32)
 
-                let blockX = px / 8
-                let blockY = py / 8
-                let block = Self.block32[blockX + blockY * 8]
+                        let blockX = px / 8
+                        let blockY = py / 8
+                        let block = Self.block32[blockX + blockY * 8]
 
-                let bx = px - blockX * 8
-                let by = py - blockY * 8
+                        let bx = px - blockX * 8
+                        let by = py - blockY * 8
 
-                let column = by / 2
-                let cx = bx
-                let cy = by - column * 2
-                let cw = Self.columnWord32[cx + cy * 8]
+                        let column = by / 2
+                        let cx = bx
+                        let cy = by - column * 2
+                        let cw = Self.columnWord32[cx + cy * 8]
 
-                let dst = startBlockPos + page * 2048 + block * 64 + column * 16 + cw
-                guard src + 4 <= data.count, 4 * dst + 3 < gs.count else { src += 4; continue }
-                for i in 0..<4 { gs[4 * dst + i] = data[src + i] }
-                src += 4
+                        let dst = startBlockPos + page * 2048 + block * 64 + column * 16 + cw
+                        guard src + 4 <= srcBuf.count, 4 * dst + 3 < gsBuf.count else { src += 4; continue }
+                        for i in 0..<4 { gsBuf[4 * dst + i] = srcBuf[src + i] }
+                        src += 4
+                    }
+                }
             }
         }
     }
 
     /// Reads simulated GS memory back out using PSMCT32 addressing.
     func readTexPSMCT32(dbp: Int, dbw: Int, dsax: Int, dsay: Int, rrw: Int, rrh: Int, into data: inout [UInt8]) {
-        var src = 0
         let startBlockPos = dbp * 64
         guard rrw > 0, rrh > 0 else { return }
 
-        for y in dsay..<(dsay + rrh) {
-            for x in dsax..<(dsax + rrw) {
-                let pageX = x / 64
-                let pageY = y / 32
-                let page = pageX + pageY * dbw
+        var src = 0
+        data.withUnsafeMutableBufferPointer { dstBuf in
+            gs.withUnsafeBufferPointer { gsBuf in
+                for y in dsay..<(dsay + rrh) {
+                    for x in dsax..<(dsax + rrw) {
+                        let pageX = x / 64
+                        let pageY = y / 32
+                        let page = pageX + pageY * dbw
 
-                let px = x - (pageX * 64)
-                let py = y - (pageY * 32)
+                        let px = x - (pageX * 64)
+                        let py = y - (pageY * 32)
 
-                let blockX = px / 8
-                let blockY = py / 8
-                let block = Self.block32[blockX + blockY * 8]
+                        let blockX = px / 8
+                        let blockY = py / 8
+                        let block = Self.block32[blockX + blockY * 8]
 
-                let bx = px - blockX * 8
-                let by = py - blockY * 8
+                        let bx = px - blockX * 8
+                        let by = py - blockY * 8
 
-                let column = by / 2
-                let cx = bx
-                let cy = by - column * 2
-                let cw = Self.columnWord32[cx + cy * 8]
+                        let column = by / 2
+                        let cx = bx
+                        let cy = by - column * 2
+                        let cw = Self.columnWord32[cx + cy * 8]
 
-                let dst = startBlockPos + page * 2048 + block * 64 + column * 16 + cw
-                guard src + 4 <= data.count, 4 * dst + 3 < gs.count else { src += 4; continue }
-                for i in 0..<4 { data[src + i] = gs[4 * dst + i] }
-                src += 4
+                        let dst = startBlockPos + page * 2048 + block * 64 + column * 16 + cw
+                        guard src + 4 <= dstBuf.count, 4 * dst + 3 < gsBuf.count else { src += 4; continue }
+                        for i in 0..<4 { dstBuf[src + i] = gsBuf[4 * dst + i] }
+                        src += 4
+                    }
+                }
             }
         }
     }
@@ -136,36 +163,40 @@ final class EzSwizzle {
     /// Writes `data` into simulated GS memory using PSMT8 addressing.
     func writeTexPSMT8(dbp: Int, dbwIn: Int, dsax: Int, dsay: Int, rrw: Int, rrh: Int, data: [UInt8]) {
         let dbw = dbwIn >> 1
-        var src = 0
         let startBlockPos = dbp * 64
         guard rrw > 0, rrh > 0 else { return }
 
-        for y in dsay..<(dsay + rrh) {
-            for x in dsax..<(dsax + rrw) {
-                let pageX = x / 128
-                let pageY = y / 64
-                let page = pageX + pageY * dbw
+        var src = 0
+        data.withUnsafeBufferPointer { srcBuf in
+            gs.withUnsafeMutableBufferPointer { gsBuf in
+                for y in dsay..<(dsay + rrh) {
+                    for x in dsax..<(dsax + rrw) {
+                        let pageX = x / 128
+                        let pageY = y / 64
+                        let page = pageX + pageY * dbw
 
-                let px = x - (pageX * 128)
-                let py = y - (pageY * 64)
+                        let px = x - (pageX * 128)
+                        let py = y - (pageY * 64)
 
-                let blockX = px / 16
-                let blockY = py / 16
-                let block = Self.block8[blockX + blockY * 8]
+                        let blockX = px / 16
+                        let blockY = py / 16
+                        let block = Self.block8[blockX + blockY * 8]
 
-                let bx = px - blockX * 16
-                let by = py - blockY * 16
+                        let bx = px - blockX * 16
+                        let by = py - blockY * 16
 
-                let column = by / 4
-                let cx = bx
-                let cy = by - column * 4
-                let cw = Self.columnWord8[column & 1][cx + cy * 16]
-                let cb = Self.columnByte8[cx + cy * 16]
+                        let column = by / 4
+                        let cx = bx
+                        let cy = by - column * 4
+                        let cw = Self.columnWord8[column & 1][cx + cy * 16]
+                        let cb = Self.columnByte8[cx + cy * 16]
 
-                let dst = startBlockPos + page * 2048 + block * 64 + column * 16 + cw
-                guard src < data.count, 4 * dst + cb < gs.count else { src += 1; continue }
-                gs[4 * dst + cb] = data[src]
-                src += 1
+                        let dst = startBlockPos + page * 2048 + block * 64 + column * 16 + cw
+                        guard src < srcBuf.count, 4 * dst + cb < gsBuf.count else { src += 1; continue }
+                        gsBuf[4 * dst + cb] = srcBuf[src]
+                        src += 1
+                    }
+                }
             }
         }
     }
@@ -174,36 +205,40 @@ final class EzSwizzle {
     /// where the actual un-swizzle happens for indexed textures.
     func readTexPSMT8(dbp: Int, dbwIn: Int, dsax: Int, dsay: Int, rrw: Int, rrh: Int, into data: inout [UInt8]) {
         let dbw = dbwIn >> 1
-        var src = 0
         let startBlockPos = dbp * 64
         guard rrw > 0, rrh > 0 else { return }
 
-        for y in dsay..<(dsay + rrh) {
-            for x in dsax..<(dsax + rrw) {
-                let pageX = x / 128
-                let pageY = y / 64
-                let page = pageX + pageY * dbw
+        var src = 0
+        data.withUnsafeMutableBufferPointer { dstBuf in
+            gs.withUnsafeBufferPointer { gsBuf in
+                for y in dsay..<(dsay + rrh) {
+                    for x in dsax..<(dsax + rrw) {
+                        let pageX = x / 128
+                        let pageY = y / 64
+                        let page = pageX + pageY * dbw
 
-                let px = x - (pageX * 128)
-                let py = y - (pageY * 64)
+                        let px = x - (pageX * 128)
+                        let py = y - (pageY * 64)
 
-                let blockX = px / 16
-                let blockY = py / 16
-                let block = Self.block8[blockX + blockY * 8]
+                        let blockX = px / 16
+                        let blockY = py / 16
+                        let block = Self.block8[blockX + blockY * 8]
 
-                let bx = px - blockX * 16
-                let by = py - blockY * 16
+                        let bx = px - blockX * 16
+                        let by = py - blockY * 16
 
-                let column = by / 4
-                let cx = bx
-                let cy = by - column * 4
-                let cw = Self.columnWord8[column & 1][cx + cy * 16]
-                let cb = Self.columnByte8[cx + cy * 16]
+                        let column = by / 4
+                        let cx = bx
+                        let cy = by - column * 4
+                        let cw = Self.columnWord8[column & 1][cx + cy * 16]
+                        let cb = Self.columnByte8[cx + cy * 16]
 
-                let dst = startBlockPos + page * 2048 + block * 64 + column * 16 + cw
-                guard src < data.count, 4 * dst + cb < gs.count else { src += 1; continue }
-                data[src] = gs[4 * dst + cb]
-                src += 1
+                        let dst = startBlockPos + page * 2048 + block * 64 + column * 16 + cw
+                        guard src < dstBuf.count, 4 * dst + cb < gsBuf.count else { src += 1; continue }
+                        dstBuf[src] = gsBuf[4 * dst + cb]
+                        src += 1
+                    }
+                }
             }
         }
     }
