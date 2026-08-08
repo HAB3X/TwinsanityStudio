@@ -88,7 +88,11 @@ struct LevelViewerWindow: View {
                         },
                         onGizmoDragStarted: { positionBeforeEdit = renderer.selectedPosition }
                     )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // See `ModelViewerWindow`'s matching comment — a
+                    // `maxWidth/maxHeight: .infinity`-only frame isn't a
+                    // concrete enough size for a `.sheet()`'s first layout
+                    // pass to reliably drive the `MTKView` from.
+                    .frame(minWidth: 400, maxWidth: .infinity, minHeight: 300, maxHeight: .infinity)
                     Text("Drag to orbit · Scroll to zoom · Drag an axis arrow to move the selected object · F to frame selection")
                         .font(.caption)
                         .padding(6)

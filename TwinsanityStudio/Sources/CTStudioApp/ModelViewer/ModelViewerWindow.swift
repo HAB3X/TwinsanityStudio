@@ -58,16 +58,21 @@ struct ModelViewerWindow: View {
         if let renderer {
             if renderer.hasGeometry {
                 // `MetalModelView` wraps an `NSViewRepresentable` `MTKView`,
-                // which has no intrinsic content size SwiftUI can infer —
-                // inside an `HStack` next to a fixed-width sidebar, that can
-                // mean this column collapses to near-zero instead of filling
-                // the remaining space, which reads as "the viewport is
-                // blank" (it's not blank, it's just not there). Forcing both
-                // the `ZStack` and the view itself to expand removes that
-                // ambiguity regardless of window/split-view layout timing.
+                // which has no intrinsic content size SwiftUI can infer.
+                // `maxWidth/maxHeight: .infinity` alone visibly reserves the
+                // space (confirmed — the viewport area isn't collapsed) but
+                // still isn't a concrete number for a `.sheet()`'s first
+                // layout pass to resolve against, and empirically that's
+                // enough for the underlying `MTKView`/`CAMetalLayer` to end
+                // up not actually driving pixels even though the area looks
+                // right. `CompositePreviewView`'s inline preview — which
+                // *does* render correctly — gives its own `MetalModelView` a
+                // hard `.frame(height: 320)`; a real min alongside the max
+                // is the same fix without hardcoding this one to a fixed
+                // size.
                 ZStack(alignment: .bottomLeading) {
                     MetalModelView(renderer: renderer)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(minWidth: 400, maxWidth: .infinity, minHeight: 300, maxHeight: .infinity)
                     Text("Drag to orbit · Scroll to zoom")
                         .font(.caption)
                         .padding(6)
