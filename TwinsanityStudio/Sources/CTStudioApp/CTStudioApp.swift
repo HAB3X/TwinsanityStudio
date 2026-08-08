@@ -27,6 +27,24 @@ struct CTStudioApp: App {
                 .keyboardShortcut("k", modifiers: [.command])
             }
         }
+
+        // Real windows, not sheets, for the three GPU-heavy viewers — see
+        // `GPUViewerWindowHosts.swift`'s doc comment for why. `Window`
+        // (singular, not `WindowGroup`) gives "one instance, brought
+        // forward on repeat `openWindow` calls" semantics, matching what a
+        // sheet already did.
+        Window("Model Viewer", id: GPUViewerWindowID.model) {
+            ModelViewerWindowHost()
+                .environmentObject(workspace)
+        }
+        Window("Collision Viewer", id: GPUViewerWindowID.collision) {
+            CollisionViewerWindowHost()
+                .environmentObject(workspace)
+        }
+        Window("Level Viewer", id: GPUViewerWindowID.level) {
+            LevelViewerWindowHost()
+                .environmentObject(workspace)
+        }
     }
 }
 

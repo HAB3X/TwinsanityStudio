@@ -368,6 +368,20 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         // vertex/submesh counts for, the bug is in this upload step, not in
         // `draw(in:)` or SwiftUI layout.
         print("DIAG: ModelViewerRenderer uploaded \(submeshes.count) GPU submesh(es) for \"\(asset.displayName)\", boundsRadius=\(boundsRadius), boundsCenter=\(boundsCenter)")
+        // `fragment_main` outputs alpha as `texColor.a * in.color.a`, and
+        // the main pipeline has real alpha blending enabled
+        // (isBlendingEnabled=true, standard source-over) — a mesh whose
+        // decoded per-vertex color alpha comes out near 0 would render
+        // fully successfully (a real drawable, a real committed frame,
+        // exactly what the draw(in:) diagnostics just confirmed) while
+        // being visually indistinguishable from "nothing drawn at all",
+        // blended away into the dark clear color. This measures the raw
+        // decoded alpha byte directly, before it ever reaches the GPU, to
+        // confirm or rule that out rather than guessing further.
+        let alphaValues = asset.mesh.submeshes.flatMap { $0.vertices.map { Int($0.color.w) } }
+        if let minAlpha = alphaValues.min(), let maxAlpha = alphaValues.max() {
+            print("DIAG: vertex color alpha range for \"\(asset.displayName)\": min=\(minAlpha) max=\(maxAlpha) (0-255 scale; near-0 across the board would render as invisible, not broken)")
+        }
     }
 
     /// Shared by `ModelViewerRenderer.upload(asset:)` and

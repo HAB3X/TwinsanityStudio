@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(\.openWindow) private var openWindow
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var isTargetedForDrop = false
     @State private var isConsoleExpanded = false
@@ -89,30 +90,20 @@ struct ContentView: View {
                 DropOverlay()
             }
         }
-        .sheet(item: $workspace.modelViewerAsset) { asset in
-            ModelViewerWindow(asset: asset)
-                .environmentObject(workspace)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close") { workspace.modelViewerAsset = nil }
-                    }
-                }
+        // The three GPU-heavy viewers open as real windows now, not
+        // sheets — see `GPUViewerWindowHosts.swift`'s doc comment. Every
+        // existing call site that sets `modelViewerAsset`/
+        // `collisionViewerMesh`/`levelViewerContext` is unchanged; this is
+        // the one place that reacts to those transitioning to non-nil and
+        // actually opens the corresponding window.
+        .onChange(of: workspace.modelViewerAsset?.id) { _, newValue in
+            if newValue != nil { openWindow(id: GPUViewerWindowID.model) }
         }
-        .sheet(item: $workspace.collisionViewerMesh) { mesh in
-            CollisionViewerWindow(mesh: mesh)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close") { workspace.collisionViewerMesh = nil }
-                    }
-                }
+        .onChange(of: workspace.collisionViewerMesh?.id) { _, newValue in
+            if newValue != nil { openWindow(id: GPUViewerWindowID.collision) }
         }
-        .sheet(item: $workspace.levelViewerContext) { context in
-            LevelViewerWindow(context: context)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close") { workspace.levelViewerContext = nil }
-                    }
-                }
+        .onChange(of: workspace.levelViewerContext?.id) { _, newValue in
+            if newValue != nil { openWindow(id: GPUViewerWindowID.level) }
         }
         .sheet(isPresented: $workspace.isModelsHubPresented) {
             ModelsHubView()
