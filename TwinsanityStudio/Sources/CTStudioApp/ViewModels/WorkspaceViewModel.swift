@@ -37,6 +37,9 @@ public final class WorkspaceViewModel: ObservableObject {
     /// archives are scanned, with no separate manual scan step.
     @Published public var orphanedContent: [OrphanedAsset] = []
     @Published public var isScrappedContentScannerPresented = false
+    /// "Asset Diff & Version Comparison" (blueprint 4.3): non-nil presents
+    /// the diff sheet.
+    @Published public var isAssetDiffPresented = false
 
     private var archiveIndexByRootID: [UUID: ArchiveIndex] = [:]
     /// Raw file bytes for standalone-opened `.RM2`/`.SM2` files, keyed by
@@ -324,11 +327,21 @@ public final class WorkspaceViewModel: ObservableObject {
     /// produces genuinely undefined rendering (rows not updating, disclosure
     /// state going stale), not just a console warning to ignore.
     public func select(_ node: ChunkNode?) {
-        selectedNode = node
-        guard let node, isExpandableArchiveEntry(node) else { return }
-        guard let rootID = owningArchiveRootID(of: node) else { return }
+        // `selectedNode = node` is a `@Published` mutation, and `select` is
+        // called from `List`'s selection `Binding.set`, which SwiftUI
+        // invokes *during* its own view update pass — mutating `@Published`
+        // state synchronously in there logs "Publishing changes from
+        // within view updates is not allowed" and produces genuinely
+        // undefined behavior (not just a console warning), matching
+        // exactly what was observed clicking around the sidebar. The whole
+        // body — not just the archive-expansion half that was already
+        // deferred — has to move to the next run loop tick.
         DispatchQueue.main.async { [weak self] in
-            self?.expandArchiveEntry(node, rootID: rootID)
+            guard let self else { return }
+            self.selectedNode = node
+            guard let node, self.isExpandableArchiveEntry(node) else { return }
+            guard let rootID = self.owningArchiveRootID(of: node) else { return }
+            self.expandArchiveEntry(node, rootID: rootID)
         }
     }
 
@@ -416,6 +429,16 @@ public final class WorkspaceViewModel: ObservableObject {
         return rawFileBytesByRootID[fileRoot.id] != nil
     }
 
+    /// The original file name `node`'s enclosing standalone-opened
+    /// `.RM2`/`.SM2` was loaded from (`ChunkNode.displayName` on the file
+    /// root — see `RM2Parser.parse`, which sets it directly from the
+    /// caller's `fileName`). Used as the default in-crate file name for
+    /// "Export as Mod Crate…", since that's the only name this build
+    /// actually knows for the file.
+    public func originalFileName(for node: ChunkNode) -> String? {
+        findFileRoot(containing: node, in: rootNodes)?.displayName
+    }
+
     /// Patches `encoded` into a *copy* of the owning file's original bytes
     /// at `node`'s known offset — pure and side-effect-free; the caller
     /// (a view) is responsible for prompting where to save the result and
@@ -441,6 +464,20 @@ public final class WorkspaceViewModel: ObservableObject {
         }
         bytes.replaceSubrange(node.fileOffset..<(node.fileOffset + encoded.count), with: encoded)
         return bytes
+    }
+
+    /// Packages an edited file's patched bytes (see `patchedFileBytes`) into
+    /// a real, installable `CrateModLoader` `.crate` — the "Crate Mod
+    /// Loader & Multi-Game Packager" export path (blueprint 3.3), built on
+    /// top of the one record type this build can actually write edits back
+    /// to (see `PositionInspectorView`'s doc comment).
+    public func exportAsCrate(patchedBytes: Data, originalFileName: String, metadata: CrateMetadata, to crateURL: URL) {
+        do {
+            try CrateExporter.export(files: [(relativePath: originalFileName, data: patchedBytes)], metadata: metadata, to: crateURL)
+            statusMessage = "Exported mod crate to \(crateURL.lastPathComponent)."
+        } catch {
+            lastError = "Crate export failed: \(error)"
+        }
     }
 
     // MARK: - Linked asset resolution / Model Viewer
@@ -494,18 +531,29 @@ public final class WorkspaceViewModel: ObservableObject {
     /// this build's resolver can't reach) are silently skipped rather than
     /// failing the whole level — a level with some unresolved pieces is
     /// still far more useful than no level view at all.
-    public func resolvedLevelPlacements(for scenery: SceneryAsset, node: ChunkNode) -> [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)] {
+    /// A level's scenery tree can carry hundreds/thousands of placements,
+    /// each needing a full `RigidModel` -> mesh -> material -> texture
+    /// resolution — real CPU work that used to run synchronously on the
+    /// main actor when the user clicked "Open Level Viewer," freezing the
+    /// UI for however long that took. `fileRoot`/`scenery` are both
+    /// `Sendable` (`ChunkNode` is `@unchecked Sendable`, `SceneryAsset` is
+    /// a plain `Sendable` struct), so the actual resolution loop can run
+    /// entirely off the main actor; only the initial `findFileRoot` lookup
+    /// (touching `rootNodes`) needs to happen here first.
+    public func resolvedLevelPlacements(for scenery: SceneryAsset, node: ChunkNode) async -> [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)] {
         guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return [] }
-        let index = AssetResolver.buildIndex(fileRoot: fileRoot)
-        var results: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)] = []
-        for placement in scenery.placements {
-            guard let translation = placement.translation,
-                  let rigidModel = index.rigidModels[placement.modelID],
-                  let resolved = AssetResolver.resolveRigidModel(rigidModel, displayName: "Scenery Object #\(placement.modelID)", index: index)
-            else { continue }
-            results.append((translation, resolved))
-        }
-        return results
+        return await Task.detached(priority: .userInitiated) {
+            let index = AssetResolver.buildIndex(fileRoot: fileRoot)
+            var results: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)] = []
+            for placement in scenery.placements {
+                guard let translation = placement.translation,
+                      let rigidModel = index.rigidModels[placement.modelID],
+                      let resolved = AssetResolver.resolveRigidModel(rigidModel, displayName: "Scenery Object #\(placement.modelID)", index: index)
+                else { continue }
+                results.append((translation, resolved))
+            }
+            return results
+        }.value
     }
 
     /// "Deep Hierarchy & Linked Asset Resolution": the parent composite
@@ -701,5 +749,32 @@ public final class WorkspaceViewModel: ObservableObject {
         } catch {
             lastError = "Export failed: \(error)"
         }
+    }
+
+    // MARK: - Batch export (blueprint 3.1)
+
+    /// Non-nil while a batch export (see `exportBatch`) is running — drives
+    /// the Models Hub's progress indicator.
+    @Published public var batchExportProgress: (completed: Int, total: Int)?
+
+    /// "One-Click Batch Export": runs the same per-asset `exportCompleteAsset`
+    /// logic the single-asset "Export Complete Asset…"/"Export as Group…"
+    /// actions already use, queued across a multi-selection instead of
+    /// called once — each asset gets its own subfolder under `directory`
+    /// (see `exportCompleteAsset`), so there's no collision between them.
+    /// `Task.yield()` between assets keeps `batchExportProgress` (and the
+    /// rest of the UI) updating across what can be tens of assets' worth of
+    /// PNG/OBJ/JSON writes, without a full off-main-actor rewrite of
+    /// `exportCompleteAsset` itself.
+    public func exportBatch(_ assets: [ResolvedModelAsset], to directory: URL) async {
+        guard !assets.isEmpty else { return }
+        batchExportProgress = (0, assets.count)
+        for (index, asset) in assets.enumerated() {
+            exportCompleteAsset(asset, to: directory)
+            batchExportProgress = (index + 1, assets.count)
+            await Task.yield()
+        }
+        statusMessage = "Batch export complete — \(assets.count) asset(s) exported to \(directory.path)."
+        batchExportProgress = nil
     }
 }

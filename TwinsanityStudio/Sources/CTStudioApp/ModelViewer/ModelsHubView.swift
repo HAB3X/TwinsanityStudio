@@ -13,6 +13,8 @@ struct ModelsHubView: View {
     @State private var searchText = ""
     @State private var onlyRigged = false
     @State private var onlyFullyTextured = false
+    @State private var isBatchSelectionMode = false
+    @State private var selectedIDs: Set<ResolvedModelAsset.ID> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,14 +31,34 @@ struct ModelsHubView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Models Hub").font(.title2.bold())
-                Text("\(filteredModels.count) of \(workspace.modelsHub.count) models")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let progress = workspace.batchExportProgress {
+                    Text("Exporting \(progress.completed) of \(progress.total)…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("\(filteredModels.count) of \(workspace.modelsHub.count) models")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer()
             if workspace.isScanning {
                 ProgressView().controlSize(.small)
                 Text("Scanning…").font(.caption).foregroundStyle(.secondary)
+            }
+            if let progress = workspace.batchExportProgress {
+                ProgressView(value: Double(progress.completed), total: Double(max(progress.total, 1)))
+                    .frame(width: 100)
+            } else if isBatchSelectionMode {
+                Button("Export Selected (\(selectedIDs.count))…") { exportSelected() }
+                    .disabled(selectedIDs.isEmpty)
+                Button("Cancel") {
+                    isBatchSelectionMode = false
+                    selectedIDs.removeAll()
+                }
+            } else {
+                Button("Select…") { isBatchSelectionMode = true }
+                    .disabled(workspace.modelsHub.isEmpty)
             }
             Button("Close") { dismiss() }
         }
@@ -72,13 +94,26 @@ struct ModelsHubView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List(filteredModels) { model in
-                Button {
-                    workspace.modelViewerAsset = model
-                    dismiss()
-                } label: {
-                    ModelsHubRow(model: model)
+                if isBatchSelectionMode {
+                    Button {
+                        toggleSelection(model.id)
+                    } label: {
+                        HStack {
+                            Image(systemName: selectedIDs.contains(model.id) ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(selectedIDs.contains(model.id) ? Color.accentColor : Color.secondary)
+                            ModelsHubRow(model: model)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button {
+                        workspace.modelViewerAsset = model
+                        dismiss()
+                    } label: {
+                        ModelsHubRow(model: model)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
             .listStyle(.plain)
         }
@@ -90,6 +125,26 @@ struct ModelsHubView: View {
                 && (!onlyRigged || model.skeleton != nil)
                 && (!onlyFullyTextured || model.isFullyTextured)
         }
+    }
+
+    private func toggleSelection(_ id: ResolvedModelAsset.ID) {
+        if selectedIDs.contains(id) {
+            selectedIDs.remove(id)
+        } else {
+            selectedIDs.insert(id)
+        }
+    }
+
+    /// "One-Click Batch Export" (blueprint 3.1): one destination folder
+    /// picker, then `WorkspaceViewModel.exportBatch` queues every selected
+    /// model's full complete-asset export (mesh + textures + animations)
+    /// into its own subfolder underneath it.
+    private func exportSelected() {
+        let assets = workspace.modelsHub.filter { selectedIDs.contains($0.id) }
+        guard !assets.isEmpty, let directory = ExportPanel.chooseFolder(message: "Choose a folder to export \(assets.count) selected model(s) into — each gets its own subfolder.") else { return }
+        isBatchSelectionMode = false
+        selectedIDs.removeAll()
+        Task { await workspace.exportBatch(assets, to: directory) }
     }
 }
 

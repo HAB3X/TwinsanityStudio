@@ -48,17 +48,22 @@ struct MetalModelView: NSViewRepresentable {
         view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float
         view.clearColor = MTLClearColorMake(0.07, 0.07, 0.09, 1)
-        // On-demand rendering: this asset is static the overwhelming
-        // majority of the time (no camera drag, no animation frame
-        // change), so a continuous 60fps redraw loop burns a full render
-        // pass a second time every frame for nothing — especially wasteful
-        // now that `CompositePreviewView` can have several of these
-        // embedded inline at once. Redraws are triggered explicitly instead
-        // — by mouse interaction (above) and by `updateNSView` below, which
-        // SwiftUI calls whenever anything this view depends on changes.
-        view.enableSetNeedsDisplay = true
-        view.isPaused = true
-        view.needsDisplay = true
+        // Continuous, throttled rendering. This was briefly switched to
+        // pure on-demand rendering (isPaused = true + enableSetNeedsDisplay,
+        // redrawing only on setNeedsDisplay()) to cut idle GPU cost — but
+        // that makes the very first frame depend on `needsDisplay = true`
+        // landing *after* this view is actually attached to a window with
+        // a non-zero drawable size, which isn't guaranteed to happen before
+        // AppKit would otherwise have drawn it, and produced a viewport
+        // that stayed blank until some other event forced a redraw. A
+        // low-but-nonzero frame rate keeps the original idle-cost win
+        // (throttled well below a full 60fps loop) without depending on
+        // exact invalidation timing — the display link will always paint
+        // the first frame and every frame after, whether or not a
+        // setNeedsDisplay() call actually landed.
+        view.preferredFramesPerSecond = 20
+        view.enableSetNeedsDisplay = false
+        view.isPaused = false
         return view
     }
 
@@ -71,11 +76,5 @@ struct MetalModelView: NSViewRepresentable {
             nsView.renderer = renderer
             nsView.delegate = renderer
         }
-        // Also covers state that lives outside this view entirely (e.g.
-        // `ModelViewerWindow`'s skeleton-overlay toggle, which mutates the
-        // renderer directly) — any SwiftUI state change that reaches this
-        // node's `body` re-evaluation lands here, so one redraw per actual
-        // change is enough without polling every frame.
-        nsView.needsDisplay = true
     }
 }

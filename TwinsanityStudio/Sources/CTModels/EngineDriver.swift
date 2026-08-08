@@ -1,0 +1,68 @@
+import Foundation
+import CTCore
+
+/// Identifies one Traveller's Tales-era engine variant this build knows how to
+/// read, and what it's capable of for that variant. This is the seam a
+/// "Pluggable Engine Driver System" hangs off of — but a seam is only useful
+/// once something concrete is plugged into it, and today that's exactly one
+/// thing: `TwinsanityEngineDriver`, backed by the real, source-grounded
+/// `RM2Parser`/`BDArchiveParser`/etc. in `CTParsers`.
+///
+/// Deliberately *not* shipped with here: drivers for Nu2-engine titles,
+/// Haven: Call of the King, the early LEGO games, or Crash Nitro Kart. Their
+/// chunk layouts, record formats, and endianness conventions would all have
+/// to be reverse-engineered from scratch — this repository has no verified
+/// reference source for any of them (compare `twinsanity-editor-master`,
+/// which *is* a verified reference for Twinsanity itself, and is what every
+/// parser in `CTParsers` is grounded in). A driver stubbed out against
+/// guessed offsets wouldn't be "multi-engine support" — it would silently
+/// misparse or crash on real files while claiming to work. When a real
+/// reference (community documentation, a decompiled binary, another OSS
+/// tool) surfaces for one of those engines, it gets its own
+/// `EngineDriver` conformance next to this one; until then, this stays a
+/// single-entry registry on purpose.
+public protocol EngineDriver: Sendable {
+    /// Stable identifier, e.g. `"twinsanity"` — used for display and for
+    /// any future per-driver settings/caching, never parsed from file data.
+    var id: String { get }
+    var displayName: String { get }
+    /// Console platforms this driver has verified parsing for.
+    var supportedPlatforms: [ConsolePlatform] { get }
+    /// File extensions (uppercased, no dot) this driver's archive/level
+    /// parsers recognize, e.g. `["RM2", "SM2", "RMX", "SMX"]`.
+    var recognizedExtensions: Set<String> { get }
+    /// The byte order this driver's structural fields are read as. See
+    /// `Endianness`'s doc comment: Twinsanity's own PS2/Xbox split is a
+    /// vertex/pixel-layout difference, not a byte-order one, but a future
+    /// GameCube-era driver genuinely could differ here.
+    var structuralEndianness: Endianness { get }
+}
+
+/// The one real driver this build has: everything under `CTParsers` today
+/// (`BDArchiveParser`, `RM2Parser`, `TextureParser`/`TextureXParser`,
+/// `ModelParser`/`SkinParser`, `GraphicsInfoParser`/`AnimationParser`, ...)
+/// *is* this driver's implementation — this type doesn't re-wrap or dispatch
+/// through those parsers (that would just be indirection with nothing behind
+/// it yet), it names them as a unit so `EngineDriverRegistry` has something
+/// non-empty to register.
+public struct TwinsanityEngineDriver: EngineDriver {
+    public let id = "twinsanity"
+    public let displayName = "Crash Twinsanity"
+    public let supportedPlatforms: [ConsolePlatform] = [.ps2, .xbox]
+    public let recognizedExtensions: Set<String> = ["RM2", "SM2", "RMX", "SMX"]
+    public let structuralEndianness: Endianness = .little
+
+    public init() {}
+}
+
+/// Every engine driver this build ships. A single-element registry today,
+/// not a placeholder for one — see `EngineDriver`'s doc comment for why
+/// filling it further requires an actual verified format spec, not a guess.
+public enum EngineDriverRegistry {
+    public static let all: [any EngineDriver] = [TwinsanityEngineDriver()]
+
+    public static func driver(forExtension ext: String) -> (any EngineDriver)? {
+        let upper = ext.uppercased()
+        return all.first { $0.recognizedExtensions.contains(upper) }
+    }
+}

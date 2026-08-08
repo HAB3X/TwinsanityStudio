@@ -1,6 +1,7 @@
 import SwiftUI
 import CTModels
 import CTParsers
+import CTExport
 import simd
 
 /// Phase 3.4 property inspectors: plain-language `Form`s over the raw
@@ -23,35 +24,60 @@ struct PositionInspectorView: View {
     @State private var y: String = ""
     @State private var z: String = ""
     @State private var w: String = ""
+    @State private var isCrateSheetPresented = false
 
     var body: some View {
-        Form {
-            Section("Point") {
-                LabeledContent("X") { TextField("X", text: $x).textFieldStyle(.roundedBorder) }
-                LabeledContent("Y") { TextField("Y", text: $y).textFieldStyle(.roundedBorder) }
-                LabeledContent("Z") { TextField("Z", text: $z).textFieldStyle(.roundedBorder) }
-                LabeledContent("W") { TextField("W", text: $w).textFieldStyle(.roundedBorder) }
+        VStack(alignment: .leading, spacing: 0) {
+            Form {
+                Section("Point") {
+                    LabeledContent("X") { TextField("X", text: $x).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Y") { TextField("Y", text: $y).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Z") { TextField("Z", text: $z).textFieldStyle(.roundedBorder) }
+                    LabeledContent("W") { TextField("W", text: $w).textFieldStyle(.roundedBorder) }
+                }
+            }
+            .formStyle(.grouped)
+            .onAppear { loadFields() }
+            .onChange(of: node.id) { _, _ in loadFields() }
+
+            HStack {
+                Button("Save Edited Copy…") { save() }
+                    .disabled(editedPoint == nil || !workspace.canSaveEdits(for: node))
+                Button("Export as Mod Crate…") { isCrateSheetPresented = true }
+                    .disabled(editedPoint == nil || !workspace.canSaveEdits(for: node))
+                Spacer()
+            }
+            .padding(.horizontal)
+
+            if !workspace.canSaveEdits(for: node) {
+                Text("Editing only saves for a standalone-opened .RM2/.SM2 file — this record's file is archive-packed, which this build doesn't have a write path for yet.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+            } else {
+                Text("Saves an edited copy under a new name — the file you opened is never modified in place. \"Export as Mod Crate…\" packages the same edited bytes into a real CrateModLoader-installable .crate instead of a loose file.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
             }
         }
-        .formStyle(.grouped)
-        .onAppear { loadFields() }
-        .onChange(of: node.id) { _, _ in loadFields() }
-
-        HStack {
-            Button("Save Edited Copy…") { save() }
-                .disabled(editedPoint == nil || !workspace.canSaveEdits(for: node))
-            Spacer()
+        .sheet(isPresented: $isCrateSheetPresented) {
+            if let patchedBytes = patchedBytesForCrate() {
+                CrateExportSheet(node: node, patchedBytes: patchedBytes)
+                    .environmentObject(workspace)
+            }
         }
+    }
 
-        if !workspace.canSaveEdits(for: node) {
-            Text("Editing only saves for a standalone-opened .RM2/.SM2 file — this record's file is archive-packed, which this build doesn't have a write path for yet.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        } else {
-            Text("Saves an edited copy under a new name — the file you opened is never modified in place.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
+    /// Re-derives the patched bytes on demand for the crate sheet — mirrors
+    /// `save()`'s own encode-and-patch step rather than caching a stale copy
+    /// from whenever the button was clicked, so editing the fields further
+    /// while the sheet is closed is always reflected next time it opens.
+    private func patchedBytesForCrate() -> Data? {
+        guard let point = editedPoint else { return nil }
+        let edited = PositionMarker(id: position.id, point: point)
+        let encoded = WorldPlacementWriter.writePosition(edited)
+        return workspace.patchedFileBytes(replacing: node, with: encoded)
     }
 
     private func loadFields() {

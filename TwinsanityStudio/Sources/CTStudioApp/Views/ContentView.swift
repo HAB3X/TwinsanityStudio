@@ -36,6 +36,12 @@ struct ContentView: View {
                     Label("Scrapped Content", systemImage: "questionmark.folder")
                 }
                 .disabled(workspace.orphanedContent.isEmpty && !workspace.isScanning)
+                Button {
+                    workspace.isAssetDiffPresented = true
+                } label: {
+                    Label("Asset Diff", systemImage: "rectangle.on.rectangle")
+                }
+                .disabled(workspace.modelsHub.count < 2)
                 if workspace.isLoading || workspace.isScanning {
                     ProgressView().controlSize(.small)
                 }
@@ -45,7 +51,22 @@ struct ContentView: View {
             if let error = workspace.lastError {
                 StatusBanner(text: error, isError: true) { workspace.lastError = nil }
             } else if !workspace.statusMessage.isEmpty {
-                StatusBanner(text: workspace.statusMessage, isError: false, dismiss: nil)
+                // Informational status ("Scan complete — …") used to have
+                // no dismiss button and no timeout, so it sat over the
+                // bottom of the sidebar/viewport indefinitely — every
+                // status update just replaced the text underneath it.
+                // Dismissible now, and auto-clears on its own after a few
+                // seconds so it doesn't have to be dismissed by hand every
+                // time. `.task(id:)` restarts the timer whenever the
+                // message text actually changes, so a fresh status message
+                // gets its own full few seconds rather than inheriting
+                // whatever was left on the previous one's clock.
+                StatusBanner(text: workspace.statusMessage, isError: false) { workspace.statusMessage = "" }
+                    .task(id: workspace.statusMessage) {
+                        try? await Task.sleep(for: .seconds(5))
+                        guard !Task.isCancelled else { return }
+                        workspace.statusMessage = ""
+                    }
             }
         }
         .overlay {
@@ -84,6 +105,10 @@ struct ContentView: View {
         }
         .sheet(isPresented: $workspace.isScrappedContentScannerPresented) {
             ScrappedContentScannerView()
+                .environmentObject(workspace)
+        }
+        .sheet(isPresented: $workspace.isAssetDiffPresented) {
+            AssetDiffView()
                 .environmentObject(workspace)
         }
         .onDrop(of: [.fileURL], isTargeted: $isTargetedForDrop) { providers in

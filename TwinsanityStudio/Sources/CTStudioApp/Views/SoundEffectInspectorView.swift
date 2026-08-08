@@ -55,6 +55,7 @@ struct SoundEffectInspectorView: View {
     let sound: SoundEffectAsset
 
     @State private var player: AVAudioPlayer?
+    @State private var playerDelegate: PlaybackEndDelegate?
     @State private var isPlaying = false
 
     var body: some View {
@@ -128,11 +129,25 @@ struct SoundEffectInspectorView: View {
             isPlaying = false
             return
         }
+        // Belt-and-suspenders beyond the button's own `.disabled(sound.
+        // pcmSamples.isEmpty)`: AVAudioPlayer's failure mode for genuinely
+        // degenerate audio data isn't guaranteed to be a catchable Swift
+        // `Error` (some AVFoundation validation failures surface as an
+        // uncatchable Objective-C exception instead) — refusing to even
+        // attempt construction for zero-sample audio removes that path
+        // entirely rather than hoping `try?` catches it.
+        guard !sound.pcmSamples.isEmpty else {
+            workspace.lastError = "This sound decoded to zero samples — nothing to play."
+            return
+        }
         let wav = WAVEncoder.encode(pcm: sound.pcmSamples, sampleRateHz: sound.sampleRateHz)
         guard let newPlayer = try? AVAudioPlayer(data: wav) else {
             workspace.lastError = "Couldn't create an audio player for this sound."
             return
         }
+        let delegate = PlaybackEndDelegate { isPlaying = false }
+        newPlayer.delegate = delegate
+        playerDelegate = delegate
         player = newPlayer
         newPlayer.play()
         isPlaying = true
@@ -149,5 +164,20 @@ struct SoundEffectInspectorView: View {
         } catch {
             workspace.lastError = "Export failed: \(error)"
         }
+    }
+}
+
+/// Flips the Play/Stop button back to "Play" when a clip finishes on its
+/// own — without this, the button silently stayed stuck on "Stop" after
+/// playback ended naturally instead of via the button itself.
+final class PlaybackEndDelegate: NSObject, AVAudioPlayerDelegate {
+    private let onFinish: () -> Void
+
+    init(onFinish: @escaping () -> Void) {
+        self.onFinish = onFinish
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        DispatchQueue.main.async { [onFinish] in onFinish() }
     }
 }

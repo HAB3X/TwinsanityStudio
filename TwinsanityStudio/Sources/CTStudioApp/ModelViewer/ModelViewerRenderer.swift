@@ -60,6 +60,7 @@ private final class ModelViewerGPUContext {
     let pipelineState: MTLRenderPipelineState
     let linePipelineState: MTLRenderPipelineState?
     let collisionLinePipelineState: MTLRenderPipelineState?
+    let collisionLineColoredPipelineState: MTLRenderPipelineState?
     let depthState: MTLDepthStencilState
     let samplerState: MTLSamplerState
     let fallbackTexture: MTLTexture
@@ -135,6 +136,20 @@ private final class ModelViewerGPUContext {
             collisionLinePipelineState = nil
         }
 
+        if let colorLineVertexFn = library.makeFunction(name: "vertex_line_colored"), let colorLineFragmentFn = library.makeFunction(name: "fragment_line_colored") {
+            let coloredDescriptor = MTLRenderPipelineDescriptor()
+            coloredDescriptor.vertexFunction = colorLineVertexFn
+            coloredDescriptor.fragmentFunction = colorLineFragmentFn
+            coloredDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            coloredDescriptor.colorAttachments[0].isBlendingEnabled = true
+            coloredDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+            coloredDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            coloredDescriptor.depthAttachmentPixelFormat = .depth32Float
+            collisionLineColoredPipelineState = try? device.makeRenderPipelineState(descriptor: coloredDescriptor)
+        } else {
+            collisionLineColoredPipelineState = nil
+        }
+
         let depthDescriptor = MTLDepthStencilDescriptor()
         depthDescriptor.depthCompareFunction = .less
         depthDescriptor.isDepthWriteEnabled = true
@@ -152,6 +167,22 @@ private final class ModelViewerGPUContext {
         guard let fallback = ModelViewerRenderer.makeSolidTexture(device: device, rgba: (255, 255, 255, 255)) else { return nil }
         self.fallbackTexture = fallback
     }
+}
+
+/// How the Collision Viewer colors wireframe edges (blueprint 4.1,
+/// "Collision Mesh & Trigger Overlays"). `bySurfaceID` distinguishes raw
+/// `CollisionTriangle.surfaceID` values from each other visually — it is
+/// deliberately *not* the blueprint's literal "Red = Death, Green = Trigger,
+/// Blue = Solid" scheme, because this codebase has no verified mapping from
+/// a surface ID to that kind of semantic category (the undecoded
+/// `CollisionSurface` record and `Object`/`Script` layer are where that
+/// classification would actually live — see `CollisionTriangle`'s doc
+/// comment). Coloring by the real, decoded ID is still genuinely useful
+/// (it makes distinct physical-material regions visually obvious) without
+/// asserting something unverified.
+public enum CollisionColorMode: Sendable {
+    case solid
+    case bySurfaceID
 }
 
 /// Drives the Model Viewer's `MTKView`: uploads a `ResolvedModelAsset`'s
@@ -191,6 +222,16 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     /// the same line pipeline machinery as the skeleton overlay, just a
     /// separate pipeline state so the two don't fight over fragment color.
     private var collisionEdgeWorldPositions: [(SIMD3<Float>, SIMD3<Float>)] = []
+    /// One color per entry in `collisionEdgeWorldPositions`, derived from
+    /// that edge's triangle's raw `surfaceID` (see `CollisionColorMode`'s
+    /// doc comment for why this is the raw ID, not an invented semantic
+    /// category like "deadly"/"solid").
+    private var collisionEdgeColors: [SIMD3<Float>] = []
+    public var collisionColorMode: CollisionColorMode = .solid
+    /// Every distinct raw `surfaceID` found in the currently loaded
+    /// collision mesh, in first-seen order — backs the legend in
+    /// `CollisionViewerWindow`.
+    public private(set) var collisionSurfaceIDs: [Int] = []
 
     init?(asset: ResolvedModelAsset) {
         guard let context = ModelViewerGPUContext.shared else { return nil }
@@ -219,7 +260,11 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         var minBound = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
         var maxBound = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
         var edges: [(SIMD3<Float>, SIMD3<Float>)] = []
+        var colors: [SIMD3<Float>] = []
         edges.reserveCapacity(collisionMesh.triangles.count * 3)
+        colors.reserveCapacity(collisionMesh.triangles.count * 3)
+        var seenSurfaceIDs: [Int] = []
+        var seenSurfaceIDSet: Set<Int> = []
 
         func point(_ index: Int) -> SIMD3<Float>? {
             guard collisionMesh.vertices.indices.contains(index) else { return nil }
@@ -234,6 +279,11 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             edges.append((a, b))
             edges.append((b, c))
             edges.append((c, a))
+            let color = Self.color(forSurfaceID: triangle.surfaceID)
+            colors.append(contentsOf: [color, color, color])
+            if seenSurfaceIDSet.insert(triangle.surfaceID).inserted {
+                seenSurfaceIDs.append(triangle.surfaceID)
+            }
         }
 
         for v in collisionMesh.vertices {
@@ -243,6 +293,8 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         }
 
         collisionEdgeWorldPositions = edges
+        collisionEdgeColors = colors
+        collisionSurfaceIDs = seenSurfaceIDs
         if minBound.x <= maxBound.x {
             boundsCenter = (minBound + maxBound) / 2
             let extent = maxBound - minBound
@@ -447,7 +499,21 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             }
         }
 
-        if let collisionLinePipelineState = context.collisionLinePipelineState, !collisionEdgeWorldPositions.isEmpty {
+        if collisionColorMode == .bySurfaceID, let coloredPipelineState = context.collisionLineColoredPipelineState, !collisionEdgeWorldPositions.isEmpty {
+            var lineVertices: [Float] = []
+            lineVertices.reserveCapacity(collisionEdgeWorldPositions.count * 12)
+            for (index, edge) in collisionEdgeWorldPositions.enumerated() {
+                let color = collisionEdgeColors[index]
+                lineVertices.append(contentsOf: [edge.0.x, edge.0.y, edge.0.z, color.x, color.y, color.z])
+                lineVertices.append(contentsOf: [edge.1.x, edge.1.y, edge.1.z, color.x, color.y, color.z])
+            }
+            if let lineBuffer = device.makeBuffer(bytes: lineVertices, length: lineVertices.count * MemoryLayout<Float>.stride, options: .storageModeShared) {
+                encoder.setRenderPipelineState(coloredPipelineState)
+                encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
+                encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: collisionEdgeWorldPositions.count * 2)
+            }
+        } else if let collisionLinePipelineState = context.collisionLinePipelineState, !collisionEdgeWorldPositions.isEmpty {
             var lineVertices: [Float] = []
             lineVertices.reserveCapacity(collisionEdgeWorldPositions.count * 6)
             for (a, b) in collisionEdgeWorldPositions {
@@ -470,6 +536,46 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     var submeshCount: Int { submeshes.count }
     var hasGeometry: Bool { !submeshes.isEmpty }
     var hasCollisionWireframe: Bool { !collisionEdgeWorldPositions.isEmpty }
+
+    /// Deterministic, stable color for a raw collision `surfaceID` — golden-
+    /// ratio hue stepping so adjacent IDs land far apart on the color wheel
+    /// rather than as a monotonic gradient (which would make neighboring
+    /// surface IDs look confusingly similar). This is *not* a claim about
+    /// what a surface ID means (see `CollisionTriangle.surfaceID`'s doc
+    /// comment — that mapping to "deadly"/"solid"/etc. isn't decoded), only
+    /// a way to tell different raw IDs apart visually. `nonisolated` and
+    /// `static` so the `CollisionViewerWindow` legend can compute the exact
+    /// same colors without holding a live renderer.
+    public static func color(forSurfaceID surfaceID: Int) -> SIMD3<Float> {
+        let goldenRatioConjugate: Double = 0.6180339887498949
+        // `UInt(bitPattern:)` sidesteps sign entirely (a negative surfaceID
+        // is unexpected but not impossible for an undecoded raw field), and
+        // the explicit `.truncatingRemainder` + `+ 1 % 1` clamp guarantees
+        // `hue` lands in [0, 1) before it ever reaches `hsvToRGB`, where a
+        // negative value would otherwise produce an out-of-range `i % 6`.
+        let bucket = UInt(bitPattern: surfaceID) % 1000
+        var hue = (Double(bucket) / 1000.0 * goldenRatioConjugate).truncatingRemainder(dividingBy: 1.0)
+        if hue < 0 { hue += 1 }
+        return hsvToRGB(h: hue, s: 0.62, v: 0.95)
+    }
+
+    private static func hsvToRGB(h: Double, s: Double, v: Double) -> SIMD3<Float> {
+        let i = Int(h * 6)
+        let f = h * 6 - Double(i)
+        let p = v * (1 - s)
+        let q = v * (1 - f * s)
+        let t = v * (1 - (1 - f) * s)
+        let rgb: (Double, Double, Double)
+        switch i % 6 {
+        case 0: rgb = (v, t, p)
+        case 1: rgb = (q, v, p)
+        case 2: rgb = (p, v, t)
+        case 3: rgb = (p, q, v)
+        case 4: rgb = (t, p, v)
+        default: rgb = (v, p, q)
+        }
+        return SIMD3(Float(rgb.0), Float(rgb.1), Float(rgb.2))
+    }
 
     // MARK: - Matrix helpers (simd has no built-in perspective/lookAt)
 
@@ -572,6 +678,29 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
 
     fragment float4 fragment_line_collision(LineOut in [[stage_in]]) {
         return float4(0.25, 0.7, 1.0, 0.9);
+    }
+
+    struct LineVertexColorIn {
+        packed_float3 position;
+        packed_float3 color;
+    };
+
+    struct LineColorOut {
+        float4 position [[position]];
+        float4 color;
+    };
+
+    vertex LineColorOut vertex_line_colored(uint vertexID [[vertex_id]],
+                                             const device LineVertexColorIn *vertices [[buffer(0)]],
+                                             constant Uniforms &uniforms [[buffer(1)]]) {
+        LineColorOut out;
+        out.position = uniforms.modelViewProjection * float4(vertices[vertexID].position, 1.0);
+        out.color = float4(vertices[vertexID].color, 0.9);
+        return out;
+    }
+
+    fragment float4 fragment_line_colored(LineColorOut in [[stage_in]]) {
+        return in.color;
     }
     """
 }

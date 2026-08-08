@@ -10,6 +10,8 @@ struct SceneryInspectorView: View {
     let node: ChunkNode
     let scenery: SceneryAsset
 
+    @State private var isResolving = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Form {
@@ -37,11 +39,24 @@ struct SceneryInspectorView: View {
                 ContentUnavailableView("No Placements", systemImage: "map", description: Text("This record decoded but has no scenery tree — see its own Chunk Name/header fields above."))
             } else {
                 Button {
-                    let resolved = workspace.resolvedLevelPlacements(for: scenery, node: node)
-                    workspace.levelViewerContext = LevelViewerContext(scenery: scenery, placements: resolved)
+                    isResolving = true
+                    Task {
+                        // Resolving every placement (mesh + material +
+                        // texture lookups for potentially thousands of
+                        // objects) runs off the main actor — this used to
+                        // block the whole UI for however long that took.
+                        let resolved = await workspace.resolvedLevelPlacements(for: scenery, node: node)
+                        isResolving = false
+                        workspace.levelViewerContext = LevelViewerContext(scenery: scenery, placements: resolved)
+                    }
                 } label: {
-                    Label("Open Level Viewer", systemImage: "map")
+                    if isResolving {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Open Level Viewer", systemImage: "map")
+                    }
                 }
+                .disabled(isResolving)
                 Text("Objects are positioned correctly but not yet rotated/scaled — see the Level Viewer's own notes.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
