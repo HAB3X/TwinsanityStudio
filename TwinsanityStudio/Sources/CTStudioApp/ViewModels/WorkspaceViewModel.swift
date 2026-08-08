@@ -21,6 +21,8 @@ public final class WorkspaceViewModel: ObservableObject {
     @Published public var lastError: String?
     /// Non-nil presents the Model Viewer sheet (see `ContentView`).
     @Published public var modelViewerAsset: ResolvedModelAsset?
+    /// Non-nil presents the Collision Viewer sheet (see `ContentView`).
+    @Published public var collisionViewerMesh: CollisionMesh?
     /// Every RigidModel/Skeleton successfully resolved (mesh + textures, and
     /// skeleton + animations where rigged) across every scanned file —
     /// populated automatically as archives are scanned, so browsing models

@@ -45,6 +45,8 @@ struct InspectorView: View {
                                 TriggerInspectorView(trigger: trigger)
                             case .camera(let camera):
                                 CameraInspectorView(camera: camera)
+                            case .collision(let mesh):
+                                CollisionInspectorView(mesh: mesh)
                             case .raw, .none:
                                 RawInspectorView(node: node)
                             }
@@ -70,7 +72,7 @@ struct InspectorView: View {
     private static func isCompositeEligible(_ payload: ChunkPayload?) -> Bool {
         switch payload {
         case .texture, .mesh, .material, .animation, .rigidModel, .skeleton: return true
-        case .position, .instance, .trigger, .camera, .raw, .none: return false
+        case .position, .instance, .trigger, .camera, .collision, .raw, .none: return false
         }
     }
 

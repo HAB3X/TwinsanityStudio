@@ -14,6 +14,7 @@ public enum ChunkPayload: Sendable {
     case instance(PlacedInstance)
     case trigger(TriggerVolume)
     case camera(PlacedCamera)
+    case collision(CollisionMesh)
     /// Understood record kind, but not (yet) decoded into a typed model —
     /// still browsable/exportable as a hex/raw blob.
     case raw(byteCount: Int)
@@ -32,6 +33,7 @@ public enum ChunkPayload: Sendable {
         case instance = "Entities"
         case trigger = "Triggers"
         case camera = "Cameras"
+        case collision = "Collision"
         public var id: String { rawValue }
     }
 
@@ -44,6 +46,7 @@ public enum ChunkPayload: Sendable {
         case .instance: return .instance
         case .trigger: return .trigger
         case .camera: return .camera
+        case .collision: return .collision
         case .material, .position, .raw: return nil
         }
     }

@@ -62,6 +62,14 @@ struct ContentView: View {
                     }
                 }
         }
+        .sheet(item: $workspace.collisionViewerMesh) { mesh in
+            CollisionViewerWindow(mesh: mesh)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") { workspace.collisionViewerMesh = nil }
+                    }
+                }
+        }
         .sheet(isPresented: $workspace.isModelsHubPresented) {
             ModelsHubView()
                 .environmentObject(workspace)

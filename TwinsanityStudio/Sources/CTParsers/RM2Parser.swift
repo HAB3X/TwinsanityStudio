@@ -95,10 +95,23 @@ public enum RM2Parser {
         case .section(let sectionType):
             return try buildSectionNode(data: data, sectionType: sectionType, absoluteOffset: absoluteOffset, size: Int(entry.size), recordID: entry.id, level: 1)
         case .rawLeaf(let name):
+            let byteSize = max(0, Int(entry.size))
+            let displayName = "\(name) #\(entry.id)"
+            if name == "ColData", absoluteOffset >= 0, absoluteOffset + byteSize <= data.count {
+                let colData = data.subdata(in: (data.startIndex + absoluteOffset)..<(data.startIndex + absoluteOffset + byteSize))
+                var colCursor = BinaryCursor(data: colData)
+                if let mesh = try? ColDataParser.parse(&colCursor, recordID: entry.id, size: byteSize) {
+                    return ChunkNode(
+                        recordID: entry.id, sectionType: .null, displayName: displayName,
+                        byteSize: byteSize, fileOffset: absoluteOffset,
+                        payload: .collision(mesh)
+                    )
+                }
+            }
             return ChunkNode(
-                recordID: entry.id, sectionType: .null, displayName: "\(name) #\(entry.id)",
-                byteSize: max(0, Int(entry.size)), fileOffset: absoluteOffset,
-                payload: .raw(byteCount: max(0, Int(entry.size)))
+                recordID: entry.id, sectionType: .null, displayName: displayName,
+                byteSize: byteSize, fileOffset: absoluteOffset,
+                payload: .raw(byteCount: byteSize)
             )
         }
     }

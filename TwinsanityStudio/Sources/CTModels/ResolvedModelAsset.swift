@@ -104,7 +104,7 @@ public enum AssetResolver {
                         }
                     case .rigidModel(let rigidModel):
                         index.rigidModels[leaf.recordID] = rigidModel
-                    case .skeleton, .animation, .position, .instance, .trigger, .camera, .raw:
+                    case .skeleton, .animation, .position, .instance, .trigger, .camera, .collision, .raw:
                         break
                     }
                 }

@@ -53,6 +53,7 @@ private final class ModelViewerGPUContext {
     let commandQueue: MTLCommandQueue
     let pipelineState: MTLRenderPipelineState
     let linePipelineState: MTLRenderPipelineState?
+    let collisionLinePipelineState: MTLRenderPipelineState?
     let depthState: MTLDepthStencilState
     let samplerState: MTLSamplerState
     let fallbackTexture: MTLTexture
@@ -114,6 +115,20 @@ private final class ModelViewerGPUContext {
             linePipelineState = nil
         }
 
+        if let lineVertexFn = library.makeFunction(name: "vertex_line"), let collisionFragmentFn = library.makeFunction(name: "fragment_line_collision") {
+            let collisionLineDescriptor = MTLRenderPipelineDescriptor()
+            collisionLineDescriptor.vertexFunction = lineVertexFn
+            collisionLineDescriptor.fragmentFunction = collisionFragmentFn
+            collisionLineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            collisionLineDescriptor.colorAttachments[0].isBlendingEnabled = true
+            collisionLineDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+            collisionLineDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            collisionLineDescriptor.depthAttachmentPixelFormat = .depth32Float
+            collisionLinePipelineState = try? device.makeRenderPipelineState(descriptor: collisionLineDescriptor)
+        } else {
+            collisionLinePipelineState = nil
+        }
+
         let depthDescriptor = MTLDepthStencilDescriptor()
         depthDescriptor.depthCompareFunction = .less
         depthDescriptor.isDepthWriteEnabled = true
@@ -157,11 +172,68 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     /// joints. Set by `AnimationPlaybackController` as playback advances.
     var skeletonJointWorldPositions: [(SIMD3<Float>, SIMD3<Float>)] = []
 
+    /// Collision wireframe edges (blue), set when this renderer was built
+    /// from a `CollisionMesh` rather than a `ResolvedModelAsset`. Drawn with
+    /// the same line pipeline machinery as the skeleton overlay, just a
+    /// separate pipeline state so the two don't fight over fragment color.
+    private var collisionEdgeWorldPositions: [(SIMD3<Float>, SIMD3<Float>)] = []
+
     init?(asset: ResolvedModelAsset) {
         guard let context = ModelViewerGPUContext.shared else { return nil }
         self.context = context
         super.init()
         upload(asset: asset)
+    }
+
+    /// Wireframe-only path for "Collision Viewing": no textured submeshes,
+    /// just every collision triangle's three edges drawn as lines, with the
+    /// orbit camera framed from the collision mesh's own vertex bounds
+    /// rather than a `ResolvedModelAsset`'s. Shared edges between adjacent
+    /// triangles aren't deduplicated — each triangle contributes its own 3
+    /// edges — which draws every internal edge twice; visually harmless
+    /// (identical overlapping line segments) and far simpler than an
+    /// edge-adjacency pass, which isn't needed for a first working overlay.
+    init?(collisionMesh: CollisionMesh) {
+        guard let context = ModelViewerGPUContext.shared else { return nil }
+        self.context = context
+        super.init()
+        upload(collisionMesh: collisionMesh)
+    }
+
+    private func upload(collisionMesh: CollisionMesh) {
+        guard !collisionMesh.vertices.isEmpty else { return }
+        var minBound = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var maxBound = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        var edges: [(SIMD3<Float>, SIMD3<Float>)] = []
+        edges.reserveCapacity(collisionMesh.triangles.count * 3)
+
+        func point(_ index: Int) -> SIMD3<Float>? {
+            guard collisionMesh.vertices.indices.contains(index) else { return nil }
+            let v = collisionMesh.vertices[index]
+            return SIMD3(v.x, v.y, v.z)
+        }
+
+        for triangle in collisionMesh.triangles {
+            guard let a = point(triangle.vertexIndex1),
+                  let b = point(triangle.vertexIndex2),
+                  let c = point(triangle.vertexIndex3) else { continue }
+            edges.append((a, b))
+            edges.append((b, c))
+            edges.append((c, a))
+        }
+
+        for v in collisionMesh.vertices {
+            let p = SIMD3(v.x, v.y, v.z)
+            minBound = simd_min(minBound, p)
+            maxBound = simd_max(maxBound, p)
+        }
+
+        collisionEdgeWorldPositions = edges
+        if minBound.x <= maxBound.x {
+            boundsCenter = (minBound + maxBound) / 2
+            let extent = maxBound - minBound
+            boundsRadius = max(max(extent.x, extent.y), max(extent.z, 1))
+        }
     }
 
     private func upload(asset: ResolvedModelAsset) {
@@ -350,6 +422,20 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             }
         }
 
+        if let collisionLinePipelineState = context.collisionLinePipelineState, !collisionEdgeWorldPositions.isEmpty {
+            var lineVertices: [Float] = []
+            lineVertices.reserveCapacity(collisionEdgeWorldPositions.count * 6)
+            for (a, b) in collisionEdgeWorldPositions {
+                lineVertices.append(contentsOf: [a.x, a.y, a.z, b.x, b.y, b.z])
+            }
+            if let lineBuffer = device.makeBuffer(bytes: lineVertices, length: lineVertices.count * MemoryLayout<Float>.stride, options: .storageModeShared) {
+                encoder.setRenderPipelineState(collisionLinePipelineState)
+                encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
+                encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: collisionEdgeWorldPositions.count * 2)
+            }
+        }
+
         encoder.endEncoding()
     }
 
@@ -358,6 +444,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     /// guaranteed-blank viewer.
     var submeshCount: Int { submeshes.count }
     var hasGeometry: Bool { !submeshes.isEmpty }
+    var hasCollisionWireframe: Bool { !collisionEdgeWorldPositions.isEmpty }
 
     // MARK: - Matrix helpers (simd has no built-in perspective/lookAt)
 
@@ -456,6 +543,10 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
 
     fragment float4 fragment_line(LineOut in [[stage_in]]) {
         return float4(1.0, 0.65, 0.0, 1.0);
+    }
+
+    fragment float4 fragment_line_collision(LineOut in [[stage_in]]) {
+        return float4(0.25, 0.7, 1.0, 0.9);
     }
     """
 }
