@@ -44,6 +44,11 @@ struct AgentLabGraphView: View {
     @State private var connections: Set<AgentConnection> = []
     @State private var pendingConnectionStart: UUID?
     @State private var pendingConnectionDragPoint: CGPoint?
+    /// Non-`nil` presents the argument-editor sheet for one command in one
+    /// specific agent record — both are needed together since
+    /// `AgentLabCommand.fileOffset` is only meaningful relative to its own
+    /// owning record's `ChunkNode`.
+    @State private var editingCommand: (node: ChunkNode, command: AgentLabCommand)?
 
     private struct AgentConnection: Hashable {
         let a: UUID
@@ -71,6 +76,21 @@ struct AgentLabGraphView: View {
         }
         .frame(minWidth: 900, minHeight: 600)
         .onAppear { layoutNodesIfNeeded() }
+        .sheet(item: Binding(
+            get: { editingCommand.map { EditingCommandRef(node: $0.node, command: $0.command) } },
+            set: { newValue in editingCommand = newValue.map { ($0.node, $0.command) } }
+        )) { ref in
+            AgentLabArgumentEditorSheet(node: ref.node, command: ref.command)
+        }
+    }
+
+    /// `Identifiable` wrapper so `editingCommand`'s tuple can drive
+    /// `.sheet(item:)` — a plain `(node: ChunkNode, command: AgentLabCommand)`
+    /// tuple isn't `Identifiable` on its own.
+    private struct EditingCommandRef: Identifiable {
+        let node: ChunkNode
+        let command: AgentLabCommand
+        var id: UUID { command.id }
     }
 
     private var header: some View {
@@ -273,14 +293,14 @@ struct AgentLabGraphView: View {
                                 if entry.commands.isEmpty {
                                     Text("(no commands)").font(.caption2).foregroundStyle(.secondary)
                                 } else {
-                                    ForEach(entry.commands) { commandRow($0) }
+                                    ForEach(entry.commands) { commandRow($0, node: node) }
                                 }
                             }
                         }
                         if !record.finalCommands.isEmpty {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("Trailing chain").font(.caption.bold())
-                                ForEach(record.finalCommands) { commandRow($0) }
+                                ForEach(record.finalCommands) { commandRow($0, node: node) }
                             }
                         }
                     }
@@ -297,21 +317,32 @@ struct AgentLabGraphView: View {
         .padding(12)
     }
 
-    private func commandRow(_ command: AgentLabCommand) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(command.commandName ?? "Command #\(command.commandID)")
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(command.commandName == nil ? .secondary : .primary)
-            if let decoded = command.decoded {
-                Text(describeDecoded(decoded))
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.purple)
-            } else if !command.rawArguments.isEmpty {
-                Text("args: " + command.rawArguments.map { "0x\(String($0, radix: 16))" }.joined(separator: ", "))
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary)
+    private func commandRow(_ command: AgentLabCommand, node: ChunkNode) -> some View {
+        Button {
+            editingCommand = (node, command)
+        } label: {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(command.commandName ?? "Command #\(command.commandID)")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(command.commandName == nil ? .secondary : .primary)
+                    if !command.rawArguments.isEmpty {
+                        Image(systemName: "pencil.circle").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                if let decoded = command.decoded {
+                    Text(describeDecoded(decoded))
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.purple)
+                } else if !command.rawArguments.isEmpty {
+                    Text("args: " + command.rawArguments.map { "0x\(String($0, radix: 16))" }.joined(separator: ", "))
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
+        .buttonStyle(.plain)
+        .disabled(command.rawArguments.isEmpty)
         .padding(.leading, 8)
     }
 
