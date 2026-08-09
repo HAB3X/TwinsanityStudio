@@ -2218,6 +2218,21 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// across undo/redo, so a redone spawn never accidentally reuses an ID
     /// a *different* still-live placement claimed in between). Selects the
     /// new object immediately, same as `addObject`, so its gizmo is ready.
+    /// Whether `objectID` would resolve to real geometry through the same
+    /// chain `spawnInstance` uses (this level's own `assetIndex`, falling
+    /// back to the shared `Default.rm2` `defaultAssetIndex`) — checked
+    /// without touching the GPU. The Forge Palette lists every object ID in
+    /// the whole game (`DefaultObjectID.names` isn't scoped per-level,
+    /// since no per-level roster is decoded anywhere in this build), so
+    /// picking an ID this level's data genuinely has no geometry for is a
+    /// legitimate, expected outcome, not a resolver bug — this lets the
+    /// palette say so upfront instead of the user only finding out after
+    /// already placing an amber placeholder cube.
+    func canResolveObjectID(_ objectID: UInt16) -> Bool {
+        guard let resolved = AssetResolver.resolveInstanceObject(objectID: objectID, instanceSelector: 0, index: assetIndex, defaultIndex: defaultAssetIndex) else { return false }
+        return !resolved.mesh.submeshes.isEmpty
+    }
+
     @discardableResult
     func spawnInstance(objectID: UInt16, at worldPosition: SIMD3<Float>) -> Int? {
         let markerMesh = Self.makeMarkerCubeAsset()

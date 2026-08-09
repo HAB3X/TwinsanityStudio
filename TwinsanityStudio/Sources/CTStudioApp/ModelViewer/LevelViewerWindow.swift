@@ -314,7 +314,7 @@ struct LevelViewerWindow: View {
 
                 Divider()
 
-                ForgePaletteView { objectID, name in
+                ForgePaletteView(canResolve: { renderer?.canResolveObjectID($0) }) { objectID, name in
                     armedPlacement = (objectID, name)
                     renderer?.pendingPlacementObjectID = objectID
                 }
@@ -1154,15 +1154,23 @@ private struct LevelAudioPanel: View {
 /// caller) rather than placing anything itself — this view has no opinion
 /// about *where* in the 3D world the next click lands.
 private struct ForgePaletteView: View {
+    /// Whether `objectID` would resolve to real geometry in the level
+    /// currently open — see `LevelViewerRenderer.canResolveObjectID`'s doc
+    /// comment. `nil` means "renderer not ready yet," shown as available
+    /// rather than flashing every entry as unresolvable before load
+    /// finishes.
+    let canResolve: (UInt16) -> Bool?
     let onArm: (UInt16, String) -> Void
 
     @State private var searchText = ""
     @State private var selectedCategory: DefaultObjectID.Category?
+    @State private var hideUnavailable = false
 
     private var filteredEntries: [(id: UInt16, name: String)] {
         DefaultObjectID.names
             .filter { selectedCategory == nil || DefaultObjectID.category(forName: $0.value) == selectedCategory }
             .filter { searchText.isEmpty || $0.value.localizedCaseInsensitiveContains(searchText) }
+            .filter { !hideUnavailable || (canResolve($0.key) ?? true) }
             .sorted { $0.value < $1.value }
             .map { (id: $0.key, name: $0.value) }
     }
@@ -1170,7 +1178,7 @@ private struct ForgePaletteView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Forge Palette", systemImage: "hammer.fill").font(.headline)
-            Text("Pick an object, then click in the viewport to place a brand-new Instance of it. Categories are a best-effort grouping by name text, not verified game data — see the panel's own tooltip.")
+            Text("Pick an object, then click in the viewport to place a brand-new Instance of it. This lists every object ID in the whole game — not every one has geometry data in *this* level's own file (or the shared fallback), so some will place as an amber placeholder cube instead of real geometry; those are marked below. Categories are a best-effort grouping by name text, not verified game data.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .help("This build has no decoded game-logic data that classifies what an object actually is (hazard/pickup/enemy/prop) — these buckets are pattern-matched from the object's own name text.")
@@ -1188,12 +1196,23 @@ private struct ForgePaletteView: View {
             .labelsHidden()
             .pickerStyle(.segmented)
 
+            Toggle("Hide objects with no geometry in this level", isOn: $hideUnavailable)
+                .font(.caption2)
+                .toggleStyle(.checkbox)
+
             List(filteredEntries, id: \.id) { entry in
+                let resolvable = canResolve(entry.id) ?? true
                 Button {
                     onArm(entry.id, entry.name)
                 } label: {
                     HStack {
+                        if !resolvable {
+                            Image(systemName: "cube.transparent")
+                                .foregroundStyle(.orange)
+                                .help("No geometry resolves for this object in this level — placing it drops an amber placeholder cube instead of a real model.")
+                        }
                         Text(entry.name).lineLimit(1).font(.caption)
+                            .foregroundStyle(resolvable ? .primary : .secondary)
                         Spacer()
                         Text("#\(entry.id)").font(.caption2).foregroundStyle(.tertiary)
                     }
