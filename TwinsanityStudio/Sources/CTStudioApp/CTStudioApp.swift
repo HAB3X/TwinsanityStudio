@@ -60,7 +60,7 @@ struct CTStudioApp: App {
                 .environmentObject(workspace)
                 .tint(workspace.accentColorChoice.color)
         }
-        Window("Level Viewer", id: GPUViewerWindowID.level) {
+        Window("Chunk Viewer", id: GPUViewerWindowID.level) {
             LevelViewerWindowHost()
                 .environmentObject(workspace)
                 .tint(workspace.accentColorChoice.color)

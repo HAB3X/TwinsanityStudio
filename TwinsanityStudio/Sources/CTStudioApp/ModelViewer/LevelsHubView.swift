@@ -39,8 +39,8 @@ struct LevelsHubView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Levels Hub").font(.title2.bold())
-                Text("\(filteredLevels.count) of \(workspace.levelsHub.count) levels")
+                Text("Chunk Hub").font(.title2.bold())
+                Text("\(filteredLevels.count) of \(workspace.levelsHub.count) chunks")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -65,10 +65,10 @@ struct LevelsHubView: View {
     private var content: some View {
         if workspace.levelsHub.isEmpty {
             ContentUnavailableView(
-                workspace.isScanning ? "Scanning…" : "No Levels Found Yet",
+                workspace.isScanning ? "Scanning…" : "No Chunks Found Yet",
                 systemImage: "map",
                 description: Text(workspace.isScanning
-                    ? "Levels will appear here as the archive scan decodes their scenery data."
+                    ? "Chunks will appear here as the archive scan decodes their scenery data."
                     : "Load a .BH archive or a .RM2/.SM2 file — scanning starts automatically.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)

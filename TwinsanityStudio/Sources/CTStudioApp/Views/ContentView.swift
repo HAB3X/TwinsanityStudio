@@ -86,7 +86,7 @@ struct ContentView: View {
                     Button {
                         workspace.isLevelsHubPresented = true
                     } label: {
-                        Label("Levels Hub", systemImage: "map")
+                        Label("Chunk Hub", systemImage: "map")
                     }
                     .disabled(workspace.levelsHub.isEmpty && !workspace.isScanning)
                     Button {

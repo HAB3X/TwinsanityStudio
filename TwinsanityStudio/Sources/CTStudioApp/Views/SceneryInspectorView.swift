@@ -52,7 +52,7 @@ struct SceneryInspectorView: View {
                     if isResolving {
                         ProgressView().controlSize(.small)
                     } else {
-                        Label("Open Level Viewer", systemImage: "map")
+                        Label("Open Chunk Viewer", systemImage: "map")
                     }
                 }
                 .disabled(isResolving)

@@ -298,7 +298,7 @@ struct LevelViewerWindow: View {
     private var sidebar: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text(context.scenery.chunkName.isEmpty ? "Level" : context.scenery.chunkName)
+                Text(context.scenery.chunkName.isEmpty ? "Chunk" : context.scenery.chunkName)
                     .font(.title3.bold())
 
                 modeAndLayersPanel
@@ -319,12 +319,12 @@ struct LevelViewerWindow: View {
                 }
                 .formStyle(.grouped)
 
-                Text("Scenery objects are drawn at their correct world position, but not yet rotated or scaled to match the level data — only translation is currently applied, and scenery has no write path yet (in-session sandbox only). The amber cubes are Instance records (crate/enemy/platform placements) — their position/rotation is real, live-editable with the gizmo, and \"Save Level Overrides…\" below writes it back to a copy of the file. Green/cyan wireframe boxes are Triggers/Cameras — click to select and inspect; no 3D gizmo yet, but their inspector panel below has real, writable position/size/rotation fields with their own \"Save Edited Copy…\" button.")
+                Text("Scenery objects are drawn at their correct world position, but not yet rotated or scaled to match the chunk data — only translation is currently applied, and scenery has no write path yet (in-session sandbox only). The amber cubes are Instance records (crate/enemy/platform placements) — their position/rotation is real, live-editable with the gizmo, and \"Save Chunk Overrides…\" below writes it back to a copy of the file. Green/cyan wireframe boxes are Triggers/Cameras — click to select and inspect; no 3D gizmo yet, but their inspector panel below has real, writable position/size/rotation fields with their own \"Save Edited Copy…\" button.")
                     .font(.caption2)
                     .foregroundStyle(.orange)
 
                 if let referenceNode = referenceNodeForFileOps {
-                    Button("Save Level Overrides…") { saveLevelOverrides() }
+                    Button("Save Chunk Overrides…") { saveLevelOverrides() }
                         .disabled(!workspace.canSaveEdits(for: referenceNode))
                     if !workspace.canSaveEdits(for: referenceNode) {
                         Text("Editing only saves for a standalone-opened .RM2/.SM2 file — this level's file is archive-packed, which this build doesn't have a write path for yet.")
@@ -448,7 +448,7 @@ struct LevelViewerWindow: View {
     /// current selection) snaps the camera to it.
     private var levelEventsPanel: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Level Events").font(.headline)
+            Text("Chunk Events").font(.headline)
             Text("Factual listing of Trigger volumes and script-carrying Instances — this build doesn't decode script bytecode, so there's no plain-English description of what any of these actually do.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -905,7 +905,7 @@ private struct LevelAudioPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Level Audio").font(.headline)
+            Text("Chunk Audio").font(.headline)
             Text("Sound effects in this file (\(sounds.count)) — not categorized as BGM/ambient, since nothing in the decoded data distinguishes those roles.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
