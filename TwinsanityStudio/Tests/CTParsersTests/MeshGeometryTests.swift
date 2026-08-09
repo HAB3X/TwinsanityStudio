@@ -37,4 +37,18 @@ final class MeshGeometryTests: XCTestCase {
         let submesh = MeshSubmesh(vertices: [StaticVertex(position: .zero), StaticVertex(position: .zero)], connectivity: [true, true])
         XCTAssertTrue(submesh.triangleIndices().isEmpty)
     }
+
+    /// `triangleCount` exists purely so stat labels (re-evaluated on every
+    /// SwiftUI body pass, including every animation-playback frame) don't
+    /// have to allocate and immediately discard the full triangle-tuple
+    /// array just to read its length — it must always agree with the real
+    /// thing's count.
+    func testTriangleCountMatchesTriangleIndicesCount() {
+        let vertices = (0..<6).map { StaticVertex(position: SIMD3(Float($0), 0, 0)) }
+        let submesh = MeshSubmesh(vertices: vertices, connectivity: [false, false, true, true, false, true])
+        XCTAssertEqual(submesh.triangleCount, submesh.triangleIndices().count)
+
+        let empty = MeshSubmesh(vertices: [StaticVertex(position: .zero), StaticVertex(position: .zero)], connectivity: [true, true])
+        XCTAssertEqual(empty.triangleCount, empty.triangleIndices().count)
+    }
 }

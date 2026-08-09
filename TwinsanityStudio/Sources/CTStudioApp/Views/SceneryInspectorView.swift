@@ -13,7 +13,13 @@ struct SceneryInspectorView: View {
     @State private var isResolving = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        // `SceneryAsset.placements` walks the record's whole recursive
+        // placement tree fresh on every access (it's not a stored
+        // property) — computed once here and reused, rather than twice
+        // (`.count` below, `.isEmpty` further down) on every body
+        // evaluation.
+        let placements = scenery.placements
+        return VStack(alignment: .leading, spacing: 16) {
             Form {
                 Section("Chunk") {
                     LabeledContent("Name", value: scenery.chunkName.isEmpty ? "(unnamed)" : scenery.chunkName)
@@ -22,7 +28,7 @@ struct SceneryInspectorView: View {
                     }
                 }
                 Section("Placements") {
-                    LabeledContent("Total in tree", value: "\(scenery.placements.count)")
+                    LabeledContent("Total in tree", value: "\(placements.count)")
                 }
                 if !scenery.ambientLights.isEmpty || !scenery.directionalLights.isEmpty || !scenery.pointLights.isEmpty || !scenery.negativeLights.isEmpty {
                     Section("Lights") {
@@ -35,7 +41,7 @@ struct SceneryInspectorView: View {
             }
             .formStyle(.grouped)
 
-            if scenery.placements.isEmpty {
+            if placements.isEmpty {
                 ContentUnavailableView("No Placements", systemImage: "map", description: Text("This record decoded but has no scenery tree — see its own Chunk Name/header fields above."))
             } else {
                 Button {

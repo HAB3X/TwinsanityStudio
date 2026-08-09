@@ -25,7 +25,7 @@ struct MeshInspectorView: View {
                         if let materialID = sub.materialID {
                             Text("material #\(materialID)").foregroundStyle(.secondary)
                         }
-                        Text("\(sub.vertices.count) v · \(sub.triangleIndices().count) tri")
+                        Text("\(sub.vertices.count) v · \(sub.triangleCount) tri")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

@@ -140,6 +140,22 @@ public struct MeshSubmesh: Sendable, Codable {
         }
         return triangles
     }
+
+    /// Same count `triangleIndices().count` would produce, without
+    /// allocating the actual `[(Int, Int, Int)]` array — for callers (stat
+    /// labels, diff summaries) that only ever want the number. Those labels
+    /// live in SwiftUI view bodies that re-evaluate on every unrelated
+    /// state change (e.g. once per animation-playback frame, 30/sec), so
+    /// building and immediately discarding a full triangle-tuple array
+    /// purely to read `.count` was real, avoidable per-frame allocation.
+    public var triangleCount: Int {
+        guard vertices.count >= 3 else { return 0 }
+        var count = 0
+        for i in 0..<(vertices.count - 2) where i + 2 < connectivity.count && connectivity[i + 2] {
+            count += 1
+        }
+        return count
+    }
 }
 
 /// A fully decoded `Model` (rigid) or `Skin` (skinned) geometry record.
@@ -155,7 +171,7 @@ public struct MeshAsset: Sendable, Identifiable, Codable {
     }
 
     public var totalVertexCount: Int { submeshes.reduce(0) { $0 + $1.vertices.count } }
-    public var totalTriangleCount: Int { submeshes.reduce(0) { $0 + $1.triangleIndices().count } }
+    public var totalTriangleCount: Int { submeshes.reduce(0) { $0 + $1.triangleCount } }
 }
 
 /// Decoded `RigidModel` record: links a set of materials and a `Mesh`/`Model`

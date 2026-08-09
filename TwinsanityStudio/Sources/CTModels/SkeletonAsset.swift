@@ -116,29 +116,28 @@ public struct SkeletonAsset: Sendable, Identifiable, Codable {
     /// `GraphicsInfo.BuildSkeleton` (`GraphicsInfo.cs:301-330`): joint 0 is
     /// always the root; every other joint attaches under whichever joint has a
     /// matching `jointIndex`, looked up by value (not array position).
+    ///
+    /// Groups every joint by its `parentJointIndex` once, up front, rather
+    /// than re-filtering the full joint list once per node (the previous
+    /// approach was O(joints²)). This matters because the hierarchy this
+    /// builds is 100% invariant across animation frames — only each joint's
+    /// *transform* changes frame to frame — yet `AnimationSkeletonBinding`
+    /// calls `buildTree()` fresh multiple times per rendered frame during
+    /// 30fps playback, so a quadratic rebuild here was real, repeated,
+    /// avoidable work every single frame.
     public func buildTree() -> SkeletonTreeNode? {
         guard let rootJoint = joints.first else { return nil }
-        var nodesByIndex: [UInt32: SkeletonTreeNode] = [:]
-        var root = SkeletonTreeNode(joint: rootJoint, children: [])
-        nodesByIndex[rootJoint.jointIndex] = root
 
-        // Two-pass build: first create every node, then link parent -> children,
-        // since Swift value-type trees can't be mutated "in place" through a
-        // dictionary of structs the way the C# reference-type version can.
+        var childrenByParentIndex: [UInt32: [Joint]] = [:]
         for joint in joints.dropFirst() {
-            nodesByIndex[joint.jointIndex] = SkeletonTreeNode(joint: joint, children: [])
+            childrenByParentIndex[joint.parentJointIndex, default: []].append(joint)
         }
 
-        func attach(_ node: inout SkeletonTreeNode) {
-            node.children = joints
-                .filter { $0.parentJointIndex == node.joint.jointIndex && $0.jointIndex != node.joint.jointIndex }
-                .compactMap { nodesByIndex[$0.jointIndex] }
-            for i in node.children.indices {
-                attach(&node.children[i])
-            }
+        func build(_ joint: Joint) -> SkeletonTreeNode {
+            let childJoints = (childrenByParentIndex[joint.jointIndex] ?? []).filter { $0.jointIndex != joint.jointIndex }
+            return SkeletonTreeNode(joint: joint, children: childJoints.map(build))
         }
-        attach(&root)
-        return root
+        return build(rootJoint)
     }
 }
 
