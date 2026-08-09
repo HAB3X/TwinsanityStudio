@@ -280,6 +280,24 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     }
     private var collisionVolumeLineBuffer: MTLBuffer?
 
+    /// "Procedural Collision Decimation" (roadmap 4.4): the real, computed
+    /// oriented bounding box from `CollisionDecimator`, drawn as a cyan
+    /// wireframe in the same model-space transform as the mesh (same
+    /// reasoning as `collisionVolumeWorldPositions` above — no separate
+    /// alignment needed, the corners are already in the mesh's own local
+    /// space). Distinct color/buffer from the real `GI_CollisionData`
+    /// overlay so a user can tell "decoded from the game" apart from
+    /// "computed by this tool" at a glance.
+    var proceduralOBBWorldPositions: [(SIMD3<Float>, SIMD3<Float>)] = [] {
+        didSet {
+            proceduralOBBLineBuffer = Self.makeColoredLineBuffer(
+                device: device, segments: proceduralOBBWorldPositions,
+                colors: [SIMD3<Float>](repeating: SIMD3(0.3, 0.85, 0.95), count: proceduralOBBWorldPositions.count)
+            )
+        }
+    }
+    private var proceduralOBBLineBuffer: MTLBuffer?
+
     /// "Granular Component Visibility": submesh indices (matching
     /// `ResolvedModelAsset.mesh.submeshes`/`.submeshMaterials`) to skip
     /// during the draw pass. Indices, not identity, because that's the
@@ -424,6 +442,21 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             (c000, c100), (c100, c110), (c110, c010), (c010, c000),
             (c001, c101), (c101, c111), (c111, c011), (c011, c001),
             (c000, c001), (c100, c101), (c110, c111), (c010, c011)
+        ]
+    }
+
+    /// "Procedural Collision Decimation" (roadmap 4.4): the 12 edges of a
+    /// real, computed oriented bounding box — unlike `collisionBoxEdges`,
+    /// this draws the box's *actual* oriented corners directly (no
+    /// re-AABB'ing), since `CollisionDecimator`'s corners are already the
+    /// real box this tool computed, not on-disk points of unconfirmed
+    /// ordering.
+    static func orientedBoxEdges(corners: [SIMD3<Float>]) -> [(SIMD3<Float>, SIMD3<Float>)] {
+        guard corners.count == 8 else { return [] }
+        return [
+            (corners[0], corners[1]), (corners[1], corners[2]), (corners[2], corners[3]), (corners[3], corners[0]),
+            (corners[4], corners[5]), (corners[5], corners[6]), (corners[6], corners[7]), (corners[7], corners[4]),
+            (corners[0], corners[4]), (corners[1], corners[5]), (corners[2], corners[6]), (corners[3], corners[7])
         ]
     }
 
@@ -791,6 +824,16 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: collisionVolumeWorldPositions.count * 2)
+        }
+
+        // "Procedural Collision Decimation" (roadmap 4.4) — same colored-
+        // line pipeline, cyan instead of orange so it reads as distinct
+        // from the real, decoded `GI_CollisionData` overlay above.
+        if let coloredPipelineState = context.collisionLineColoredPipelineState, let lineBuffer = proceduralOBBLineBuffer, !proceduralOBBWorldPositions.isEmpty {
+            encoder.setRenderPipelineState(coloredPipelineState)
+            encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: proceduralOBBWorldPositions.count * 2)
         }
 
         if collisionColorMode == .bySurfaceID, let coloredPipelineState = context.collisionLineColoredPipelineState, let lineBuffer = collisionLineColoredBuffer, !collisionEdgeWorldPositions.isEmpty {

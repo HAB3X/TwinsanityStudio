@@ -15,6 +15,12 @@ struct ModelViewerWindow: View {
     @State private var renderer: ModelViewerRenderer?
     @State private var showSkeletonOverlay = false
     @State private var showCollisionVolume = false
+    /// "Procedural Collision Decimation" (roadmap 4.4) — computed on
+    /// demand (not on every appear like the real collision-volume overlay
+    /// above) since this is real GPU work, not a free lookup into
+    /// already-decoded data.
+    @State private var showProceduralOBB = false
+    @State private var isComputingOBB = false
     @State private var animationSearch = ""
     @State private var selectedAnimation: AnimationAsset?
     @State private var currentFrame: Double = 0
@@ -39,6 +45,7 @@ struct ModelViewerWindow: View {
         .onChange(of: selectedAnimation?.id) { _, _ in updateAnimationPose() }
         .onChange(of: currentFrame) { _, _ in updateAnimationPose() }
         .onChange(of: showCollisionVolume) { _, _ in updateCollisionVolumeOverlay() }
+        .onChange(of: showProceduralOBB) { _, _ in updateProceduralOBBOverlay() }
     }
 
     /// "Collision Mask Alignment": real per-object `GI_CollisionData` boxes
@@ -219,6 +226,36 @@ struct ModelViewerWindow: View {
                 Text("Real per-object collision data (GI_CollisionData), decoded and drawn in orange — box extent only; whether the on-disk points are meant as an oriented hull or a plain axis-aligned box isn't confirmed, so this always draws their axis-aligned bounds.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+
+            Divider()
+            Label("Procedural Collision Decimation", systemImage: "cube.transparent").font(.subheadline.bold())
+            Toggle(isComputingOBB ? "Computing…" : "Show Computed OBB (cyan)", isOn: $showProceduralOBB)
+                .toggleStyle(.checkbox)
+                .disabled(isComputingOBB)
+            Text("This tool's own computed oriented bounding box (Metal compute: parallel mean/covariance reduction + principal-axis fit) over this mesh's real vertex positions — not decoded game data, a real algorithm run on this asset's own geometry, tighter than a plain axis-aligned box for anything not already axis-aligned.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func updateProceduralOBBOverlay() {
+        guard showProceduralOBB else {
+            renderer?.proceduralOBBWorldPositions = []
+            return
+        }
+        guard let device = renderer?.device else { return }
+        isComputingOBB = true
+        let mesh = asset.mesh
+        Task.detached(priority: .userInitiated) {
+            let obb = CollisionDecimator.computeOrientedBoundingBox(mesh: mesh, device: device)
+            await MainActor.run {
+                isComputingOBB = false
+                guard showProceduralOBB, let obb else {
+                    renderer?.proceduralOBBWorldPositions = []
+                    return
+                }
+                renderer?.proceduralOBBWorldPositions = ModelViewerRenderer.orientedBoxEdges(corners: obb.corners)
             }
         }
     }
