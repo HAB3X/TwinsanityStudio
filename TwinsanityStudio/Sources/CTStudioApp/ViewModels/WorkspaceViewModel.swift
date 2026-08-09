@@ -94,6 +94,22 @@ public final class WorkspaceViewModel: ObservableObject {
     }
     @Published public var isLoading = false
     @Published public var isScanning = false
+    /// "Visual Loading Feedback" (performance mandate, Part 4): real
+    /// per-file progress during `scanAllArchives()` — `nil` when no scan
+    /// is running. Updated in throttled batches (not on every single file)
+    /// so a scan of thousands of files doesn't pay a MainActor hop per
+    /// file just to report progress.
+    @Published public var scanProgress: (completed: Int, total: Int)?
+    /// "Responsive Main Thread... allowing... cancellations" (performance
+    /// mandate, Part 4): a real, working cancel path — `cancelScan()`
+    /// cancels this exact task, and `scanAllArchives`'s own loop checks
+    /// `Task.isCancelled` between archives to actually stop starting new
+    /// work rather than just discarding the result at the end.
+    private var scanTask: Task<Void, Never>?
+
+    public func cancelScan() {
+        scanTask?.cancel()
+    }
     @Published public var lastError: String? {
         didSet { if let lastError { engineLog.append(EngineLogEntry(message: lastError, isError: true)) } }
     }
@@ -728,16 +744,19 @@ public final class WorkspaceViewModel: ObservableObject {
         guard totalCandidates > 0 else { return }
 
         isScanning = true
+        scanProgress = (0, totalCandidates)
         statusMessage = "Scanning \(totalCandidates) level file(s) across \(targets.count) archive(s)…"
 
-        Task.detached(priority: .userInitiated) { [weak self] in
+        scanTask = Task.detached(priority: .userInitiated) { [weak self] in
             var resultsByRoot: [UUID: [String: ChunkNode]] = [:]
             var resolvedModels: [ResolvedModelAsset] = []
             var orphans: [OrphanedAsset] = []
             var textures: [TextureHubEntry] = []
             var levels: [LevelHubEntry] = []
+            var completedCount = 0
 
             for (rootID, index) in targets {
+                guard !Task.isCancelled else { break }
                 guard let reader = try? BDArchiveReader(index: index) else { continue }
                 var pendingEntries: [(name: String, data: Data, kind: TwinsFileKind)] = []
                 for entry in index.entries where Self.isChunkFileName(entry.name) {
@@ -758,8 +777,18 @@ public final class WorkspaceViewModel: ObservableObject {
                     }
                     var collected: [ParsedEntryResult] = []
                     collected.reserveCapacity(pendingEntries.count)
-                    for await result in group where result != nil {
-                        collected.append(result!)
+                    for await result in group {
+                        completedCount += 1
+                        // Throttled: a MainActor hop per file would add
+                        // real overhead for a scan of thousands of files —
+                        // every 5th completion (plus always the very last
+                        // one) keeps the progress text moving visibly
+                        // without paying that cost per file.
+                        if completedCount.isMultiple(of: 5) || completedCount == totalCandidates {
+                            let progress = (completedCount, totalCandidates)
+                            await MainActor.run { self?.scanProgress = progress }
+                        }
+                        if let result { collected.append(result) }
                     }
                     return collected
                 }
@@ -788,7 +817,8 @@ public final class WorkspaceViewModel: ObservableObject {
                 ScanCache.save(ScanCachePayload(modelsHub: modelsForThisArchive, orphanedContent: orphansForThisArchive, texturesHub: texturesForThisArchive), for: index.bdURL)
             }
 
-            await self?.applyBulkScan(resultsByRoot, resolvedModels: resolvedModels, orphans: orphans, textures: textures, levels: levels)
+            let wasCancelled = Task.isCancelled
+            await self?.applyBulkScan(resultsByRoot, resolvedModels: resolvedModels, orphans: orphans, textures: textures, levels: levels, wasCancelled: wasCancelled)
         }
     }
 
@@ -804,8 +834,8 @@ public final class WorkspaceViewModel: ObservableObject {
         let levels: [LevelHubEntry]
     }
 
-    private func applyBulkScan(_ resultsByRoot: [UUID: [String: ChunkNode]], resolvedModels: [ResolvedModelAsset], orphans: [OrphanedAsset], textures: [TextureHubEntry], levels: [LevelHubEntry]) {
-        defer { isScanning = false }
+    private func applyBulkScan(_ resultsByRoot: [UUID: [String: ChunkNode]], resolvedModels: [ResolvedModelAsset], orphans: [OrphanedAsset], textures: [TextureHubEntry], levels: [LevelHubEntry], wasCancelled: Bool = false) {
+        defer { isScanning = false; scanProgress = nil }
         var parsedCount = 0
         var failedCount = 0
         for (rootID, parsedByName) in resultsByRoot {
@@ -833,9 +863,10 @@ public final class WorkspaceViewModel: ObservableObject {
         orphanedContent.append(contentsOf: orphans)
         texturesHub.append(contentsOf: textures)
         levelsHub.append(contentsOf: levels)
+        let prefix = wasCancelled ? "Scan cancelled" : "Scan complete"
         statusMessage = failedCount == 0
-            ? "Scan complete — parsed \(parsedCount) level file(s), found \(resolvedModels.count) model(s) and \(orphans.count) orphaned/cut record(s)."
-            : "Scan complete — parsed \(parsedCount) level file(s), \(failedCount) failed to parse, found \(resolvedModels.count) model(s) and \(orphans.count) orphaned/cut record(s)."
+            ? "\(prefix) — parsed \(parsedCount) level file(s), found \(resolvedModels.count) model(s) and \(orphans.count) orphaned/cut record(s)."
+            : "\(prefix) — parsed \(parsedCount) level file(s), \(failedCount) failed to parse, found \(resolvedModels.count) model(s) and \(orphans.count) orphaned/cut record(s)."
     }
 
     /// Resolves every `RigidModel` and every rigged `GraphicsInfo` skeleton

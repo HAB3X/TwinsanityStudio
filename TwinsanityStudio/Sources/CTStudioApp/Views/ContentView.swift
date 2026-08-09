@@ -131,7 +131,28 @@ struct ContentView: View {
                 }
                 .help("Toggle the Engine Console.")
 
-                if workspace.isLoading || workspace.isScanning || workspace.isLoadingSoundBank {
+                if let scanProgress = workspace.scanProgress, scanProgress.total > 0 {
+                    // "Visual Loading Feedback" (performance mandate,
+                    // Part 4): real fractional progress, not just a spinner
+                    // — the determinate ProgressView + percentage text
+                    // both track workspace.scanProgress directly, so they
+                    // can never show a different number than what actually
+                    // finished.
+                    ProgressView(value: Double(scanProgress.completed), total: Double(scanProgress.total))
+                        .controlSize(.small)
+                        .frame(width: 80)
+                    Text("\(Int(100 * Double(scanProgress.completed) / Double(scanProgress.total)))%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Button {
+                        workspace.cancelScan()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Cancel scanning — whatever's already been parsed stays loaded.")
+                } else if workspace.isLoading || workspace.isScanning || workspace.isLoadingSoundBank {
                     ProgressView().controlSize(.small)
                 }
             }

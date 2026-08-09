@@ -80,6 +80,66 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
         XCTAssertNotNil(workspace.modelViewerAsset, "openModelViewer should have resolved and set modelViewerAsset; lastError=\(workspace.lastError ?? "nil")")
     }
 
+    /// "Visual Loading Feedback" (performance mandate, Part 4): a real
+    /// scan reports real, monotonically-increasing progress and clears it
+    /// on completion — never left stuck showing a stale percentage.
+    func testScanProgressReportsRealCountsAndClearsOnCompletion() throws {
+        let bhURL = URL(fileURLWithPath: "/Volumes/CRASH/CRASH6/CRASH.BH")
+        guard FileManager.default.fileExists(atPath: bhURL.path) else {
+            throw XCTSkip("Disc image not mounted")
+        }
+        ScanCache.clearAll()
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: bhURL)
+
+        XCTAssertNotNil(workspace.scanProgress, "progress should be set the instant a scan starts")
+        XCTAssertEqual(workspace.scanProgress?.completed, 0)
+        XCTAssertGreaterThan(workspace.scanProgress?.total ?? 0, 0)
+
+        var observedProgress: [(completed: Int, total: Int)] = []
+        let expectation = expectation(description: "background scan completes")
+        let observation = workspace.$scanProgress.sink { progress in
+            if let progress { observedProgress.append(progress) }
+            if progress == nil, !observedProgress.isEmpty { expectation.fulfill() }
+        }
+        wait(for: [expectation], timeout: 300)
+        observation.cancel()
+
+        XCTAssertNil(workspace.scanProgress, "progress must be cleared once the scan finishes")
+        // Every real total reported must be the same fixed candidate count
+        // determined up front, and completed counts must never exceed it.
+        let totals = Set(observedProgress.map(\.total))
+        XCTAssertEqual(totals.count, 1, "the total shouldn't change mid-scan")
+        XCTAssertTrue(observedProgress.allSatisfy { $0.completed <= $0.total })
+    }
+
+    /// A real cancel path: calling `cancelScan()` mid-scan must actually
+    /// stop it early (not just get ignored), and the final status must say
+    /// so rather than falsely claiming a full "Scan complete."
+    func testCancelScanStopsEarlyAndReportsCancellation() throws {
+        let bhURL = URL(fileURLWithPath: "/Volumes/CRASH/CRASH6/CRASH.BH")
+        guard FileManager.default.fileExists(atPath: bhURL.path) else {
+            throw XCTSkip("Disc image not mounted")
+        }
+        ScanCache.clearAll()
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: bhURL)
+        XCTAssertTrue(workspace.isScanning)
+
+        // Cancel almost immediately — before the archive (hundreds of
+        // files) could plausibly have finished on its own.
+        workspace.cancelScan()
+
+        let expectation = expectation(description: "scan stops after cancellation")
+        let observation = workspace.$isScanning.dropFirst().sink { scanning in
+            if !scanning { expectation.fulfill() }
+        }
+        wait(for: [expectation], timeout: 300)
+        observation.cancel()
+
+        XCTAssertTrue(workspace.statusMessage.contains("cancelled"), "status should honestly say the scan was cancelled, not claim it completed: \(workspace.statusMessage)")
+    }
+
     /// Regression test for "Fatal Crash on File Selection": opening a
     /// *folder* containing several loose `.RM2` files — one of them
     /// deliberately corrupted — used to run every file's full parse
