@@ -6,9 +6,12 @@ import Foundation
 /// `OGIs` list: everything after that (the optional instance-properties
 /// block, the optional linked-ID block, and a trailing script-bytecode
 /// command tree) isn't needed to answer "what does this object look like,"
-/// and this codebase doesn't decode script bytecode anywhere else either
-/// (see `LevelViewerWindow`'s own "Level Events" doc comment) — so it's
-/// deliberately left unparsed rather than guessed at.
+/// so it's deliberately left unparsed here. This build *does* decode script
+/// bytecode elsewhere now — see `CustomAgentParser`/`AgentLabGraphView` —
+/// but `GameObject`'s own trailing chain uses the exact same
+/// `Script.MainScript.ScriptCommand` format and could be decoded the same
+/// way if a future need for it (not just "what does this render as")
+/// arises.
 public struct GameObjectInfo: Sendable {
     public let id: UInt32
     public let name: String

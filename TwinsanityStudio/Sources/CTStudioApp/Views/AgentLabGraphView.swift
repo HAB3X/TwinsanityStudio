@@ -1,24 +1,31 @@
 import SwiftUI
 import CTCore
 import CTModels
+import CTParsers
 
 /// "AgentLab Visual Node Graph" (roadmap 4.2, Part 3 of the Chunk-Based
 /// Editor mandate) — a drag-and-drop canvas over a file's real `CustomAgent`
 /// records.
 ///
-/// What's real here: every node corresponds to an actual `CustomAgent`
-/// leaf record in the currently open file (real `recordID`, real
-/// `byteSize`, real leading bytes shown as hex) — nothing per-node is
-/// invented. What's a shell, honestly: this build has no parser for the
-/// record's internal bytecode. The disassembled retail engine (see
-/// `OpenSanityNeo`'s `agentlab_control.cpp`/`percept_abstract.h`/
-/// `action_abstract.h`) confirms *what* the format represents — a
-/// `LayerControl` selecting `Percept`-scored `Action`s, `Action`s chained
-/// via a `nextAction` link — but not the on-disk byte layout, so this view
-/// cannot decode or draw the real Percept -> Action graph inside a record.
-/// Nodes are therefore laid out independently with no fabricated
-/// connections between them, matching this session's standing rule: real,
-/// decoded data only, never a plausible-looking guess presented as fact.
+/// What's real here: every node corresponds to an actual `CustomAgent` leaf
+/// record in the currently open file (real `recordID`, real `byteSize`),
+/// and each card's action chain is a *real, byte-accurate decode* of that
+/// record's on-disk `CodeModel` bytecode — see `CustomAgentParser`'s doc
+/// comment for the verified reference source (`github.com/Smartkin/
+/// twinsanity-editor`, MIT licensed) this decoder is ported from. Every
+/// command boundary, command ID, and command name shown is real, not
+/// inferred from context.
+///
+/// What's still honest-shell: the *semantic meaning* of a command's raw
+/// arguments is only decoded for the ~14 commands this build has a verified
+/// reference `Load()` for (`AgentLabActionDecoder`) — every other command
+/// still shows its real name and real raw `uint32` arguments, just without
+/// invented field names. And condition/percept data (what *triggers* an
+/// action chain) isn't part of this record format at all — `CodeModel`'s
+/// own on-disk layout only stores action chains, never `ScriptCondition`
+/// data — so there's no percept-scoring graph to draw here even in
+/// principle; the connector wires below remain the user's own
+/// organizational notes, not decoded engine data.
 struct AgentLabGraphView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.dismiss) private var dismiss
@@ -73,7 +80,7 @@ struct AgentLabGraphView: View {
                 Spacer()
                 Button("Close") { dismiss() }
             }
-            Text("\(agentNodes.count) real CustomAgent record(s) from this file. This build doesn't have a decoder for the Percept/Action bytecode inside each one (see this view's own doc comment) — nodes show real record metadata and a raw hex preview, not decoded behavior. Drag a card to rearrange it; drag from a card's connector dot (bottom-right) to another card to link them — those links are your own organizational notes, not decoded engine data.")
+            Text("\(agentNodes.count) real CustomAgent record(s) from this file, each decoded from its actual on-disk bytecode (see this view's own doc comment for the verified reference source). Drag a card to rearrange it; drag from a card's connector dot (bottom-right) to another card to link them — those links are your own organizational notes, not decoded engine data.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -154,7 +161,7 @@ struct AgentLabGraphView: View {
             Text("\(node.byteSize) bytes")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            Text(hexPreview(for: node))
+            Text(cardSummary(for: node))
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
@@ -222,10 +229,32 @@ struct AgentLabGraphView: View {
         return best?.id
     }
 
-    private func hexPreview(for node: ChunkNode) -> String {
-        guard let bytes = workspace.rawBytes(for: node), !bytes.isEmpty else { return "(no raw bytes available)" }
-        let preview = bytes.prefix(16)
-        return preview.map { String(format: "%02X", $0) }.joined(separator: " ")
+    /// `.customAgent` -> PS2, `.customAgentX` -> Xbox, `.customAgentDemo` ->
+    /// Demo — mirrors `CodeModel.Load`'s own `ParentType` check exactly (see
+    /// `CustomAgentParser`'s doc comment). Any other `sectionType` can't
+    /// reach this view (gated by `SidebarView.customAgentSectionTypes`), so
+    /// PS2 is a safe, never-exercised default rather than a real guess.
+    private func platformVariant(for node: ChunkNode) -> AgentLabPlatformVariant {
+        switch node.sectionType {
+        case .customAgentX: return .xbox
+        case .customAgentDemo: return .demo
+        default: return .ps2
+        }
+    }
+
+    private func decodedRecord(for node: ChunkNode) -> CustomAgentRecord? {
+        guard let bytes = workspace.rawBytes(for: node), !bytes.isEmpty else { return nil }
+        var cursor = BinaryCursor(data: bytes)
+        return try? CustomAgentParser.parse(&cursor, recordID: node.recordID, platform: platformVariant(for: node))
+    }
+
+    private func cardSummary(for node: ChunkNode) -> String {
+        guard let record = decodedRecord(for: node) else { return "(couldn't decode — see hex)" }
+        let allCommands = record.entries.flatMap(\.commands) + record.finalCommands
+        guard let first = allCommands.first else { return "\(record.entries.count) slot(s), no commands" }
+        let firstLabel = first.commandName ?? "#\(first.commandID)"
+        let suffix = allCommands.count > 1 ? " (+\(allCommands.count - 1) more)" : ""
+        return "\(firstLabel)\(suffix)"
     }
 
     @ViewBuilder
@@ -235,12 +264,32 @@ struct AgentLabGraphView: View {
             LabeledContent("Byte Size", value: "\(node.byteSize)")
             LabeledContent("File Offset", value: "0x\(String(node.fileOffset, radix: 16))")
             Divider()
-            Text("Raw Bytes").font(.caption.bold())
-            ScrollView {
-                Text(fullHex(for: node))
-                    .font(.system(.caption2, design: .monospaced))
-                    .textSelection(.enabled)
+            if let record = decodedRecord(for: node) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(Array(record.entries.enumerated()), id: \.offset) { index, entry in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Slot \(index) — script ID \(entry.scriptID)").font(.caption.bold())
+                                if entry.commands.isEmpty {
+                                    Text("(no commands)").font(.caption2).foregroundStyle(.secondary)
+                                } else {
+                                    ForEach(entry.commands) { commandRow($0) }
+                                }
+                            }
+                        }
+                        if !record.finalCommands.isEmpty {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Trailing chain").font(.caption.bold())
+                                ForEach(record.finalCommands) { commandRow($0) }
+                            }
+                        }
+                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                Text("Couldn't decode this record's bytecode — see raw bytes in the hex editor.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
             Spacer()
             Button("View in Hex Editor…") { workspace.hexViewerNode = node }
@@ -248,9 +297,40 @@ struct AgentLabGraphView: View {
         .padding(12)
     }
 
-    private func fullHex(for node: ChunkNode) -> String {
-        guard let bytes = workspace.rawBytes(for: node) else { return "(unavailable)" }
-        return bytes.prefix(512).map { String(format: "%02X", $0) }.joined(separator: " ")
+    private func commandRow(_ command: AgentLabCommand) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(command.commandName ?? "Command #\(command.commandID)")
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(command.commandName == nil ? .secondary : .primary)
+            if let decoded = command.decoded {
+                Text(describeDecoded(decoded))
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.purple)
+            } else if !command.rawArguments.isEmpty {
+                Text("args: " + command.rawArguments.map { "0x\(String($0, radix: 16))" }.joined(separator: ", "))
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.leading, 8)
+    }
+
+    private func describeDecoded(_ decoded: AgentLabDecodedAction) -> String {
+        switch decoded {
+        case .addAmmo(let v): return "AmmoToAdd = \(v)"
+        case .addGem(let gem): return "Gem = \(gem)"
+        case .addLives(let v): return "LivesToAdd = \(v)"
+        case .addWumpa(let v): return "WumpaToAdd = \(v)"
+        case .cutsceneStart(let d): return "FadeDuration = \(d)"
+        case .cutsceneEnd(let d): return "FadeDuration = \(d)"
+        case .damageBoss(let v): return "DamageAdd = \(v)"
+        case .hideBottomText(let d): return "FadeDuration = \(d)"
+        case .progressWhackaworm(let v): return "WormCounterAdd = \(v)"
+        case .reduceHitPoints(let v): return "Damage = \(v)"
+        case .setBehaviourPriority(let v): return "Priority = \(v)"
+        case .setHitPoints(let v): return "HitPoints = \(v)"
+        case .showBottomText(let d): return "FadeDuration = \(d)"
+        }
     }
 
     /// Simple grid layout, 4 columns, generous spacing — no attempt at a
