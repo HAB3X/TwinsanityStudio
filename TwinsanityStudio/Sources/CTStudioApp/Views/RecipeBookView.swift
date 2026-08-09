@@ -11,15 +11,16 @@ import CTParsers
 /// display name via the same `resolvedInstanceAssets` the 3D viewport
 /// already uses — never an invented ID.
 ///
-/// Deliberately not built here: the roadmap's "live Sprite-Sheet Canvas
-/// for quick texture replacement." This build has no texture *encoder* —
-/// `TextureAsset.rgba` decodes real pixel data but nothing in `CTParsers`/
-/// `CTExport` writes a texture record back to its on-disk compressed form,
-/// so there's no real primitive to build a texture-swap UI on top of.
-/// Character/prop swap ships because `objectID` reassignment has exactly
-/// that primitive (see `WorldPlacementWriter.writeInstanceObjectID`);
-/// texture swap doesn't, and guessing at a texture encoder isn't something
-/// this session does.
+/// The roadmap's other half — "live Sprite-Sheet Canvas for quick texture
+/// replacement" — isn't built *here*: it lives in `TextureInspectorView`'s
+/// "Replace with Image…" instead, since it operates on `Texture` records,
+/// not `Instance` placements, and this view has no access to a level's
+/// individual textures, only the objects placed in it. That feature is
+/// real now (`TextureWriter.replacingPixelData`, PSMCT32 only — see its
+/// doc comment for why other GS formats aren't attempted), so this view
+/// stays scoped to what its own data actually supports: character/prop
+/// swap via `objectID` reassignment (see
+/// `WorldPlacementWriter.writeInstanceObjectID`).
 struct RecipeBookView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.dismiss) private var dismiss

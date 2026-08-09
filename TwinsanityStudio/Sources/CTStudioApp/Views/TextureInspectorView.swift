@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import CTModels
+import CTParsers
 import CTExport
 
 struct TextureInspectorView: View {
@@ -11,6 +12,8 @@ struct TextureInspectorView: View {
     @State private var upscaledTexture: TextureAsset?
     @State private var isUpscaling = false
     @State private var upscaleError: String?
+    @State private var isReplacingTexture = false
+    @State private var replaceError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -74,7 +77,111 @@ struct TextureInspectorView: View {
                     .font(.caption2)
                     .foregroundStyle(.orange)
             }
+
+            Divider()
+
+            HStack {
+                Button {
+                    presentReplaceImagePanel()
+                } label: {
+                    Label(isReplacingTexture ? "Replacing…" : "Replace with Image…", systemImage: "photo.badge.plus")
+                }
+                .disabled(texture.pixelFormat != .psmct32 || isReplacingTexture)
+                Spacer()
+                if isReplacingTexture { ProgressView().controlSize(.small) }
+            }
+            Text(texture.pixelFormat == .psmct32
+                ? "\"Asset Swap & Quick-Test: Recipe Book\" (blueprint 6.4) texture replace: resamples an image you pick to this texture's exact \(texture.width) × \(texture.height) and re-encodes it into a real PSMCT32 record, then saves an edited copy — the original file on disk is not modified."
+                : "Only PSMCT32 (raw RGBA) textures can be replaced — this is \(texture.pixelFormat.rawValue.uppercased()), which has no verified encoder yet (re-swizzling and re-quantizing to a palette are real, separate work this build doesn't guess at).")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if let replaceError {
+                Label(replaceError, systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
         }
+    }
+
+    /// "Asset Swap & Quick-Test: Recipe Book" (blueprint 6.4) sprite/texture
+    /// replace — the same decode -> edit -> encode -> patch -> save-as-copy
+    /// loop `PositionInspectorView`/`InstanceInspectorView` established,
+    /// with `TextureWriter.replacingPixelData` standing in for
+    /// `WorldPlacementWriter`.
+    private func presentReplaceImagePanel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.image]
+        panel.message = "Choose a replacement image. It's resampled to this texture's exact \(texture.width) × \(texture.height) — the on-disk record can't change size."
+        guard panel.runModal() == .OK, let url = panel.urls.first else { return }
+
+        replaceError = nil
+        guard let nsImage = NSImage(contentsOf: url),
+              let resampled = Self.resampledRGBA(from: nsImage, width: texture.width, height: texture.height)
+        else {
+            replaceError = "Couldn't read that file as an image."
+            return
+        }
+        let replacement = TextureAsset(id: texture.id, width: texture.width, height: texture.height, pixelFormat: .psmct32, rgba: resampled)
+        guard let originalRecordBytes = workspace.rawBytes(for: node) else {
+            replaceError = "Couldn't read this texture's original on-disk bytes — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return
+        }
+        do {
+            let newRecordBytes = try TextureWriter.replacingPixelData(of: replacement, inOriginalRecordBytes: originalRecordBytes)
+            guard let patchedBytes = workspace.patchedFileBytes(replacing: node, with: newRecordBytes) else {
+                replaceError = "Couldn't patch this texture back into its file."
+                return
+            }
+            guard let saveURL = ExportPanel.chooseSaveLocation(
+                suggestedName: "\(node.displayName)_edited.rm2",
+                message: "Save the edited copy of this file, with this texture replaced. The original file on disk is not modified."
+            ) else { return }
+            isReplacingTexture = true
+            Task {
+                do {
+                    try await workspace.writeDataAsync(patchedBytes, to: saveURL)
+                    workspace.statusMessage = "Saved edited copy to \(saveURL.lastPathComponent) with this texture replaced. The original file was not modified."
+                } catch {
+                    workspace.lastError = "Save failed: \(error)"
+                }
+                isReplacingTexture = false
+            }
+        } catch {
+            replaceError = error.localizedDescription
+        }
+    }
+
+    /// Resamples `image` to exactly `width` × `height` RGBA8 — same
+    /// CGContext-into-a-pinned-buffer technique as
+    /// `TextureUpscaler.makeTextureAsset`, reused here rather than
+    /// diverging on a second pixel-extraction path, just parameterized by
+    /// a target size decoupled from the source image's own dimensions
+    /// (this always needs to land on the original texture's exact size,
+    /// never the picked image's).
+    private static func resampledRGBA(from image: NSImage, width: Int, height: Int) -> [UInt8]? {
+        guard width > 0, height > 0 else { return nil }
+        var proposedRect = CGRect(x: 0, y: 0, width: image.size.width, height: image.size.height)
+        guard let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil),
+              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
+        else { return nil }
+
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        var didDraw = false
+        rgba.withUnsafeMutableBytes { buffer in
+            guard let baseAddress = buffer.baseAddress,
+                  let context = CGContext(
+                      data: baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                      space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                  )
+            else { return }
+            context.interpolationQuality = .high
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+            didDraw = true
+        }
+        return didDraw ? rgba : nil
     }
 
     /// "Neural Texture Upscaling" (roadmap 5.4): real result of a real
