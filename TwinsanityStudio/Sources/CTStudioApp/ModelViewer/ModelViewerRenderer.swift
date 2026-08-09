@@ -43,6 +43,28 @@ private struct GPUSubmesh {
     let jointWeights: [SIMD4<Float>]
 }
 
+/// A real, confirmed fix for "massive level rendering" (performance
+/// mandate): a `SceneryData`/`Instance` collection can carry
+/// hundreds/thousands of placements, and — before this — every single
+/// one independently re-uploaded and re-copied its own `MTLTexture` even
+/// when many placements share the exact same underlying texture (the
+/// overwhelmingly common case: dozens of identical crate/prop/enemy
+/// placements). This cache is scoped to *one* `upload()` call
+/// (constructed fresh each time a level loads), never a persistent
+/// cross-file cache — `TextureAsset.id` is a per-file on-disk record ID,
+/// not a globally unique one (see `ResolvedModelAsset.id`'s own doc
+/// comment on exactly this), so caching by that ID across different
+/// files would risk silently reusing the wrong texture. Within one
+/// file's own resolved placements it's a completely safe, meaningful
+/// win: they all came from the same `GraphicsAssetIndex`, so the same ID
+/// really is the same real texture.
+final class TextureUploadCache {
+    private var textures: [UInt32: MTLTexture] = [:]
+
+    func texture(for id: UInt32) -> MTLTexture? { textures[id] }
+    func store(_ texture: MTLTexture, for id: UInt32) { textures[id] = texture }
+}
+
 /// Matches the Metal shader's `Uniforms` struct byte-for-byte:
 /// `simd_float4x4` is already MSL-`float4x4`-compatible (column-major, 64
 /// bytes), and `SIMD3<Float>` as the last field naturally gets the same
@@ -702,7 +724,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     /// `LevelViewerRenderer` (which uploads many objects, each needing the
     /// exact same per-submesh vertex/index/texture upload) — one GPU-upload
     /// implementation instead of two copies that could drift apart.
-    fileprivate static func buildGPUSubmeshes(mesh: MeshAsset, submeshMaterials: [ResolvedSubmeshMaterial], device: MTLDevice, fallbackTexture: MTLTexture) -> (submeshes: [GPUSubmesh], minBound: SIMD3<Float>, maxBound: SIMD3<Float>) {
+    fileprivate static func buildGPUSubmeshes(mesh: MeshAsset, submeshMaterials: [ResolvedSubmeshMaterial], device: MTLDevice, fallbackTexture: MTLTexture, textureCache: TextureUploadCache? = nil) -> (submeshes: [GPUSubmesh], minBound: SIMD3<Float>, maxBound: SIMD3<Float>) {
         var minBound = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
         var maxBound = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
         var gpuSubmeshes: [GPUSubmesh] = []
@@ -734,7 +756,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
 
             let texture: MTLTexture
             if let resolvedTexture = index < submeshMaterials.count ? submeshMaterials[index].texture : nil,
-               let uploaded = makeTexture(device: device, asset: resolvedTexture) {
+               let uploaded = makeTexture(device: device, asset: resolvedTexture, cache: textureCache) {
                 texture = uploaded
             } else {
                 texture = fallbackTexture
@@ -749,7 +771,10 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         return (gpuSubmeshes, minBound, maxBound)
     }
 
-    fileprivate static func makeTexture(device: MTLDevice, asset: TextureAsset) -> MTLTexture? {
+    /// Internal (not `fileprivate`) so `@testable import` can verify the
+    /// cache-reuse behavior directly (`TextureUploadCacheTests`).
+    static func makeTexture(device: MTLDevice, asset: TextureAsset, cache: TextureUploadCache? = nil) -> MTLTexture? {
+        if let cache, let cached = cache.texture(for: asset.id) { return cached }
         guard asset.width > 0, asset.height > 0, asset.rgba.count >= asset.width * asset.height * 4 else { return nil }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: asset.width, height: asset.height, mipmapped: false)
         descriptor.usage = [.shaderRead]
@@ -763,6 +788,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
                 bytesPerRow: asset.width * 4
             )
         }
+        cache?.store(texture, for: asset.id)
         return texture
     }
 
@@ -1461,6 +1487,12 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         var maxBound = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
         var levelObjects: [GPULevelObject] = []
         levelObjects.reserveCapacity(placements.count + instanceMarkers.count + triggers.count + cameras.count)
+        // "Massive level rendering" (performance mandate): one texture
+        // cache shared across every placement built in this single
+        // upload() call — see TextureUploadCache's own doc comment for why
+        // this is scoped per-file/per-call rather than a persistent
+        // cross-file cache.
+        let textureCache = TextureUploadCache()
 
         func expandBounds(_ p: SIMD3<Float>) {
             minBound = simd_min(minBound, p)
@@ -1468,7 +1500,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         }
 
         for (worldPosition, asset) in placements {
-            let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: asset.mesh, submeshMaterials: asset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
+            let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: asset.mesh, submeshMaterials: asset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture, textureCache: textureCache)
             guard !built.submeshes.isEmpty else { continue }
             levelObjects.append(GPULevelObject(worldPosition: worldPosition, displayName: asset.displayName, submeshes: built.submeshes, layer: .scenery, boundingRadius: Self.boundingRadius(of: asset.mesh)))
             // Bounds are tracked from placement position, not local mesh
@@ -1478,7 +1510,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         }
 
         let markerMesh = Self.makeMarkerCubeAsset()
-        let markerBuilt = ModelViewerRenderer.buildGPUSubmeshes(mesh: markerMesh.mesh, submeshMaterials: [markerMesh.material], device: device, fallbackTexture: context.fallbackTexture)
+        let markerBuilt = ModelViewerRenderer.buildGPUSubmeshes(mesh: markerMesh.mesh, submeshMaterials: [markerMesh.material], device: device, fallbackTexture: context.fallbackTexture, textureCache: textureCache)
         let markerRadius = Self.boundingRadius(of: markerMesh.mesh)
         for (node, instance) in instanceMarkers {
             let worldPosition = SIMD3(instance.position.x, instance.position.y, instance.position.z)
@@ -1489,7 +1521,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             var submeshes = markerBuilt.submeshes
             var boundingRadius = markerRadius
             if let resolvedAsset = resolvedInstanceAssets[node.id] {
-                let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: resolvedAsset.mesh, submeshMaterials: resolvedAsset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
+                let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: resolvedAsset.mesh, submeshMaterials: resolvedAsset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture, textureCache: textureCache)
                 if !built.submeshes.isEmpty {
                     submeshes = built.submeshes
                     boundingRadius = Self.boundingRadius(of: resolvedAsset.mesh)
