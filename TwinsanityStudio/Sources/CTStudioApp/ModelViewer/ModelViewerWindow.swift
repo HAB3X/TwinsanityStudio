@@ -28,6 +28,7 @@ struct ModelViewerWindow: View {
     @State private var isPlaying = false
     @State private var hiddenSubmeshIndices: Set<Int> = []
     @State private var isShaderGraphEditorPresented = false
+    @State private var isDependencyCrateSheetPresented = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -47,6 +48,14 @@ struct ModelViewerWindow: View {
         .onChange(of: currentFrame) { _, _ in updateAnimationPose() }
         .onChange(of: showCollisionVolume) { _, _ in updateCollisionVolumeOverlay() }
         .onChange(of: showProceduralOBB) { _, _ in updateProceduralOBBOverlay() }
+        .sheet(isPresented: $isDependencyCrateSheetPresented) {
+            CrateExportSheet(
+                suggestedName: asset.displayName,
+                caption: "\"Cross-Object Dependency Packaging\" (blueprint 3.2): bundles this asset's mesh (OBJ), every resolved texture (PNG), a material map (MTL), and decoded animation data into one real CrateModLoader-installable .crate — the same linked dependencies \"Export Complete Asset\" writes as a loose folder, packaged as a portable mod instead."
+            ) { metadata, url in
+                workspace.exportCompleteAssetAsCrate(asset, metadata: metadata, to: url)
+            }
+        }
     }
 
     /// "Collision Mask Alignment": real per-object `GI_CollisionData` boxes
@@ -346,6 +355,14 @@ struct ModelViewerWindow: View {
                 Label("Export Complete Asset…", systemImage: "shippingbox")
             }
             Text("Bundles the mesh (OBJ), every resolved texture (PNG), a material map (MTL), and decoded animation data into one folder.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Button {
+                isDependencyCrateSheetPresented = true
+            } label: {
+                Label("Export with Dependencies…", systemImage: "shippingbox.and.arrow.backward")
+            }
+            Text("Same bundle, packaged as a portable .crate mod instead of a loose folder.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

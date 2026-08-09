@@ -2,25 +2,33 @@ import SwiftUI
 import CTModels
 import CTExport
 
-/// Metadata prompt for "Export as Mod Crate…" (blueprint 3.3) — the
-/// `modcrateinfo.txt` fields a real `CrateModLoader` install expects
-/// (`Name`/`Description`/`Author`/`Version`/`Game`), collected once here
-/// rather than guessed at, then handed to `CrateExporter.export`.
+/// Metadata prompt for "Export as Mod Crate…" (blueprint 3.3) and "Export
+/// with Dependencies…" (blueprint 3.2) — the `modcrateinfo.txt` fields a
+/// real `CrateModLoader` install expects (`Name`/`Description`/`Author`/
+/// `Version`/`Game`), collected once here rather than guessed at, then
+/// handed to whichever `CrateExporter.export` caller presented this sheet
+/// (a single edited file, or a resolved asset's mesh/textures/animations —
+/// see `onExport`).
 struct CrateExportSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.dismiss) private var dismiss
-    let node: ChunkNode
-    let patchedBytes: Data
+    let suggestedName: String
+    let caption: String
+    let onExport: (CrateMetadata, URL) -> Void
 
     @State private var name: String
     @State private var description = ""
     @State private var author = ""
     @State private var version = "1.0"
 
-    init(node: ChunkNode, patchedBytes: Data) {
-        self.node = node
-        self.patchedBytes = patchedBytes
-        _name = State(initialValue: "\(node.displayName) Edit")
+    init(
+        suggestedName: String,
+        caption: String = "Packages the edited file into a real CrateModLoader-installable .crate (a modcrateinfo.txt manifest + a layer0 folder containing the edited file, zipped). The in-crate file name defaults to the original file's own name — this build doesn't track its exact in-archive install path, so double-check the destination subfolder after installing.",
+        onExport: @escaping (CrateMetadata, URL) -> Void
+    ) {
+        self.suggestedName = suggestedName
+        self.caption = caption
+        self.onExport = onExport
+        _name = State(initialValue: suggestedName)
     }
 
     var body: some View {
@@ -35,7 +43,7 @@ struct CrateExportSheet: View {
             }
             .formStyle(.grouped)
 
-            Text("Packages the edited file into a real CrateModLoader-installable .crate (a modcrateinfo.txt manifest + a layer0 folder containing the edited file, zipped). The in-crate file name defaults to the original file's own name — this build doesn't track its exact in-archive install path, so double-check the destination subfolder after installing.")
+            Text(caption)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -52,10 +60,9 @@ struct CrateExportSheet: View {
     }
 
     private func export() {
-        let originalName = workspace.originalFileName(for: node) ?? node.displayName
         guard let url = ExportPanel.chooseSaveLocation(suggestedName: "\(sanitizedFileName(name)).crate", message: "Save the mod crate.") else { return }
         let metadata = CrateMetadata(name: name, description: description, author: author, version: version, targetGame: "Crash Twinsanity")
-        workspace.exportAsCrate(patchedBytes: patchedBytes, originalFileName: originalName, metadata: metadata, to: url)
+        onExport(metadata, url)
         dismiss()
     }
 

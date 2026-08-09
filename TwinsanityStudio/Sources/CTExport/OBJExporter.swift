@@ -30,6 +30,20 @@ public enum OBJExporter {
         mtlFileName: String? = nil,
         to url: URL
     ) throws -> URL {
+        let data = try contents(mesh, submeshMaterialIDs: submeshMaterialIDs, mtlFileName: mtlFileName)
+        try data.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    /// Same OBJ text `export(...)` writes to disk, returned in memory
+    /// instead — used by callers (like "Export with Dependencies") that
+    /// bundle it alongside other in-memory files rather than writing loose
+    /// files to a folder.
+    public static func contents(
+        _ mesh: MeshAsset,
+        submeshMaterialIDs: [UInt32?]? = nil,
+        mtlFileName: String? = nil
+    ) throws -> String {
         guard mesh.totalVertexCount > 0 else { throw OBJExportError.emptyMesh }
 
         var lines: [String] = [
@@ -66,9 +80,7 @@ public enum OBJExporter {
             vertexOffset += sub.vertices.count
         }
 
-        let contents = lines.joined(separator: "\n") + "\n"
-        try contents.write(to: url, atomically: true, encoding: .utf8)
-        return url
+        return lines.joined(separator: "\n") + "\n"
     }
 
     private static func format(_ v: Float) -> String {

@@ -75,6 +75,26 @@ public enum TextureExporter {
         try writePNG(cgImage(from: asset), to: url)
     }
 
+    /// Same base-texture PNG encoding `exportPNG` writes to disk, returned
+    /// as in-memory `Data` instead — used by callers (like "Export with
+    /// Dependencies") that bundle it alongside other in-memory files rather
+    /// than writing a loose file to a folder.
+    public static func pngData(_ asset: TextureAsset) throws -> Data {
+        try pngData(cgImage(from: asset))
+    }
+
+    private static func pngData(_ image: CGImage) throws -> Data {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
+            throw TextureExportError.imageCreationFailed
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            throw TextureExportError.imageCreationFailed
+        }
+        return data as Data
+    }
+
     /// One-click export: base texture + every mip level, named
     /// `<baseName>.png`, `<baseName>_mip1.png`, `<baseName>_mip2.png`, ...
     /// into `directory`.

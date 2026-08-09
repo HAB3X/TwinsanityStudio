@@ -73,4 +73,19 @@ final class OBJExporterTests: XCTestCase {
         XCTAssertTrue(contents.contains("mtllib linked.mtl"))
         XCTAssertTrue(contents.contains("usemtl material_77"))
     }
+
+    func testContentsMatchesExportedFileBytes() throws {
+        let mesh = MeshAsset(id: 1, isSkinned: false, submeshes: [
+            MeshSubmesh(
+                vertices: [StaticVertex(position: .zero), StaticVertex(position: SIMD3(1, 0, 0)), StaticVertex(position: SIMD3(0, 1, 0))],
+                connectivity: [true, true, true]
+            )
+        ])
+        let url = tempDir.appendingPathComponent("roundtrip.obj")
+        try OBJExporter.export(mesh, to: url)
+        let fromDisk = try String(contentsOf: url, encoding: .utf8)
+
+        let inMemory = try OBJExporter.contents(mesh)
+        XCTAssertEqual(inMemory, fromDisk)
+    }
 }

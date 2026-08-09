@@ -52,4 +52,13 @@ final class TextureExporterTests: XCTestCase {
     func testInvalidMipLevelThrows() {
         XCTAssertThrowsError(try TextureExporter.cgImage(from: makeAsset(), mipLevel: 0))
     }
+
+    func testPNGDataMatchesExportPNGBytes() throws {
+        let url = tempDir.appendingPathComponent("test.png")
+        try TextureExporter.exportPNG(makeAsset(), to: url)
+        let fromDisk = try Data(contentsOf: url)
+
+        let inMemory = try TextureExporter.pngData(makeAsset())
+        XCTAssertEqual(inMemory, fromDisk)
+    }
 }
