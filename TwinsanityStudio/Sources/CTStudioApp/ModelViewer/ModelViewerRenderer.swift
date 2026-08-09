@@ -610,9 +610,10 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     }
 
     private static func writeVertices(_ gpuVertices: [ModelVertexGPU], into buffer: MTLBuffer) {
-        guard buffer.length >= gpuVertices.count * MemoryLayout<ModelVertexGPU>.stride else { return }
+        guard !gpuVertices.isEmpty, buffer.length >= gpuVertices.count * MemoryLayout<ModelVertexGPU>.stride else { return }
         gpuVertices.withUnsafeBytes { raw in
-            buffer.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
+            guard let base = raw.baseAddress else { return }
+            buffer.contents().copyMemory(from: base, byteCount: raw.count)
         }
     }
 
