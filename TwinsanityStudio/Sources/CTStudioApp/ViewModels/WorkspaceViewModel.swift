@@ -914,7 +914,33 @@ public final class WorkspaceViewModel: ObservableObject {
             guard let node, self.isExpandableArchiveEntry(node) else { return }
             guard let rootID = self.owningArchiveRootID(of: node) else { return }
             self.expandArchiveEntry(node, rootID: rootID)
+            // "Frictionless Chunk Loading": a chunk file selected straight
+            // from the sidebar goes to the same place clicking its Chunk
+            // Hub card does — no separate hub lookup required. Only fires
+            // right after *this* expand (the node this file's root just
+            // became), not on every later re-select of an already-parsed
+            // file, so re-clicking a node inside an open chunk to inspect
+            // one record doesn't keep yanking focus back into the 3D
+            // viewer window.
+            guard let expanded = self.selectedNode, expanded !== node,
+                  let sceneryNode = Self.firstSceneryNode(in: expanded),
+                  case .scenery(let asset) = sceneryNode.payload
+            else { return }
+            Task { await self.openLevelViewer(for: asset, node: sceneryNode) }
         }
+    }
+
+    /// First descendant (including `root` itself) carrying real, non-empty
+    /// `SceneryData` placements — same match `collectLevels` uses for the
+    /// Chunk Hub, just short-circuiting on the first hit instead of
+    /// collecting every one, since `select`'s one-click path only needs to
+    /// know whether *a* level exists in the file that was just parsed.
+    private nonisolated static func firstSceneryNode(in root: ChunkNode) -> ChunkNode? {
+        if case .scenery(let scenery) = root.payload, !scenery.placements.isEmpty { return root }
+        for child in root.children {
+            if let found = firstSceneryNode(in: child) { return found }
+        }
+        return nil
     }
 
     private func owningArchiveRootID(of node: ChunkNode) -> UUID? {
