@@ -270,6 +270,27 @@ public final class WorkspaceViewModel: ObservableObject {
     }
     private static let masterDirectoryDefaultsKey = "TwinsanityStudio.MasterDirectoryURL"
 
+    /// "Multi-Region & Cross-Game Auto-Patcher" (roadmap 1.4): the real
+    /// `SYSTEM.CNF` info detected the last time a folder was opened — `nil`
+    /// until a folder open finds one, and never guessed from a filename or
+    /// left over from a previous open on a different folder. See
+    /// `detectRegion(inFolder:)`.
+    @Published public private(set) var detectedRegion: SystemCNFInfo?
+
+    /// Looks for a real `SYSTEM.CNF` at `folder`'s root (case-insensitively
+    /// — real disc images vary in casing) and parses it if present.
+    /// Deliberately not recursive: `SYSTEM.CNF` is only ever meaningful at
+    /// an actual disc/ISO root, so searching subfolders would risk
+    /// matching an unrelated file and reporting a wrong region with false
+    /// confidence.
+    private func detectRegion(inFolder folder: URL) {
+        detectedRegion = nil
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return }
+        guard let cnfURL = entries.first(where: { $0.lastPathComponent.uppercased() == "SYSTEM.CNF" }) else { return }
+        guard let contents = try? String(contentsOf: cnfURL, encoding: .ascii) else { return }
+        detectedRegion = SystemCNFParser.parse(contents: contents)
+    }
+
     /// The tree the sidebar actually renders: `rootNodes` narrowed by the
     /// type filter (see `ChunkNode.filtered(byKind:)`) and then by the
     /// search text (see `ChunkNode.filtered(matching:)`), each pass keeping
@@ -314,8 +335,12 @@ public final class WorkspaceViewModel: ObservableObject {
         var isDir: ObjCBool = false
         FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
         if isDir.boolValue {
+            detectRegion(inFolder: url)
             let detected = WorkspaceAutoDetector.scanFolder(url)
             statusMessage = "Found \(detected.count) recognizable file(s) in \(url.lastPathComponent)."
+            if let detectedRegion, detectedRegion.region != .unknown {
+                statusMessage += " Detected region: \(detectedRegion.region.displayName)\(detectedRegion.serial.map { " (\($0))" } ?? "")."
+            }
             // "Fatal Crash on File Selection": `.archiveIndex`/`.archiveData`
             // are cheap (a header + entry-name list, not a full parse) and
             // stay on `load(_:)`'s existing synchronous path, matching

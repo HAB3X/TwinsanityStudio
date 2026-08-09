@@ -63,10 +63,29 @@ struct SidebarView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
+            // "Multi-Region Auto-Patcher" (roadmap 1.4): real detected
+            // region from the last opened folder's actual SYSTEM.CNF, when
+            // one was found — silent otherwise, never a guessed default.
+            if let detectedRegion = workspace.detectedRegion, detectedRegion.region != .unknown {
+                Text(detectedRegion.region.displayName)
+                    .font(.caption2.bold())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(.quaternary))
+                    .help(regionHelpText(detectedRegion))
+            }
         }
         .padding(.horizontal, 10)
         .padding(.top, 8)
         .padding(.bottom, 2)
+    }
+
+    private func regionHelpText(_ info: SystemCNFInfo) -> String {
+        var parts = ["Detected from this folder's real SYSTEM.CNF."]
+        if let serial = info.serial { parts.append("Serial: \(serial).") }
+        if let videoMode = info.videoMode { parts.append("VMODE: \(videoMode).") }
+        return parts.joined(separator: " ")
     }
 
     /// Type filter + "Scan Archive" — the type filter can only find assets
