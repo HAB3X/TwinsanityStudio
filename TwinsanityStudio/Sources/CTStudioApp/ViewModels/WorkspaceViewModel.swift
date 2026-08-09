@@ -339,7 +339,21 @@ public final class WorkspaceViewModel: ObservableObject {
             if !looseLevelFiles.isEmpty { loadLooseLevelFilesAsync(looseLevelFiles) }
             return
         }
-        load(WorkspaceAutoDetector.detect(url: url))
+        // "Modular TT Engine Cross-Compatibility" (roadmap 5.3): a file
+        // extension a *different* registered `EngineDriver` recognizes
+        // (today, just Wrath of Cortex's `.CRT`/`.WMP`) isn't "unknown" —
+        // it's real, just not something the main sidebar tree/scan can
+        // ingest directly (it's not chunk-headered, has no archive index,
+        // nothing to build a `ChunkNode` tree from). Saying so explicitly,
+        // with where to actually load it, beats `load(_:)`'s silent
+        // `.unknown`/`.folder` no-op for a file this build genuinely does
+        // understand.
+        let detected = WorkspaceAutoDetector.detect(url: url)
+        if detected.kind == .unknown, let driver = EngineDriverRegistry.driver(forExtension: url.pathExtension), driver.id != TwinsanityEngineDriver().id {
+            statusMessage = "\(url.lastPathComponent) is a real \(driver.displayName) file, but this build doesn't load it into the main workspace tree — open a Chunk Viewer and use its \"Cross-Engine Data\" panel's \"Load Wrath of Cortex File…\" button instead."
+            return
+        }
+        load(detected)
     }
 
     /// One parsed loose `.RM2`/`.SM2` file's full result — everything
