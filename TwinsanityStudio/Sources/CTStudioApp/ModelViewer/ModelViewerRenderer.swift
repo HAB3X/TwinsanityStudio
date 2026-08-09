@@ -1,6 +1,7 @@
 import Metal
 import MetalKit
 import CoreGraphics
+import QuartzCore
 import simd
 import CTModels
 import CTParsers
@@ -2396,19 +2397,16 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     private func currentViewProjection(viewSize: CGSize) -> simd_float4x4 {
         let aspect = Float(viewSize.width / max(viewSize.height, 1))
         let projection = ModelViewerRenderer.perspectiveMatrix(fovYRadians: .pi / 4, aspect: aspect, near: 0.05, far: boundsRadius * 20 + 50)
-        let view4x4 = ModelViewerRenderer.lookAtMatrix(eye: cameraEyeWorldPosition, center: orbitTarget, up: SIMD3<Float>(0, 1, 0))
+        let view4x4: simd_float4x4
+        if isFreeCameraMode {
+            view4x4 = ModelViewerRenderer.lookAtMatrix(eye: freeCameraPosition, center: freeCameraPosition + freeCameraForward(), up: SIMD3<Float>(0, 1, 0))
+        } else {
+            view4x4 = ModelViewerRenderer.lookAtMatrix(eye: orbitEyeWorldPosition, center: orbitTarget, up: SIMD3<Float>(0, 1, 0))
+        }
         return projection * view4x4
     }
 
-    /// "Active Chunk & Asset Preview Engine" (roadmap 7.1) — the orbit
-    /// camera's real world-space eye position, same formula
-    /// `currentViewProjection` itself uses to build the view matrix.
-    /// Exposed so "Scene Preview Mode" can test it against real decoded
-    /// Trigger volumes as a free-look "where is the camera standing"
-    /// proxy — an honest simplification (this is the orbit camera, not a
-    /// first-person player controller/physics body) stated as such in the
-    /// Level Viewer's own UI, not dressed up as gameplay.
-    var cameraEyeWorldPosition: SIMD3<Float> {
+    private var orbitEyeWorldPosition: SIMD3<Float> {
         let distance = boundsRadius * distanceMultiplier
         let target = orbitTarget
         return SIMD3<Float>(
@@ -2416,6 +2414,18 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             target.y + distance * sin(pitch),
             target.z + distance * cos(pitch) * cos(yaw)
         )
+    }
+
+    /// "Active Chunk & Asset Preview Engine" (roadmap 7.1) — the current
+    /// camera's real world-space eye position: the orbit formula, or the
+    /// free camera's own tracked position when that mode is active.
+    /// Exposed so "Scene Preview Mode" can test it against real decoded
+    /// Trigger volumes as a free-look "where is the camera standing"
+    /// proxy — an honest simplification (this is a camera, not a
+    /// first-person player controller/physics body) stated as such in the
+    /// Level Viewer's own UI, not dressed up as gameplay.
+    var cameraEyeWorldPosition: SIMD3<Float> {
+        isFreeCameraMode ? freeCameraPosition : orbitEyeWorldPosition
     }
 
     /// "F to Focus/Frame" — resets angle/distance to a sensible default;
@@ -2427,7 +2437,90 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         distanceMultiplier = 1.4
     }
 
+    // MARK: - Free Camera ("Free Camera System in Chunk Editor")
+
+    /// A real, independent 6-DOF flying camera — distinct from the orbit
+    /// camera above (`yaw`/`pitch`/`distanceMultiplier` orbit a fixed
+    /// target; this one has its own world position and looks wherever
+    /// it's pointed, with no target to orbit around). Off by default.
+    /// Entering the mode starts from wherever the orbit camera currently
+    /// is/looks, derived from the real orbit eye and look-at direction —
+    /// not reset to the origin — so toggling it on never jump-cuts the
+    /// view.
+    var isFreeCameraMode = false {
+        didSet {
+            guard isFreeCameraMode, !oldValue else { return }
+            let eye = orbitEyeWorldPosition
+            freeCameraPosition = eye
+            let lookDirection = simd_normalize(orbitTarget - eye)
+            freeCameraPitch = asin(max(-1, min(1, lookDirection.y)))
+            freeCameraYaw = atan2(lookDirection.x, lookDirection.z)
+            freeCameraVelocity = .zero
+        }
+    }
+    private var freeCameraPosition: SIMD3<Float> = .zero
+    private var freeCameraYaw: Float = 0
+    private var freeCameraPitch: Float = 0
+    /// Units/second — real "adjustable movement speed" (Scroll Wheel),
+    /// clamped to a sane range by whatever adjusts it.
+    var freeCameraSpeed: Float = 20
+    /// Smoothed current velocity, world-space — accelerated toward the
+    /// requested input direction and decayed back toward zero each frame
+    /// in `updateFreeCameraMovement`, the "smooth velocity damping" the
+    /// mandate asks for instead of an instant on/off snap.
+    private var freeCameraVelocity: SIMD3<Float> = .zero
+    /// Local-space (x = right/left from A/D, y = up/down from E/Q,
+    /// z = forward/back from W/S) input vector — set from currently-held
+    /// keys on every `keyDown`/`keyUp`, consumed once per frame in
+    /// `draw(in:)` so movement is continuous and frame-rate independent,
+    /// not one discrete step per keystroke.
+    var freeCameraInputDirection: SIMD3<Float> = .zero
+    private var lastFrameTimestamp: CFTimeInterval?
+
+    private func freeCameraForward() -> SIMD3<Float> {
+        SIMD3(cos(freeCameraPitch) * sin(freeCameraYaw), sin(freeCameraPitch), cos(freeCameraPitch) * cos(freeCameraYaw))
+    }
+    private func freeCameraRight() -> SIMD3<Float> {
+        SIMD3(cos(freeCameraYaw), 0, -sin(freeCameraYaw))
+    }
+
+    /// Right-click-drag look — real, continuous yaw/pitch, clamped so the
+    /// camera can't flip past straight up/down.
+    func rotateFreeCameraLook(yawDelta: Float, pitchDelta: Float) {
+        freeCameraYaw += yawDelta
+        freeCameraPitch = max(-1.5, min(1.5, freeCameraPitch + pitchDelta))
+    }
+
+    /// Integrates one frame of free-camera movement. No collision — the
+    /// mandate explicitly asks for zero-collision flight, matching this
+    /// build's real physics gap (there's no collision-response system to
+    /// stop against anyway, so this isn't cutting a corner, it's the only
+    /// honest behavior available).
+    /// Internal (not `private`) so `@testable import` can drive this with
+    /// an explicit, deterministic `deltaTime` instead of depending on
+    /// real wall-clock timing through `draw(in:)`.
+    func updateFreeCameraMovement(deltaTime: Float) {
+        guard isFreeCameraMode else { return }
+        let clampedDT = min(max(deltaTime, 0), 1.0 / 15.0) // guards a huge dt after a stall/pause
+        let worldInputDirection = freeCameraRight() * freeCameraInputDirection.x
+            + SIMD3<Float>(0, 1, 0) * freeCameraInputDirection.y
+            + freeCameraForward() * freeCameraInputDirection.z
+        let targetVelocity = (simd_length(worldInputDirection) > 0.0001 ? simd_normalize(worldInputDirection) : .zero) * freeCameraSpeed
+        let accelerationRate: Float = 8.0
+        freeCameraVelocity += (targetVelocity - freeCameraVelocity) * min(1, accelerationRate * clampedDT)
+        freeCameraPosition += freeCameraVelocity * clampedDT
+    }
+
     func draw(in view: MTKView) {
+        // Real elapsed time since the previous frame — free-camera speed
+        // is expressed in units/second, so this has to be measured, not
+        // assumed from `preferredFramesPerSecond` (which is a request to
+        // the display link, not a guarantee).
+        let now = CACurrentMediaTime()
+        let deltaTime = lastFrameTimestamp.map { Float(now - $0) } ?? 0
+        lastFrameTimestamp = now
+        updateFreeCameraMovement(deltaTime: deltaTime)
+
         guard let drawable = view.currentDrawable,
               let descriptor = view.currentRenderPassDescriptor,
               let commandBuffer = context.commandQueue.makeCommandBuffer(),

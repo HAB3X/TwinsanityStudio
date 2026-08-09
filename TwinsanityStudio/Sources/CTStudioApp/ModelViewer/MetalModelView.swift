@@ -1,5 +1,6 @@
 import SwiftUI
 import MetalKit
+import simd
 import CTModels
 
 /// Common orbit-camera surface both `ModelViewerRenderer` and
@@ -35,6 +36,19 @@ protocol PlacementInteractiveRenderer: OrbitCameraRenderer {
 }
 
 extension LevelViewerRenderer: PlacementInteractiveRenderer {}
+
+/// "Free Camera System in Chunk Editor": implemented only by
+/// `LevelViewerRenderer` — the single-model viewer has no use for a
+/// flying camera over one small asset. Checked via `as?` the same way
+/// `PlacementInteractiveRenderer` is.
+protocol FreeCameraRenderer: OrbitCameraRenderer {
+    var isFreeCameraMode: Bool { get set }
+    var freeCameraSpeed: Float { get set }
+    var freeCameraInputDirection: SIMD3<Float> { get set }
+    func rotateFreeCameraLook(yawDelta: Float, pitchDelta: Float)
+}
+
+extension LevelViewerRenderer: FreeCameraRenderer {}
 
 /// `MTKView` subclass that turns mouse drag into orbit and scroll into zoom.
 /// Kept as a thin, dumb input adapter — all the actual camera math lives on
@@ -86,7 +100,27 @@ final class InteractiveMTKView: MTKView {
     /// of acceleration/input device.
     private var lastGizmoDragLocation: CGPoint?
 
+    /// "Free Camera System": currently-held WASD/EQ keys — tracked across
+    /// `keyDown`/`keyUp` rather than acted on per-keystroke, so holding a
+    /// key produces continuous movement (integrated once per frame in
+    /// the renderer's own `draw(in:)`) instead of one discrete nudge per
+    /// key-repeat event.
+    private var heldMovementKeys: Set<String> = []
+
     override var acceptsFirstResponder: Bool { true }
+
+    /// Clicking away from this view (or the window losing key focus)
+    /// doesn't reliably deliver `keyUp` for whatever WASD/EQ keys were
+    /// down at the time — without this, a held key could get "stuck,"
+    /// leaving the free camera drifting indefinitely after focus moves
+    /// elsewhere.
+    override func resignFirstResponder() -> Bool {
+        if !heldMovementKeys.isEmpty {
+            heldMovementKeys.removeAll()
+            updateFreeCameraInputDirection()
+        }
+        return super.resignFirstResponder()
+    }
 
     override func mouseDown(with event: NSEvent) {
         draggingGizmoAxis = nil
@@ -127,10 +161,34 @@ final class InteractiveMTKView: MTKView {
     }
 
     /// "F to Focus/Frame" plus W/E/R gizmo-mode switching (QoL sweep) —
-    /// the standard 3D-tool convention for translate/rotate/scale.
+    /// the standard 3D-tool convention for translate/rotate/scale. While
+    /// the Free Camera is active, WASD/EQ mean movement instead — the two
+    /// schemes share letters (W/E already meant translate/rotate mode),
+    /// so free-camera mode takes over those keys entirely rather than
+    /// trying to make one keystroke serve two conflicting purposes.
     override func keyDown(with event: NSEvent) {
+        guard let key = event.charactersIgnoringModifiers?.lowercased() else {
+            super.keyDown(with: event)
+            return
+        }
+
+        if let freeCameraRenderer = renderer as? FreeCameraRenderer, freeCameraRenderer.isFreeCameraMode {
+            switch key {
+            case "w", "a", "s", "d", "e", "q":
+                if !event.isARepeat { heldMovementKeys.insert(key) }
+                updateFreeCameraInputDirection()
+                return
+            case "f":
+                renderer?.resetView()
+                needsDisplay = true
+                return
+            default:
+                break
+            }
+        }
+
         var changedMode = false
-        switch event.charactersIgnoringModifiers?.lowercased() {
+        switch key {
         case "f":
             renderer?.resetView()
         case "w" where renderer is GizmoInteractiveRenderer:
@@ -148,6 +206,54 @@ final class InteractiveMTKView: MTKView {
         }
         if changedMode { onGizmoModeChanged?() }
         needsDisplay = true
+    }
+
+    override func keyUp(with event: NSEvent) {
+        guard let key = event.charactersIgnoringModifiers?.lowercased(), heldMovementKeys.remove(key) != nil else {
+            super.keyUp(with: event)
+            return
+        }
+        updateFreeCameraInputDirection()
+    }
+
+    private func updateFreeCameraInputDirection() {
+        guard let freeCameraRenderer = renderer as? FreeCameraRenderer else { return }
+        var direction = SIMD3<Float>(0, 0, 0)
+        if heldMovementKeys.contains("w") { direction.z += 1 }
+        if heldMovementKeys.contains("s") { direction.z -= 1 }
+        if heldMovementKeys.contains("d") { direction.x += 1 }
+        if heldMovementKeys.contains("a") { direction.x -= 1 }
+        if heldMovementKeys.contains("e") { direction.y += 1 }
+        if heldMovementKeys.contains("q") { direction.y -= 1 }
+        freeCameraRenderer.freeCameraInputDirection = direction
+    }
+
+    /// Right-click-drag look — the Free Camera's own rotation input,
+    /// entirely separate from `mouseDragged`'s left-click orbit/gizmo
+    /// handling below (which keeps working unchanged; while free-camera
+    /// mode is on, `currentViewProjection` simply ignores the orbit
+    /// `yaw`/`pitch` it would otherwise mutate).
+    override func rightMouseDown(with event: NSEvent) {
+        guard let freeCameraRenderer = renderer as? FreeCameraRenderer, freeCameraRenderer.isFreeCameraMode else {
+            super.rightMouseDown(with: event)
+            return
+        }
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        guard let freeCameraRenderer = renderer as? FreeCameraRenderer, freeCameraRenderer.isFreeCameraMode else {
+            super.rightMouseDragged(with: event)
+            return
+        }
+        freeCameraRenderer.rotateFreeCameraLook(yawDelta: Float(event.deltaX) * 0.01, pitchDelta: -Float(event.deltaY) * 0.01)
+        needsDisplay = true
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        guard let freeCameraRenderer = renderer as? FreeCameraRenderer, freeCameraRenderer.isFreeCameraMode else {
+            super.rightMouseUp(with: event)
+            return
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -175,6 +281,16 @@ final class InteractiveMTKView: MTKView {
 
     override func scrollWheel(with event: NSEvent) {
         guard let renderer else { return }
+        // "Adjustable movement speeds (Scroll Wheel speed adjustment)":
+        // while flying, the scroll wheel means "how fast do WASD move me,"
+        // not "zoom" — there's no orbit distance to zoom while free-camera
+        // mode is active anyway.
+        if let freeCameraRenderer = renderer as? FreeCameraRenderer, freeCameraRenderer.isFreeCameraMode {
+            let delta = Float(event.scrollingDeltaY) * 0.5
+            freeCameraRenderer.freeCameraSpeed = max(1, min(500, freeCameraRenderer.freeCameraSpeed - delta))
+            needsDisplay = true
+            return
+        }
         let delta = Float(event.scrollingDeltaY) * 0.01
         renderer.distanceMultiplier = max(0.3, min(20, renderer.distanceMultiplier - delta))
         needsDisplay = true

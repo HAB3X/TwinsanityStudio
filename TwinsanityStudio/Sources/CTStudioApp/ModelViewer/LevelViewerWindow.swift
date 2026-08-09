@@ -153,6 +153,8 @@ struct LevelViewerWindow: View {
     /// "Scene Preview Mode" (roadmap 7.1) — see `scenePreviewModeToggle`'s
     /// doc comment.
     @State private var isScenePreviewMode = false
+    /// "Free Camera System in Chunk Editor".
+    @State private var isFreeCameraMode = false
     @State private var scenePreviewTimer: Timer?
     /// "Recipe Book" (roadmap 6.4).
     @State private var isRecipeBookPresented = false
@@ -410,6 +412,9 @@ struct LevelViewerWindow: View {
             }
 
             Divider()
+            freeCameraToggle
+
+            Divider()
             scenePreviewModeToggle
 
             Divider()
@@ -444,6 +449,28 @@ struct LevelViewerWindow: View {
     /// history in this codebase for why "what a trigger does" isn't
     /// claimed anywhere else either), just real geometry a real camera
     /// position can be tested against.
+    /// "Free Camera System in Chunk Editor": a real, independent 6-DOF
+    /// flying camera — WASD/EQ to move, right-click-drag to look, scroll
+    /// wheel to adjust speed, no collision (this build has no physics
+    /// body to collide with anyway). Off by default; toggling it starts
+    /// exactly where the orbit camera currently is/looks, so switching
+    /// modes mid-session never jump-cuts the view.
+    private var freeCameraToggle: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Free Camera", isOn: $isFreeCameraMode)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .onChange(of: isFreeCameraMode) { _, isOn in
+                    renderer?.isFreeCameraMode = isOn
+                }
+            Text(isFreeCameraMode
+                ? "WASD to move, E/Q for up/down, right-click-drag to look, scroll to adjust speed."
+                : "Fly freely instead of orbiting a fixed point.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     private var scenePreviewModeToggle: some View {
         VStack(alignment: .leading, spacing: 4) {
             Toggle("Scene Preview Mode", isOn: $isScenePreviewMode)
