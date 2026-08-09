@@ -71,7 +71,18 @@ private final class ModelViewerGPUContext {
     let linePipelineState: MTLRenderPipelineState?
     let collisionLinePipelineState: MTLRenderPipelineState?
     let collisionLineColoredPipelineState: MTLRenderPipelineState?
+    /// "Chunk-Based Architecture" (Part 2): fills a translucent quad —
+    /// the real boundary "load wall" geometry decoded from `ChunkLinks` —
+    /// using the same interleaved position+color vertex layout as
+    /// `collisionLineColoredPipelineState`, just drawn as triangles at a
+    /// low, see-through alpha instead of lines.
+    let translucentQuadPipelineState: MTLRenderPipelineState?
     let depthState: MTLDepthStencilState
+    /// Same depth comparison as `depthState` but no depth *write* — a
+    /// translucent overlay quad shouldn't occlude whatever draws after it
+    /// in the same frame, only be correctly occluded by opaque geometry
+    /// already in the depth buffer.
+    let translucentDepthState: MTLDepthStencilState
     let samplerState: MTLSamplerState
     let fallbackTexture: MTLTexture
 
@@ -160,11 +171,31 @@ private final class ModelViewerGPUContext {
             collisionLineColoredPipelineState = nil
         }
 
+        if let colorLineVertexFn = library.makeFunction(name: "vertex_line_colored"), let translucentFragmentFn = library.makeFunction(name: "fragment_translucent_quad") {
+            let translucentDescriptor = MTLRenderPipelineDescriptor()
+            translucentDescriptor.vertexFunction = colorLineVertexFn
+            translucentDescriptor.fragmentFunction = translucentFragmentFn
+            translucentDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            translucentDescriptor.colorAttachments[0].isBlendingEnabled = true
+            translucentDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+            translucentDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            translucentDescriptor.depthAttachmentPixelFormat = .depth32Float
+            translucentQuadPipelineState = try? device.makeRenderPipelineState(descriptor: translucentDescriptor)
+        } else {
+            translucentQuadPipelineState = nil
+        }
+
         let depthDescriptor = MTLDepthStencilDescriptor()
         depthDescriptor.depthCompareFunction = .less
         depthDescriptor.isDepthWriteEnabled = true
         guard let depthState = device.makeDepthStencilState(descriptor: depthDescriptor) else { return nil }
         self.depthState = depthState
+
+        let translucentDepthDescriptor = MTLDepthStencilDescriptor()
+        translucentDepthDescriptor.depthCompareFunction = .less
+        translucentDepthDescriptor.isDepthWriteEnabled = false
+        guard let translucentDepthState = device.makeDepthStencilState(descriptor: translucentDepthDescriptor) else { return nil }
+        self.translucentDepthState = translucentDepthState
 
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .linear
@@ -1011,6 +1042,10 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     fragment float4 fragment_line_colored(LineColorOut in [[stage_in]]) {
         return in.color;
     }
+
+    fragment float4 fragment_translucent_quad(LineColorOut in [[stage_in]]) {
+        return float4(in.color.rgb, 0.28);
+    }
     """
 }
 
@@ -1023,7 +1058,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
 /// four groups an object belongs to — drives both draw-time visibility
 /// filtering and the "Geometry Only"/"Fully Populated" mode preset.
 enum SceneLayer: CaseIterable, Hashable {
-    case scenery, actors, triggers, cameras
+    case scenery, actors, triggers, cameras, chunkBoundaries, linkedChunks
 
     var displayName: String {
         switch self {
@@ -1031,6 +1066,8 @@ enum SceneLayer: CaseIterable, Hashable {
         case .actors: return "Actors / Entities"
         case .triggers: return "Trigger Volumes & Death Planes"
         case .cameras: return "Camera Splines"
+        case .chunkBoundaries: return "Chunk Boundaries"
+        case .linkedChunks: return "Loaded Neighboring Chunks"
         }
     }
 }
@@ -1194,6 +1231,12 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     }
     private var overlayLineBuffer: MTLBuffer?
     private var overlayLineVertexCount = 0
+    /// "Chunk-Based Architecture" (Part 2): the translucent fill for every
+    /// visible boundary wall — separate from `overlayLineBuffer` because
+    /// it draws as triangles through `translucentQuadPipelineState`, not
+    /// lines through `collisionLineColoredPipelineState`.
+    private var chunkWallTriangleBuffer: MTLBuffer?
+    private var chunkWallTriangleVertexCount = 0
 
     /// - Parameters:
     ///   - placements: each resolved object's world position
@@ -1240,7 +1283,8 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         assetIndex: GraphicsAssetIndex = GraphicsAssetIndex(),
         defaultAssetIndex: GraphicsAssetIndex = GraphicsAssetIndex(),
         triggers: [(node: ChunkNode, trigger: TriggerVolume)] = [],
-        cameras: [(node: ChunkNode, camera: PlacedCamera)] = []
+        cameras: [(node: ChunkNode, camera: PlacedCamera)] = [],
+        chunkLinks: [(node: ChunkNode, link: ChunkLink)] = []
     ) {
         guard let context = ModelViewerGPUContext.shared else { return nil }
         self.context = context
@@ -1248,7 +1292,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         self.defaultAssetIndex = defaultAssetIndex
         super.init()
         nextSyntheticInstanceID = (instanceMarkers.map(\.instance.id).max() ?? 0) + 1
-        upload(placements: placements, instanceMarkers: instanceMarkers, resolvedInstanceAssets: resolvedInstanceAssets, triggers: triggers, cameras: cameras)
+        upload(placements: placements, instanceMarkers: instanceMarkers, resolvedInstanceAssets: resolvedInstanceAssets, triggers: triggers, cameras: cameras, chunkLinks: chunkLinks)
     }
 
     private func upload(
@@ -1256,7 +1300,8 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)],
         resolvedInstanceAssets: [UUID: ResolvedModelAsset],
         triggers: [(node: ChunkNode, trigger: TriggerVolume)],
-        cameras: [(node: ChunkNode, camera: PlacedCamera)]
+        cameras: [(node: ChunkNode, camera: PlacedCamera)],
+        chunkLinks: [(node: ChunkNode, link: ChunkLink)]
     ) {
         var minBound = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
         var maxBound = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
@@ -1340,9 +1385,27 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             }
         }
 
+        // "Chunk-Based Architecture" (Part 2): a selectable marker at each
+        // real boundary wall's centroid, same treatment as trigger/camera
+        // markers above — the wall's actual quad geometry draws separately
+        // via `rebuildOverlayBuffer`'s translucent-plane pass.
+        for (node, link) in chunkLinks {
+            guard let wall = link.loadWall, !wall.isEmpty else { continue }
+            let centroid = wall.reduce(SIMD3<Float>.zero) { $0 + SIMD3($1.x, $1.y, $1.z) } / Float(wall.count)
+            levelObjects.append(GPULevelObject(
+                worldPosition: centroid,
+                displayName: "Chunk Link #\(link.id): \(link.path)",
+                submeshes: [],
+                layer: .chunkBoundaries,
+                sourceNode: node
+            ))
+            expandBounds(centroid)
+        }
+
         objects = levelObjects
         self.triggers = triggers
         self.cameras = cameras
+        self.chunkLinks = chunkLinks
         if minBound.x <= maxBound.x {
             boundsCenter = (minBound + maxBound) / 2
             let extent = maxBound - minBound
@@ -1358,6 +1421,11 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// redraw from.
     private var triggers: [(node: ChunkNode, trigger: TriggerVolume)] = []
     private var cameras: [(node: ChunkNode, camera: PlacedCamera)] = []
+    /// "Chunk-Based Architecture" (Part 2): every real `ChunkLink` in the
+    /// currently loaded chunk, kept alongside `objects` for the same reason
+    /// `triggers`/`cameras` are — `rebuildOverlayBuffer` needs the raw
+    /// source data to redraw wall wireframes/fills when the layer toggles.
+    private(set) var chunkLinks: [(node: ChunkNode, link: ChunkLink)] = []
 
     /// Control points for whichever of a camera's two sub-payload slots
     /// actually has spline/path data — `nil`-safe: most cameras have
@@ -1441,6 +1509,41 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                     appendVertex(controlPoints[i + 1], splineColor)
                 }
             }
+        }
+
+        // "Chunk-Based Architecture" (Part 2): the real "load wall" quad
+        // from each `ChunkLink` that has one — an outline here (for
+        // visibility from any angle, including edge-on) plus a filled
+        // translucent quad below (`chunkWallTriangleBuffer`) for the
+        // "translucent plane" the mandate asks for.
+        let wallColor = SIMD3<Float>(0.95, 0.75, 0.2)
+        var wallFloats: [Float] = []
+        func appendWallVertex(_ position: SIMD3<Float>, _ color: SIMD3<Float>) {
+            wallFloats.append(contentsOf: [position.x, position.y, position.z, color.x, color.y, color.z])
+        }
+        if layerVisibility.contains(.chunkBoundaries) {
+            for (_, link) in chunkLinks {
+                guard let wall = link.loadWall, wall.count == 4 else { continue }
+                let corners = wall.map { SIMD3($0.x, $0.y, $0.z) }
+                appendVertex(corners[0], wallColor); appendVertex(corners[1], wallColor)
+                appendVertex(corners[1], wallColor); appendVertex(corners[2], wallColor)
+                appendVertex(corners[2], wallColor); appendVertex(corners[3], wallColor)
+                appendVertex(corners[3], wallColor); appendVertex(corners[0], wallColor)
+                // Two triangles (0,1,2) and (0,2,3) covering the quad —
+                // corner winding/order is exactly as decoded, unconfirmed
+                // against a real renderer, so both faces draw (see the
+                // `.none` cull mode set around this buffer's draw call).
+                appendWallVertex(corners[0], wallColor); appendWallVertex(corners[1], wallColor); appendWallVertex(corners[2], wallColor)
+                appendWallVertex(corners[0], wallColor); appendWallVertex(corners[2], wallColor); appendWallVertex(corners[3], wallColor)
+            }
+        }
+
+        if wallFloats.isEmpty {
+            chunkWallTriangleBuffer = nil
+            chunkWallTriangleVertexCount = 0
+        } else {
+            chunkWallTriangleVertexCount = wallFloats.count / 6
+            chunkWallTriangleBuffer = device.makeBuffer(bytes: wallFloats, length: wallFloats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
         }
 
         guard !floats.isEmpty else {
@@ -1685,6 +1788,32 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         return newIndex
     }
 
+    /// "Chunk-Based Architecture" (Part 2): appends a neighboring chunk's
+    /// already-resolved scenery placements — offset by `worldOffset` (the
+    /// requesting `ChunkLink.chunkMatrix`'s translation row, see
+    /// `WorkspaceViewModel.loadChunkLinkPlacements`'s doc comment for why
+    /// only translation, not the full matrix, is applied) — into this same
+    /// viewport as a distinct, independently toggleable `.linkedChunks`
+    /// layer. Same "don't recenter the camera" convention as `addObject`:
+    /// loading a neighbor in for context shouldn't yank the view away from
+    /// what the user was already looking at.
+    func stitchChunk(placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)], worldOffset: SIMD3<Float>) -> Int {
+        var added = 0
+        for (worldPosition, asset) in placements {
+            let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: asset.mesh, submeshMaterials: asset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
+            guard !built.submeshes.isEmpty else { continue }
+            objects.append(GPULevelObject(
+                worldPosition: worldPosition + worldOffset,
+                displayName: asset.displayName,
+                submeshes: built.submeshes,
+                layer: .linkedChunks,
+                boundingRadius: Self.boundingRadius(of: asset.mesh)
+            ))
+            added += 1
+        }
+        return added
+    }
+
     // MARK: - The Forge Palette: new-item placement (Part 4C)
 
     /// "I must be able to select an entity from this directory, click into
@@ -1916,6 +2045,22 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                 encoder.setVertexBuffer(gizmoBuffer, offset: 0, index: 0)
                 encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: gizmoVertexCount)
             }
+        }
+
+        // "Chunk-Based Architecture" (Part 2): the translucent boundary-
+        // wall fill, drawn last (after opaque geometry and wireframes) with
+        // depth write disabled so it doesn't corrupt the depth buffer for
+        // anything drawn after it, and with culling off since the real
+        // corner winding of a decoded `loadWall` quad isn't independently
+        // confirmed.
+        if let translucentPipeline = context.translucentQuadPipelineState, let chunkWallTriangleBuffer, chunkWallTriangleVertexCount > 0 {
+            var uniforms = Uniforms(modelViewProjection: viewProjection, modelMatrix: matrix_identity_float4x4, lightDirection: lightDirection)
+            encoder.setRenderPipelineState(translucentPipeline)
+            encoder.setDepthStencilState(context.translucentDepthState)
+            encoder.setCullMode(.none)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            encoder.setVertexBuffer(chunkWallTriangleBuffer, offset: 0, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: chunkWallTriangleVertexCount)
         }
 
         encoder.endEncoding()

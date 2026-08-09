@@ -46,6 +46,11 @@ public struct LevelViewerContext: Identifiable {
     public var triggers: [(node: ChunkNode, trigger: TriggerVolume)]
     public var cameras: [(node: ChunkNode, camera: PlacedCamera)]
     public var sounds: [(node: ChunkNode, sound: SoundEffectAsset)]
+    /// "Chunk-Based Architecture" (Part 2): every real `ChunkLink` in this
+    /// chunk — each one names a neighboring `.SM2` file this level can
+    /// stream in, plus (when present) the boundary wall geometry that
+    /// triggers it. See `ChunkLinksAsset`'s doc comment.
+    public var chunkLinks: [(node: ChunkNode, link: ChunkLink)]
 
     public init(
         scenery: SceneryAsset,
@@ -56,7 +61,8 @@ public struct LevelViewerContext: Identifiable {
         defaultAssetIndex: GraphicsAssetIndex = GraphicsAssetIndex(),
         triggers: [(node: ChunkNode, trigger: TriggerVolume)] = [],
         cameras: [(node: ChunkNode, camera: PlacedCamera)] = [],
-        sounds: [(node: ChunkNode, sound: SoundEffectAsset)] = []
+        sounds: [(node: ChunkNode, sound: SoundEffectAsset)] = [],
+        chunkLinks: [(node: ChunkNode, link: ChunkLink)] = []
     ) {
         self.scenery = scenery
         self.placements = placements
@@ -67,6 +73,7 @@ public struct LevelViewerContext: Identifiable {
         self.triggers = triggers
         self.cameras = cameras
         self.sounds = sounds
+        self.chunkLinks = chunkLinks
     }
 }
 
@@ -132,6 +139,13 @@ struct LevelViewerWindow: View {
     /// the renderer itself is a plain class AppKit mutates directly, not an
     /// `ObservableObject`.
     @State private var armedPlacement: (objectID: UInt16, name: String)?
+    /// "Chunk-Based Architecture" (Part 2): which `ChunkLink.id`s have
+    /// already been loaded into the viewport this session (so the button
+    /// can show "Loaded" instead of offering to reload the same neighbor),
+    /// and which one is actively resolving right now (for a small progress
+    /// indicator on that one row only).
+    @State private var stitchedLinkIDs: Set<Int> = []
+    @State private var stitchingLinkID: Int?
     /// Full transform captured at the start of a gizmo drag or a
     /// nudge-field edit, so ⌘Z has something to restore to — see
     /// `registerUndo`. Snapshotting all three (not just whichever one a
@@ -161,7 +175,8 @@ struct LevelViewerWindow: View {
                 assetIndex: context.assetIndex,
                 defaultAssetIndex: context.defaultAssetIndex,
                 triggers: context.triggers,
-                cameras: context.cameras
+                cameras: context.cameras,
+                chunkLinks: context.chunkLinks
             )
             renderer?.snapToGrid = snapToGrid
             renderer?.gridSize = Float(gridSize)
@@ -324,6 +339,11 @@ struct LevelViewerWindow: View {
                     Divider()
                     levelEventsPanel
                 }
+
+                if !context.chunkLinks.isEmpty {
+                    Divider()
+                    chunkLinksPanel
+                }
             }
             .padding(16)
         }
@@ -444,6 +464,67 @@ struct LevelViewerWindow: View {
             .padding(4)
         }
         .buttonStyle(.plain)
+    }
+
+    /// "Chunk-Based Architecture" (Part 2): the real, decoded list of
+    /// neighboring chunk files this level can stream in (`ChunkLinks`),
+    /// with a "Load & Stitch" action per link that resolves the neighbor
+    /// against whatever archives are currently open and appends its
+    /// scenery into this same viewport (`LevelViewerRenderer.stitchChunk`).
+    private var chunkLinksPanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Chunk Links").font(.headline)
+            Text("Real neighboring-chunk references decoded from this level's own file. \"Load & Stitch\" only works if that neighbor's archive is already open in this workspace.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            ForEach(context.chunkLinks, id: \.link.id) { entry in
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "link").foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(entry.link.path).font(.caption).lineLimit(1)
+                        Text(entry.link.hasWall ? "Boundary wall present" : "No boundary wall")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if stitchingLinkID == entry.link.id {
+                        ProgressView().controlSize(.small)
+                    } else if stitchedLinkIDs.contains(entry.link.id) {
+                        Label("Loaded", systemImage: "checkmark.circle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                    } else {
+                        Button("Load & Stitch") { loadAndStitch(entry.link) }
+                            .font(.caption2)
+                    }
+                }
+                .padding(4)
+            }
+        }
+    }
+
+    private func loadAndStitch(_ link: ChunkLink) {
+        stitchingLinkID = link.id
+        Task {
+            defer { stitchingLinkID = nil }
+            guard let result = await workspace.loadChunkLinkPlacements(for: link) else {
+                workspace.lastError = "Couldn't find \"\(link.path)\" in any currently open archive — open the level or archive it belongs to first."
+                return
+            }
+            guard !result.placements.isEmpty else {
+                workspace.lastError = "\(result.fileName) resolved but has no scenery placements to show."
+                return
+            }
+            let offset = link.chunkMatrix.count > 3
+                ? SIMD3(link.chunkMatrix[3].x, link.chunkMatrix[3].y, link.chunkMatrix[3].z)
+                : SIMD3<Float>.zero
+            let added = renderer?.stitchChunk(placements: result.placements, worldOffset: offset) ?? 0
+            stitchedLinkIDs.insert(link.id)
+            layerVisibility.insert(.linkedChunks)
+            renderer?.layerVisibility = layerVisibility
+            workspace.statusMessage = "Stitched \(added) object(s) from \(result.fileName)."
+        }
     }
 
     @ViewBuilder

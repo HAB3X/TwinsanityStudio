@@ -267,4 +267,106 @@ extension RealDiscDiagnosticTests {
             }
         }
     }
+
+    /// "Chunk-Based Architecture" (Part 2) research pass — is `ChunkLinks`
+    /// real, non-empty, sane data in actual `.SM2` chunk files, and what do
+    /// real `path`/`flags` values look like? Exploratory: prints findings
+    /// rather than asserting a specific shape up front, the same caution
+    /// `testGraphicsInfoCollisionDataDecodesToRealGeometry`'s history is a
+    /// reminder of (an 89-failure over-claim from a too-small sample).
+    func testChunkLinksDecodeAcrossRealSM2Files() throws {
+        let bhPath = "/Volumes/CRASH/CRASH6/CRASH.BH"
+        guard FileManager.default.fileExists(atPath: bhPath) else {
+            throw XCTSkip("Disc image not mounted")
+        }
+        let index = try BDArchiveParser.readIndex(bhURL: URL(fileURLWithPath: bhPath))
+        let sm2Entries = index.entries.filter { $0.name.lowercased().hasSuffix(".sm2") }
+        print("DIAG: \(sm2Entries.count) .sm2 entries in archive")
+        XCTAssertGreaterThan(sm2Entries.count, 0, "expected at least one real .SM2 chunk file in this archive")
+
+        var filesWithLinks = 0
+        var totalLinks = 0
+        var linksWithWall = 0
+        var linksWithTree = 0
+        var samplePaths: [String] = []
+        var parseFailures = 0
+
+        for entry in sm2Entries {
+            guard let data = try? BDArchiveParser.readEntryData(entry, index: index),
+                  let root = try? RM2Parser.parse(data: data, fileKind: .sm2, fileName: entry.name)
+            else { parseFailures += 1; continue }
+
+            func walk(_ node: ChunkNode) {
+                if case .chunkLinks(let asset) = node.payload {
+                    if !asset.links.isEmpty { filesWithLinks += 1 }
+                    for link in asset.links {
+                        totalLinks += 1
+                        if link.hasWall { linksWithWall += 1 }
+                        if link.hasTree { linksWithTree += 1 }
+                        if samplePaths.count < 25 { samplePaths.append("\(entry.name) -> \(link.path) [type=\(link.type) flags=0x\(String(link.flags, radix: 16)) wall=\(link.hasWall) tree=\(link.treeNodes.count)]") }
+                    }
+                }
+                for child in node.children { walk(child) }
+            }
+            walk(root)
+        }
+
+        print("DIAG: \(filesWithLinks)/\(sm2Entries.count) .sm2 files have non-empty ChunkLinks, \(totalLinks) total links, \(linksWithWall) with wall, \(linksWithTree) with tree, \(parseFailures) parse failures")
+        for line in samplePaths { print("DIAG: \(line)") }
+
+        // Confirmed findings, now asserted: real `.SM2` chunk files
+        // overwhelmingly carry non-empty `ChunkLinks` (129/134 in a full
+        // archive sweep), the boundary-wall flag is common, and every real
+        // `path` seen looks like a genuine lowercase/backslash chunk file
+        // reference (e.g. `levels\earth\cavern\tunnel01`) — never empty,
+        // never containing stray null bytes from a misaligned read.
+        XCTAssertEqual(parseFailures, 0, "ChunkLinks decoding broke structural parsing for at least one real .SM2 file")
+        XCTAssertGreaterThan(filesWithLinks, sm2Entries.count / 2, "expected most real .SM2 chunk files to carry non-empty ChunkLinks")
+        XCTAssertGreaterThan(linksWithWall, 0, "expected at least one real boundary wall in this archive")
+        for line in samplePaths {
+            XCTAssertFalse(line.contains("-> ["), "a link's path decoded as empty")
+        }
+    }
+
+    /// "Load & Stitch" (Part 2) — does a real `ChunkLink.path` actually
+    /// resolve to a real archive entry using the exact matching rule
+    /// `WorkspaceViewModel.loadChunkLinkPlacements` uses (normalize `\` to
+    /// `/`, append `.sm2` if missing, case-insensitive compare)? Real
+    /// paths were confirmed lowercase/backslash-separated/no-extension by
+    /// `testChunkLinksDecodeAcrossRealSM2Files`; this confirms the other
+    /// half — that the resolution rule built from that observation
+    /// actually finds the neighbor file in the same archive, not just that
+    /// the string looks plausible.
+    func testChunkLinkPathsResolveToRealArchiveEntries() throws {
+        let bhPath = "/Volumes/CRASH/CRASH6/CRASH.BH"
+        guard FileManager.default.fileExists(atPath: bhPath) else {
+            throw XCTSkip("Disc image not mounted")
+        }
+        let index = try BDArchiveParser.readIndex(bhURL: URL(fileURLWithPath: bhPath))
+        let entry = try XCTUnwrap(index.entries.first { $0.name == "Levels/Earth/Cavern/nitrocav.sm2" })
+        let data = try BDArchiveParser.readEntryData(entry, index: index)
+        let root = try RM2Parser.parse(data: data, fileKind: .sm2, fileName: entry.name)
+
+        var links: [ChunkLink] = []
+        func walk(_ node: ChunkNode) {
+            if case .chunkLinks(let asset) = node.payload { links.append(contentsOf: asset.links) }
+            for child in node.children { walk(child) }
+        }
+        walk(root)
+        XCTAssertGreaterThan(links.count, 0, "nitrocav.sm2 should have real ChunkLinks — used in testChunkLinksDecodeAcrossRealSM2Files")
+
+        var resolvedCount = 0
+        for link in links {
+            let normalizedPath = link.path.replacingOccurrences(of: "\\", with: "/")
+            let targetName = normalizedPath.lowercased().hasSuffix(".sm2") ? normalizedPath : normalizedPath + ".sm2"
+            let matched = index.entries.first { candidate in
+                candidate.name.replacingOccurrences(of: "\\", with: "/").caseInsensitiveCompare(targetName) == .orderedSame
+            }
+            if matched != nil { resolvedCount += 1 } else {
+                print("DIAG: unresolved chunk link path \"\(link.path)\" (target \"\(targetName)\")")
+            }
+        }
+        print("DIAG: \(resolvedCount)/\(links.count) chunk link paths resolved to a real archive entry")
+        XCTAssertEqual(resolvedCount, links.count, "every real ChunkLink in this file should resolve to a real neighboring .sm2 entry in the same archive")
+    }
 }

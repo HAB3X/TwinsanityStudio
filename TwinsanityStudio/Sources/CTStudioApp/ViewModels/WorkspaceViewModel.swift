@@ -758,6 +758,21 @@ public final class WorkspaceViewModel: ObservableObject {
         }.map { (node: $0.node, sound: $0.value) }
     }
 
+    /// "Chunk-Based Architecture" (Part 2): every real `ChunkLink` entry
+    /// (flattened out of every `ChunkLinks` record — a `.SM2` chunk has at
+    /// most one, but this stays list-shaped like its siblings above) in the
+    /// same file as `levelNode`. `ChunkLinks` sits at the same tier-0 level
+    /// as `SceneryData`/`Graphics` (see `RM2Parser.tier0Kind`), so it's
+    /// already reachable via the same `findFileRoot`-rooted walk
+    /// `recordsInSameFile` does for Instance/Trigger/Camera/SoundEffect —
+    /// no separate tree-walk entry point needed.
+    public func chunkLinkRecords(inSameFileAs levelNode: ChunkNode) -> [(node: ChunkNode, link: ChunkLink)] {
+        recordsInSameFile(as: levelNode) { payload in
+            if case .chunkLinks(let asset) = payload { return asset }
+            return nil
+        }.flatMap { entry in entry.value.links.map { (node: entry.node, link: $0) } }
+    }
+
     /// Shared tree walk behind `instanceRecords`/`triggerRecords`/
     /// `cameraRecords`/`soundEffectRecords`: every node in the same file as
     /// `levelNode` whose payload `extract` recognizes, paired with that
@@ -1196,7 +1211,8 @@ public final class WorkspaceViewModel: ObservableObject {
             defaultAssetIndex: defaultAssetIndex,
             triggers: triggerRecords(inSameFileAs: node),
             cameras: cameraRecords(inSameFileAs: node),
-            sounds: soundEffectRecords(inSameFileAs: node)
+            sounds: soundEffectRecords(inSameFileAs: node),
+            chunkLinks: chunkLinkRecords(inSameFileAs: node)
         )
     }
 
@@ -1250,6 +1266,60 @@ public final class WorkspaceViewModel: ObservableObject {
         }.value
         sharedDefaultAssetIndex = built
         return built
+    }
+
+    /// "Chunk-Based Architecture" (Part 2) — "seamlessly load and stitch
+    /// adjoining chunk in the 3D viewport": resolves a real `ChunkLink.path`
+    /// (confirmed against the mounted disc: real values look like
+    /// `levels\earth\cavern\tunnel01` — lowercase, backslash-separated, no
+    /// extension, naming another `.SM2` file in the same archive) to an
+    /// actual entry in any currently-open archive, parses it, and resolves
+    /// its own `SceneryData` placements exactly like
+    /// `resolvedLevelPlacements` does for the primary chunk. `nil` when the
+    /// path doesn't resolve to any open archive's contents (the neighbor
+    /// chunk hasn't been scanned/opened yet) or the neighbor has no
+    /// resolvable scenery of its own.
+    ///
+    /// Only the neighbor's *placement translations* get offset by
+    /// `chunkMatrix`'s own translation row (row 3) before being handed
+    /// back — the same "position is trustworthy, full matrix orientation
+    /// isn't independently confirmed" simplification already documented on
+    /// `LevelViewerRenderer`'s own placement-matrix doc comment, now
+    /// applied to the chunk-to-chunk alignment transform too.
+    public func loadChunkLinkPlacements(for link: ChunkLink) async -> (fileName: String, placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)])? {
+        let normalizedPath = link.path.replacingOccurrences(of: "\\", with: "/")
+        let targetName = normalizedPath.lowercased().hasSuffix(".sm2") ? normalizedPath : normalizedPath + ".sm2"
+
+        guard let match = archiveIndexByRootID.values.compactMap({ archiveIndex -> (ArchiveIndex, ArchiveEntry)? in
+            archiveIndex.entries.first { entry in
+                entry.name.replacingOccurrences(of: "\\", with: "/").caseInsensitiveCompare(targetName) == .orderedSame
+            }.map { (archiveIndex, $0) }
+        }).first else { return nil }
+
+        return await Task.detached(priority: .userInitiated) { () -> (String, [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)])? in
+            guard let data = try? BDArchiveParser.readEntryData(match.1, index: match.0),
+                  let fileRoot = try? RM2Parser.parse(data: data, fileKind: .sm2, fileName: match.1.name)
+            else { return nil }
+
+            var scenery: SceneryAsset?
+            func walk(_ node: ChunkNode) {
+                if scenery == nil, case .scenery(let found) = node.payload, !found.placements.isEmpty { scenery = found }
+                for child in node.children { walk(child) }
+            }
+            walk(fileRoot)
+            guard let scenery else { return (match.1.name, []) }
+
+            let index = AssetResolver.buildIndex(fileRoot: fileRoot)
+            var results: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)] = []
+            for placement in scenery.placements {
+                guard let translation = placement.translation,
+                      let rigidModel = index.rigidModels[placement.modelID],
+                      let resolved = AssetResolver.resolveRigidModel(rigidModel, displayName: "Scenery Object #\(placement.modelID)", index: index)
+                else { continue }
+                results.append((translation, resolved))
+            }
+            return (match.1.name, results)
+        }.value
     }
 
     /// "Deep Hierarchy & Linked Asset Resolution": the parent composite

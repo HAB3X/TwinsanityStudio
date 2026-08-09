@@ -18,6 +18,11 @@ public enum ChunkPayload: Sendable {
     case scenery(SceneryAsset)
     case dynamicScenery(DynamicSceneryAsset)
     case soundEffect(SoundEffectAsset)
+    /// "Chunk-Based Architecture": a `ChunkLinks` record — the real,
+    /// decoded list of neighboring `.SM2`/`.RM2` chunk files this chunk
+    /// streams in, plus the boundary geometry that triggers it. See
+    /// `ChunkLinksAsset`'s doc comment.
+    case chunkLinks(ChunkLinksAsset)
     /// A `GameObject` record — see `GameObjectInfo`'s own doc comment.
     /// Plumbing (`Instance.objectID` -> this -> a `GraphicsInfo`/mesh),
     /// same reasoning as `.material` below, not a filterable kind of its
@@ -43,6 +48,7 @@ public enum ChunkPayload: Sendable {
         case camera = "Cameras"
         case collision = "Collision"
         case soundEffect = "Audio"
+        case chunkLinks = "Chunk Links"
         public var id: String { rawValue }
     }
 
@@ -57,6 +63,7 @@ public enum ChunkPayload: Sendable {
         case .camera: return .camera
         case .collision: return .collision
         case .soundEffect: return .soundEffect
+        case .chunkLinks: return .chunkLinks
         case .material, .position, .scenery, .dynamicScenery, .gameObject, .raw: return nil
         }
     }

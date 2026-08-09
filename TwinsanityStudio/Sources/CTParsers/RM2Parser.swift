@@ -123,6 +123,8 @@ public enum RM2Parser {
             return (try? SceneryDataParser.parse(&cursor, recordID: recordID)).map(ChunkPayload.scenery)
         case "DynamicSceneryData":
             return (try? DynamicSceneryDataParser.parse(&cursor, recordID: recordID)).map(ChunkPayload.dynamicScenery)
+        case "ChunkLinks":
+            return (try? ChunkLinksParser.parse(&cursor, recordID: recordID)).map(ChunkPayload.chunkLinks)
         default:
             return nil
         }
