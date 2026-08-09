@@ -27,6 +27,7 @@ struct ModelViewerWindow: View {
     @State private var playbackTimer: Timer?
     @State private var isPlaying = false
     @State private var hiddenSubmeshIndices: Set<Int> = []
+    @State private var isShaderGraphEditorPresented = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -236,6 +237,23 @@ struct ModelViewerWindow: View {
             Text("This tool's own computed oriented bounding box (Metal compute: parallel mean/covariance reduction + principal-axis fit) over this mesh's real vertex positions — not decoded game data, a real algorithm run on this asset's own geometry, tighter than a plain axis-aligned box for anything not already axis-aligned.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+
+            Divider()
+            Label("Shader Graph", systemImage: "point.3.filled.connected.trianglepath.dotted").font(.subheadline.bold())
+            Button {
+                isShaderGraphEditorPresented = true
+            } label: {
+                Label("Open Shader Graph Editor…", systemImage: "slider.horizontal.3")
+            }
+            .disabled(renderer == nil)
+            Text("A real, original node-based material editor — compiles to actual Metal Shading Language and previews live, right here, in this viewport. Not a decoded Twinsanity material format; this tool's own authoring system.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .sheet(isPresented: $isShaderGraphEditorPresented) {
+            if let renderer {
+                ShaderGraphEditorView(renderer: renderer)
+            }
         }
     }
 

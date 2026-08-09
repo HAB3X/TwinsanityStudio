@@ -237,6 +237,75 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     private let context: ModelViewerGPUContext
     var device: MTLDevice { context.device }
 
+    /// "Shader Graph Editor" (roadmap 5.4): when set, the main mesh draw
+    /// uses this pipeline instead of `context.pipelineState` — an
+    /// instance-level override, never touching the shared singleton other
+    /// renderer instances (Model Hub thumbnails, Level Viewer previews,
+    /// ...) still draw with. `applyShaderGraph` builds this from real
+    /// compiled MSL; `clearShaderGraphOverride` reverts to the default.
+    private var customPipelineState: MTLRenderPipelineState?
+
+    enum ShaderGraphApplyError: Error {
+        case compileFailed(String)
+        case functionNotFound
+        case pipelineCreationFailed
+    }
+
+    /// Compiles `mslFragmentSource` (real MSL emitted by
+    /// `ShaderGraphCompiler.compile`) alongside the base shader library's
+    /// existing `vertex_main`/struct declarations, builds a real pipeline
+    /// state reusing the exact same vertex descriptor/blend/pixel-format
+    /// setup `ModelViewerGPUContext`'s default pipeline uses, and swaps it
+    /// in for this renderer instance's main mesh draw.
+    func applyShaderGraph(mslFragmentSource: String, functionName: String) -> Result<Void, ShaderGraphApplyError> {
+        let combinedSource = Self.shaderSource + "\n" + mslFragmentSource
+        let library: MTLLibrary
+        do {
+            library = try device.makeLibrary(source: combinedSource, options: nil)
+        } catch {
+            return .failure(.compileFailed(error.localizedDescription))
+        }
+        guard let vertexFn = library.makeFunction(name: "vertex_main"), let fragmentFn = library.makeFunction(name: functionName) else {
+            return .failure(.functionNotFound)
+        }
+
+        let vertexDescriptor = MTLVertexDescriptor()
+        vertexDescriptor.attributes[0].format = .float3
+        vertexDescriptor.attributes[0].offset = 0
+        vertexDescriptor.attributes[0].bufferIndex = 0
+        vertexDescriptor.attributes[1].format = .float3
+        vertexDescriptor.attributes[1].offset = MemoryLayout<Float>.stride * 3
+        vertexDescriptor.attributes[1].bufferIndex = 0
+        vertexDescriptor.attributes[2].format = .float2
+        vertexDescriptor.attributes[2].offset = MemoryLayout<Float>.stride * 6
+        vertexDescriptor.attributes[2].bufferIndex = 0
+        vertexDescriptor.attributes[3].format = .float4
+        vertexDescriptor.attributes[3].offset = MemoryLayout<Float>.stride * 8
+        vertexDescriptor.attributes[3].bufferIndex = 0
+        vertexDescriptor.layouts[0].stride = MemoryLayout<ModelVertexGPU>.stride
+        vertexDescriptor.layouts[0].stepFunction = .perVertex
+
+        let pipelineDescriptor = MTLRenderPipelineDescriptor()
+        pipelineDescriptor.vertexFunction = vertexFn
+        pipelineDescriptor.fragmentFunction = fragmentFn
+        pipelineDescriptor.vertexDescriptor = vertexDescriptor
+        pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        pipelineDescriptor.colorAttachments[0].isBlendingEnabled = true
+        pipelineDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        pipelineDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        pipelineDescriptor.depthAttachmentPixelFormat = .depth32Float
+
+        guard let newPipeline = try? device.makeRenderPipelineState(descriptor: pipelineDescriptor) else {
+            return .failure(.pipelineCreationFailed)
+        }
+        customPipelineState = newPipeline
+        return .success(())
+    }
+
+    func clearShaderGraphOverride() {
+        customPipelineState = nil
+    }
+
     private var submeshes: [GPUSubmesh] = []
     private var boundsCenter: SIMD3<Float> = .zero
     private var boundsRadius: Float = 1
@@ -792,7 +861,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             lightDirection: normalize(SIMD3<Float>(-0.4, -1.0, -0.3))
         )
 
-        encoder.setRenderPipelineState(context.pipelineState)
+        encoder.setRenderPipelineState(customPipelineState ?? context.pipelineState)
         encoder.setDepthStencilState(context.depthState)
         encoder.setFragmentSamplerState(context.samplerState, index: 0)
 
