@@ -314,7 +314,7 @@ struct LevelViewerWindow: View {
 
                 Divider()
 
-                ForgePaletteView(canResolve: { renderer?.canResolveObjectID($0) }) { objectID, name in
+                ForgePaletteView(placedThisSession: renderer?.pendingNewInstances.count ?? 0, canResolve: { renderer?.canResolveObjectID($0) }) { objectID, name in
                     armedPlacement = (objectID, name)
                     renderer?.pendingPlacementObjectID = objectID
                 }
@@ -1175,6 +1175,18 @@ private struct LevelAudioPanel: View {
 /// caller) rather than placing anything itself — this view has no opinion
 /// about *where* in the 3D world the next click lands.
 private struct ForgePaletteView: View {
+    /// "Visual Item Memory Budget" (blueprint 6.1): a live count of new
+    /// `Instance` placements armed via this palette in the current editing
+    /// session (`ModelViewerRenderer.pendingNewInstances`, the same list
+    /// "Save Chunk Overrides…" writes back). Deliberately *not* a
+    /// budget-bar against a fixed ceiling — nothing in this codebase's
+    /// reference material verifies a real per-chunk object-count limit the
+    /// PS2 engine actually enforces, and this codebase's convention is to
+    /// never fabricate a number like that from guesswork. This is Forge's
+    /// "budget awareness" in the one honest form available: how much
+    /// *you've* added, growing live as you place things, not a percentage
+    /// against an invented cap.
+    let placedThisSession: Int
     /// Whether `objectID` would resolve to real geometry in the level
     /// currently open — see `LevelViewerRenderer.canResolveObjectID`'s doc
     /// comment. `nil` means "renderer not ready yet," shown as available
@@ -1198,7 +1210,16 @@ private struct ForgePaletteView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Forge Palette", systemImage: "hammer.fill").font(.headline)
+            HStack {
+                Label("Forge Palette", systemImage: "hammer.fill").font(.headline)
+                Spacer()
+                if placedThisSession > 0 {
+                    Text("\(placedThisSession) placed this session")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .help("New Instance placements armed from this palette in the current editing session, not yet saved. This build has no verified real object-count ceiling to gauge against, so this is a live count, not a budget bar.")
+                }
+            }
             Text("Pick an object, then click in the viewport to place a brand-new Instance of it. This lists every object ID in the whole game — not every one has geometry data in *this* level's own file (or the shared fallback), so some will place as an amber placeholder cube instead of real geometry; those are marked below. Categories are a best-effort grouping by name text, not verified game data.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
