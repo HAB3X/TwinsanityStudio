@@ -28,6 +28,11 @@ public struct LevelViewerContext: Identifiable {
     /// draws as the amber placeholder marker instead — the mandate's own
     /// "use a colored bounding-box proxy when a model is missing."
     public var resolvedInstanceAssets: [UUID: ResolvedModelAsset]
+    /// "The Forge Palette" (Part 4C): the same index `resolvedInstanceAssets`
+    /// was built from, kept around so `LevelViewerRenderer` can resolve a
+    /// *newly placed* object's real geometry without needing a second,
+    /// separate index-build pass.
+    public var assetIndex: GraphicsAssetIndex
     /// "Level Editor Overhaul": every `Trigger`/`Camera`/`SoundEffect`
     /// record from the same file — triggers/cameras feed their scene
     /// layers (wireframe boxes, select-and-inspect only, no write path
@@ -41,6 +46,7 @@ public struct LevelViewerContext: Identifiable {
         placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)],
         instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)] = [],
         resolvedInstanceAssets: [UUID: ResolvedModelAsset] = [:],
+        assetIndex: GraphicsAssetIndex = GraphicsAssetIndex(),
         triggers: [(node: ChunkNode, trigger: TriggerVolume)] = [],
         cameras: [(node: ChunkNode, camera: PlacedCamera)] = [],
         sounds: [(node: ChunkNode, sound: SoundEffectAsset)] = []
@@ -49,6 +55,7 @@ public struct LevelViewerContext: Identifiable {
         self.placements = placements
         self.instanceMarkers = instanceMarkers
         self.resolvedInstanceAssets = resolvedInstanceAssets
+        self.assetIndex = assetIndex
         self.triggers = triggers
         self.cameras = cameras
         self.sounds = sounds
@@ -110,6 +117,13 @@ struct LevelViewerWindow: View {
     @State private var gridSize: Double = 1.0
     @State private var rotationSnapDegrees: Double = 15.0
     @State private var isDropTargeted = false
+    /// "The Forge Palette" (Part 4C): non-nil while a palette pick is armed
+    /// and waiting for the viewport click that places it — mirrors
+    /// `renderer.pendingPlacementObjectID` into SwiftUI `@State` the same
+    /// way `selectedIndex` mirrors `renderer.selectedObjectIndex`, since
+    /// the renderer itself is a plain class AppKit mutates directly, not an
+    /// `ObservableObject`.
+    @State private var armedPlacement: (objectID: UInt16, name: String)?
     /// Full transform captured at the start of a gizmo drag or a
     /// nudge-field edit, so ⌘Z has something to restore to — see
     /// `registerUndo`. Snapshotting all three (not just whichever one a
@@ -136,6 +150,7 @@ struct LevelViewerWindow: View {
                 placements: context.placements,
                 instanceMarkers: context.instanceMarkers,
                 resolvedInstanceAssets: context.resolvedInstanceAssets,
+                assetIndex: context.assetIndex,
                 triggers: context.triggers,
                 cameras: context.cameras
             )
@@ -177,18 +192,40 @@ struct LevelViewerWindow: View {
                         },
                         onGizmoDragStarted: { transformBeforeEdit = currentSnapshot() },
                         onGizmoModeChanged: { gizmoMode = renderer.gizmoMode },
-                        onObjectPicked: { index in select(index) }
+                        onObjectPicked: { index in select(index) },
+                        onObjectPlaced: { index in
+                            selectedIndex = index
+                            refreshTransformFields()
+                            registerPlacementUndo(index: index)
+                            armedPlacement = nil
+                        }
                     )
                     // See `ModelViewerWindow`'s matching comment — a
                     // `maxWidth/maxHeight: .infinity`-only frame isn't a
                     // concrete enough size for a `.sheet()`'s first layout
                     // pass to reliably drive the `MTKView` from.
                     .frame(minWidth: 400, maxWidth: .infinity, minHeight: 300, maxHeight: .infinity)
-                    Text("Drag to orbit · Scroll to zoom · Drag a handle to \(gizmoMode == .translate ? "move" : gizmoMode == .rotate ? "rotate" : "scale") the selection · W/E/R to switch · F to frame")
+                    if let armedPlacement {
+                        HStack(spacing: 8) {
+                            Image(systemName: "hammer.fill")
+                            Text("Click in the viewport to place **\(armedPlacement.name)**")
+                            Button("Cancel") {
+                                self.armedPlacement = nil
+                                renderer.pendingPlacementObjectID = nil
+                            }
+                            .buttonStyle(.borderless)
+                        }
                         .font(.caption)
-                        .padding(6)
+                        .padding(8)
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6))
                         .padding(10)
+                    } else {
+                        Text("Drag to orbit · Scroll to zoom · Drag a handle to \(gizmoMode == .translate ? "move" : gizmoMode == .rotate ? "rotate" : "scale") the selection · W/E/R to switch · F to frame")
+                            .font(.caption)
+                            .padding(6)
+                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                            .padding(10)
+                    }
                     if isDropTargeted {
                         RoundedRectangle(cornerRadius: 8)
                             .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8]))
@@ -225,6 +262,13 @@ struct LevelViewerWindow: View {
                     .font(.title3.bold())
 
                 modeAndLayersPanel
+
+                Divider()
+
+                ForgePaletteView { objectID, name in
+                    armedPlacement = (objectID, name)
+                    renderer?.pendingPlacementObjectID = objectID
+                }
 
                 Form {
                     LabeledContent("Placements in tree", value: "\(context.scenery.placements.count)")
@@ -588,6 +632,31 @@ struct LevelViewerWindow: View {
             registerTransformUndo(undoManager: undoManager, renderer: target, index: index, restoreTo: thenRedoTo, thenRedoTo: restoreTo)
         }
     }
+
+    /// "Robust Undo/Redo… for item placement" (Part 4D): the add/remove
+    /// counterpart to `registerTransformUndo`, same recursive
+    /// undo-then-register-the-opposite-as-the-next-undo shape. ⌘Z removes
+    /// the just-placed object; ⌘⇧Z (registered as the undo *of that*
+    /// removal) re-spawns it via `spawnInstance` at the exact same
+    /// position, which also re-resolves its geometry — cheap, and avoids
+    /// this renderer needing to cache GPU buffers for an object that isn't
+    /// currently in the scene.
+    private func registerPlacementUndo(index: Int) {
+        guard let undoManager, let renderer else { return }
+        undoManager.setActionName("Place Object")
+        Self.registerPlacementUndo(undoManager: undoManager, renderer: renderer, index: index)
+    }
+
+    private static func registerPlacementUndo(undoManager: UndoManager, renderer: LevelViewerRenderer, index: Int) {
+        guard let snapshot = renderer.newInstanceInfo(at: index) else { return }
+        undoManager.registerUndo(withTarget: renderer) { target in
+            target.removeObject(at: index)
+            undoManager.registerUndo(withTarget: target) { redoTarget in
+                let newIndex = redoTarget.spawnInstance(objectID: snapshot.objectID, at: snapshot.worldPosition) ?? index
+                registerPlacementUndo(undoManager: undoManager, renderer: redoTarget, index: newIndex)
+            }
+        }
+    }
 }
 
 /// "Integrated Level Audio": every decoded `SoundEffect` in the level's
@@ -650,5 +719,65 @@ private struct LevelAudioPanel: View {
         player = newPlayer
         newPlayer.prepareToPlay()
         playingNodeID = newPlayer.play() ? entry.node.id : nil
+    }
+}
+
+/// "The Forge Palette: Directory Asset Placement" (Part 4C) — a
+/// categorized, searchable directory of every named `ObjectID`
+/// (`DefaultObjectID`, ported from the reference tool's own enum) a new
+/// `Instance` could be spawned as. Picking an entry arms placement mode
+/// (`onArm`, wired to `LevelViewerRenderer.pendingPlacementObjectID` by the
+/// caller) rather than placing anything itself — this view has no opinion
+/// about *where* in the 3D world the next click lands.
+private struct ForgePaletteView: View {
+    let onArm: (UInt16, String) -> Void
+
+    @State private var searchText = ""
+    @State private var selectedCategory: DefaultObjectID.Category?
+
+    private var filteredEntries: [(id: UInt16, name: String)] {
+        DefaultObjectID.names
+            .filter { selectedCategory == nil || DefaultObjectID.category(forName: $0.value) == selectedCategory }
+            .filter { searchText.isEmpty || $0.value.localizedCaseInsensitiveContains(searchText) }
+            .sorted { $0.value < $1.value }
+            .map { (id: $0.key, name: $0.value) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Forge Palette", systemImage: "hammer.fill").font(.headline)
+            Text("Pick an object, then click in the viewport to place a brand-new Instance of it. Categories are a best-effort grouping by name text, not verified game data — see the panel's own tooltip.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .help("This build has no decoded game-logic data that classifies what an object actually is (hazard/pickup/enemy/prop) — these buckets are pattern-matched from the object's own name text.")
+
+            TextField("Search objects…", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+
+            Picker("Category", selection: $selectedCategory) {
+                Text("All").tag(DefaultObjectID.Category?.none)
+                ForEach(DefaultObjectID.Category.allCases) { category in
+                    Text(category.rawValue).tag(DefaultObjectID.Category?.some(category))
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+
+            List(filteredEntries, id: \.id) { entry in
+                Button {
+                    onArm(entry.id, entry.name)
+                } label: {
+                    HStack {
+                        Text(entry.name).lineLimit(1).font(.caption)
+                        Spacer()
+                        Text("#\(entry.id)").font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+            .frame(height: 220)
+            .listStyle(.bordered)
+        }
     }
 }

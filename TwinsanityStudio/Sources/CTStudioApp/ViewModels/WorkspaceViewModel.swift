@@ -1114,11 +1114,13 @@ public final class WorkspaceViewModel: ObservableObject {
     public func openLevelViewer(for scenery: SceneryAsset, node: ChunkNode) async {
         let placements = await resolvedLevelPlacements(for: scenery, node: node)
         let instanceMarkers = instanceRecords(inSameFileAs: node)
+        let (resolvedAssets, assetIndex) = await resolvedInstanceAssets(for: instanceMarkers, node: node)
         levelViewerContext = LevelViewerContext(
             scenery: scenery,
             placements: placements,
             instanceMarkers: instanceMarkers,
-            resolvedInstanceAssets: await resolvedInstanceAssets(for: instanceMarkers, node: node),
+            resolvedInstanceAssets: resolvedAssets,
+            assetIndex: assetIndex,
             triggers: triggerRecords(inSameFileAs: node),
             cameras: cameraRecords(inSameFileAs: node),
             sounds: soundEffectRecords(inSameFileAs: node)
@@ -1133,9 +1135,12 @@ public final class WorkspaceViewModel: ObservableObject {
     /// each one up directly. Missing from this dictionary is exactly the
     /// "no 3D model available" case `LevelViewerRenderer.upload` falls back
     /// to the colored placeholder marker for — this never fabricates a
-    /// substitute for one that doesn't resolve.
-    private func resolvedInstanceAssets(for instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)], node: ChunkNode) async -> [UUID: ResolvedModelAsset] {
-        guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return [:] }
+    /// substitute for one that doesn't resolve. Also returns the
+    /// `GraphicsAssetIndex` itself (built once, here) so "The Forge
+    /// Palette" (Part 4C) can resolve a *newly placed* object's geometry
+    /// through the exact same index without rebuilding it.
+    private func resolvedInstanceAssets(for instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)], node: ChunkNode) async -> (assets: [UUID: ResolvedModelAsset], index: GraphicsAssetIndex) {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return ([:], GraphicsAssetIndex()) }
         return await Task.detached(priority: .userInitiated) {
             let index = AssetResolver.buildIndex(fileRoot: fileRoot)
             var results: [UUID: ResolvedModelAsset] = [:]
@@ -1144,7 +1149,7 @@ public final class WorkspaceViewModel: ObservableObject {
                 guard let resolved = AssetResolver.resolveInstanceObject(objectID: instance.objectID, instanceSelector: selector, index: index) else { continue }
                 results[markerNode.id] = resolved
             }
-            return results
+            return (results, index)
         }.value
     }
 

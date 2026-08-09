@@ -23,6 +23,19 @@ protocol OrbitCameraRenderer: AnyObject, MTKViewDelegate {
 extension ModelViewerRenderer: OrbitCameraRenderer {}
 extension LevelViewerRenderer: OrbitCameraRenderer {}
 
+/// "The Forge Palette" (Part 4C): implemented only by `LevelViewerRenderer`
+/// — a `mouseDown` while `pendingPlacementObjectID` is armed places a new
+/// object instead of orbiting or picking. Checked first in
+/// `InteractiveMTKView.mouseDown`, ahead of the gizmo-grab/pick checks,
+/// since placement mode takes over the click entirely.
+protocol PlacementInteractiveRenderer: OrbitCameraRenderer {
+    var pendingPlacementObjectID: UInt16? { get }
+    @discardableResult
+    func placeObject(at screenPoint: CGPoint, viewSize: CGSize) -> Int?
+}
+
+extension LevelViewerRenderer: PlacementInteractiveRenderer {}
+
 /// `MTKView` subclass that turns mouse drag into orbit and scroll into zoom.
 /// Kept as a thin, dumb input adapter — all the actual camera math lives on
 /// the renderer, this just forwards deltas to it.
@@ -48,6 +61,11 @@ final class InteractiveMTKView: MTKView {
     /// a gizmo handle but did land on/near a visible object — see
     /// `GizmoInteractiveRenderer.pickObject`.
     var onObjectPicked: ((Int) -> Void)?
+    /// "The Forge Palette" (Part 4C): fired with the newly spawned object's
+    /// index right after a placement-mode click actually placed something
+    /// — lets the SwiftUI side select it and register the matching Undo
+    /// step, same reasoning as `onObjectPicked`.
+    var onObjectPlaced: ((Int) -> Void)?
 
     /// Non-nil for the duration of a drag that grabbed a gizmo arrow on
     /// `mouseDown` — while set, `mouseDragged` moves the selected object
@@ -58,8 +76,20 @@ final class InteractiveMTKView: MTKView {
 
     override func mouseDown(with event: NSEvent) {
         draggingGizmoAxis = nil
-        guard let gizmoRenderer = renderer as? GizmoInteractiveRenderer else { return }
         let point = convert(event.locationInWindow, from: nil)
+
+        // "The Forge Palette": an armed placement takes over the click
+        // entirely — no gizmo grab, no orbit, no picking, just "put the
+        // new object here."
+        if let placementRenderer = renderer as? PlacementInteractiveRenderer, placementRenderer.pendingPlacementObjectID != nil {
+            if let newIndex = placementRenderer.placeObject(at: point, viewSize: bounds.size) {
+                onObjectPlaced?(newIndex)
+                needsDisplay = true
+            }
+            return
+        }
+
+        guard let gizmoRenderer = renderer as? GizmoInteractiveRenderer else { return }
         draggingGizmoAxis = gizmoRenderer.gizmoAxis(at: point, viewSize: bounds.size)
         if draggingGizmoAxis != nil {
             onGizmoDragStarted?()
@@ -130,6 +160,7 @@ struct MetalModelView: NSViewRepresentable {
     var onGizmoDragStarted: (() -> Void)?
     var onGizmoModeChanged: (() -> Void)?
     var onObjectPicked: ((Int) -> Void)?
+    var onObjectPlaced: ((Int) -> Void)?
 
     func makeNSView(context: Context) -> InteractiveMTKView {
         let view = InteractiveMTKView(frame: .zero, device: renderer.device)
@@ -138,6 +169,7 @@ struct MetalModelView: NSViewRepresentable {
         view.onGizmoDragStarted = onGizmoDragStarted
         view.onGizmoModeChanged = onGizmoModeChanged
         view.onObjectPicked = onObjectPicked
+        view.onObjectPlaced = onObjectPlaced
         view.delegate = renderer
         view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float
@@ -174,5 +206,6 @@ struct MetalModelView: NSViewRepresentable {
         nsView.onGizmoDragStarted = onGizmoDragStarted
         nsView.onGizmoModeChanged = onGizmoModeChanged
         nsView.onObjectPicked = onObjectPicked
+        nsView.onObjectPlaced = onObjectPlaced
     }
 }

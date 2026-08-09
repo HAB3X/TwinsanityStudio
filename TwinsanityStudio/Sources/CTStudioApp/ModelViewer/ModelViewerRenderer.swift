@@ -965,6 +965,15 @@ private struct GPULevelObject {
     /// 28-byte transform prefix on save.
     var originalPositionW: Float = 0
     var comRotationRaw: SIMD3<UInt16> = .zero
+    /// "The Forge Palette" (Part 4C): non-nil only for an object placed
+    /// this session via the palette (not yet a real record in the file) —
+    /// `objectID` is what a brand-new `Instance` record for it needs, and
+    /// `syntheticInstanceID` is a locally-generated ID that doesn't collide
+    /// with any real `Instance` already in this level (see
+    /// `LevelViewerRenderer.spawnInstance`'s doc comment). `sourceNode`
+    /// stays `nil` for these — there is no on-disk record yet to point at.
+    var newInstanceObjectID: UInt16?
+    var syntheticInstanceID: UInt32?
 }
 
 /// Which transform the gizmo currently edits — the W/E/R hotkeys switch
@@ -1102,16 +1111,32 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     ///     write-back (unlike Instance markers, this build has no
     ///     byte-exact encoder for either record type yet). Still fully
     ///     selectable, so clicking one opens its real inspector.
+    /// "The Forge Palette" (Part 4C): the same `GraphicsAssetIndex` used to
+    /// resolve every existing `Instance`, kept around so a *newly placed*
+    /// object (which has no `Instance` record to resolve from yet) can
+    /// still get real geometry via `AssetResolver.resolveInstanceObject`
+    /// instead of always falling back to the amber marker — a freshly
+    /// dropped crate should look like a crate immediately, not just once
+    /// the file round-trips through a save/reload.
+    private var assetIndex: GraphicsAssetIndex = GraphicsAssetIndex()
+    /// Every synthetic ID handed out this session for a placed-but-unsaved
+    /// object, one higher than the highest real `Instance.id` seen at
+    /// upload time — see `spawnInstance`'s doc comment.
+    private var nextSyntheticInstanceID: UInt32 = 1
+
     init?(
         placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)],
         instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)] = [],
         resolvedInstanceAssets: [UUID: ResolvedModelAsset] = [:],
+        assetIndex: GraphicsAssetIndex = GraphicsAssetIndex(),
         triggers: [(node: ChunkNode, trigger: TriggerVolume)] = [],
         cameras: [(node: ChunkNode, camera: PlacedCamera)] = []
     ) {
         guard let context = ModelViewerGPUContext.shared else { return nil }
         self.context = context
+        self.assetIndex = assetIndex
         super.init()
+        nextSyntheticInstanceID = (instanceMarkers.map(\.instance.id).max() ?? 0) + 1
         upload(placements: placements, instanceMarkers: instanceMarkers, resolvedInstanceAssets: resolvedInstanceAssets, triggers: triggers, cameras: cameras)
     }
 
@@ -1547,6 +1572,139 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         let newIndex = objects.count - 1
         select(index: newIndex)
         return newIndex
+    }
+
+    // MARK: - The Forge Palette: new-item placement (Part 4C)
+
+    /// "I must be able to select an entity from this directory, click into
+    /// the 3D map, and spawn a brand-new instance of that object" — set
+    /// non-nil to arm placement mode (the next viewport click places this
+    /// object instead of orbiting/picking; see `InteractiveMTKView.
+    /// mouseDown`), `nil` to cancel it without placing anything.
+    var pendingPlacementObjectID: UInt16?
+
+    /// Resolves `objectID` to real geometry through the same
+    /// `AssetResolver.resolveInstanceObject` chain every existing
+    /// `Instance` already goes through (falling back to the amber marker
+    /// cube when it doesn't resolve — same "colored bounding-box proxy"
+    /// rule as everywhere else), places it at `worldPosition`, and assigns
+    /// it a synthetic `Instance` ID that doesn't collide with any real one
+    /// already in this level (`nextSyntheticInstanceID`, seeded one past
+    /// the highest real ID at load and incremented on every spawn — even
+    /// across undo/redo, so a redone spawn never accidentally reuses an ID
+    /// a *different* still-live placement claimed in between). Selects the
+    /// new object immediately, same as `addObject`, so its gizmo is ready.
+    @discardableResult
+    func spawnInstance(objectID: UInt16, at worldPosition: SIMD3<Float>) -> Int? {
+        let markerMesh = Self.makeMarkerCubeAsset()
+        var submeshes = ModelViewerRenderer.buildGPUSubmeshes(mesh: markerMesh.mesh, submeshMaterials: [markerMesh.material], device: device, fallbackTexture: context.fallbackTexture).submeshes
+        var radius = Self.boundingRadius(of: markerMesh.mesh)
+        var displayName = "New Object #\(objectID)"
+        if let resolved = AssetResolver.resolveInstanceObject(objectID: objectID, instanceSelector: 0, index: assetIndex) {
+            let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: resolved.mesh, submeshMaterials: resolved.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
+            if !built.submeshes.isEmpty {
+                submeshes = built.submeshes
+                radius = Self.boundingRadius(of: resolved.mesh)
+                displayName = resolved.displayName
+            }
+        }
+        guard !submeshes.isEmpty else { return nil }
+
+        let syntheticID = nextSyntheticInstanceID
+        nextSyntheticInstanceID += 1
+        objects.append(GPULevelObject(
+            worldPosition: worldPosition,
+            displayName: displayName,
+            submeshes: submeshes,
+            layer: .actors,
+            boundingRadius: radius,
+            newInstanceObjectID: objectID,
+            syntheticInstanceID: syntheticID
+        ))
+        let newIndex = objects.count - 1
+        select(index: newIndex)
+        return newIndex
+    }
+
+    /// `LevelViewerWindow`'s placement-undo registration needs to snapshot
+    /// what a just-placed object *was* (its `objectID` and where it ended
+    /// up) without this renderer exposing its private `objects` array
+    /// wholesale — this is that one narrow read.
+    func newInstanceInfo(at index: Int) -> (objectID: UInt16, worldPosition: SIMD3<Float>)? {
+        guard objects.indices.contains(index), let objectID = objects[index].newInstanceObjectID else { return nil }
+        return (objectID, objects[index].worldPosition)
+    }
+
+    /// The undo/redo-reachable counterpart to `spawnInstance` — removes
+    /// whatever object currently sits at `index`. Callers (`LevelViewerWindow`'s
+    /// undo registration) are responsible for only ever calling this with an
+    /// index that's still valid for the current `objects` array; same
+    /// bounds-check-and-no-op-if-stale posture as `select(index:)`.
+    func removeObject(at index: Int) {
+        guard objects.indices.contains(index) else { return }
+        objects.remove(at: index)
+        if selectedObjectIndex == index {
+            select(index: nil)
+        } else if let selectedObjectIndex, selectedObjectIndex > index {
+            select(index: selectedObjectIndex - 1)
+        }
+    }
+
+    /// "Backend Requirement: calculate the XYZ position" — every object
+    /// placed via the palette that hasn't been saved yet, ready to hand to
+    /// a real record-injection writer. Position/rotation/scale come
+    /// straight off the live `GPULevelObject`, same as `pendingLevelOverrides`.
+    var pendingNewInstances: [(objectID: UInt16, syntheticID: UInt32, position: SIMD3<Float>, rotationDegrees: SIMD3<Float>)] {
+        objects.compactMap { object in
+            guard let objectID = object.newInstanceObjectID, let syntheticID = object.syntheticInstanceID else { return nil }
+            return (objectID, syntheticID, object.worldPosition, Self.eulerDegrees(from: object.rotation))
+        }
+    }
+
+    /// Unprojects a screen point through the inverse view-projection at two
+    /// depths (Metal NDC `z = 0`/near and `z = 1`/far — see `Frustum`'s own
+    /// doc comment for why this build's near/far convention isn't the
+    /// generic OpenGL one) to get a world-space ray, then intersects it
+    /// with a horizontal plane at `planeY`. This is a deliberate
+    /// simplification — a real "click on the ground" needs a ray/mesh hit
+    /// test against the actual scenery geometry, which this build doesn't
+    /// have collision data wired up for in the Level Viewer — not a claim
+    /// that clicking always lands exactly on visible terrain. `nil` when
+    /// the click is aimed away from the plane entirely (e.g. straight up).
+    func worldPositionOnGroundPlane(at screenPoint: CGPoint, viewSize: CGSize, planeY: Float) -> SIMD3<Float>? {
+        let viewProjection = currentViewProjection(viewSize: viewSize)
+        let inverse = viewProjection.inverse
+        let ndcX = Float(screenPoint.x / max(viewSize.width, 1)) * 2 - 1
+        let ndcY = Float(screenPoint.y / max(viewSize.height, 1)) * 2 - 1
+
+        func unproject(ndcZ: Float) -> SIMD3<Float>? {
+            let clip = inverse * SIMD4<Float>(ndcX, ndcY, ndcZ, 1)
+            guard abs(clip.w) > 0.0001 else { return nil }
+            return SIMD3(clip.x, clip.y, clip.z) / clip.w
+        }
+        guard let nearPoint = unproject(ndcZ: 0), let farPoint = unproject(ndcZ: 1) else { return nil }
+        let direction = farPoint - nearPoint
+        guard abs(direction.y) > 0.0001 else { return nil }
+
+        let t = (planeY - nearPoint.y) / direction.y
+        guard t > 0 else { return nil }
+        return nearPoint + direction * t
+    }
+
+    /// "The Forge Palette": a `mouseDown` in placement mode (armed via
+    /// `pendingPlacementObjectID`) resolves to a world position on this
+    /// ground-plane heuristic — the level's own vertical center, the same
+    /// "no per-object size data to do better" reasoning `expandBounds`
+    /// already uses for scenery bounds — then spawns the object there and
+    /// disarms placement mode (one shot per palette click, matching how
+    /// dragging one item from the Models Hub places exactly one object).
+    @discardableResult
+    func placeObject(at screenPoint: CGPoint, viewSize: CGSize) -> Int? {
+        guard let objectID = pendingPlacementObjectID,
+              let worldPosition = worldPositionOnGroundPlane(at: screenPoint, viewSize: viewSize, planeY: boundsCenter.y)
+        else { return nil }
+        pendingPlacementObjectID = nil
+        return spawnInstance(objectID: objectID, at: worldPosition)
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}

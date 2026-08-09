@@ -180,6 +180,76 @@ final class ModelViewerRendererTests: XCTestCase {
         XCTAssertTrue(frustum.intersects(center: SIMD3(50, 0, -10), radius: 100), "a sphere large enough to bridge back into view must not be culled")
     }
 
+    // MARK: - The Forge Palette (Part 4C)
+
+    /// `spawnInstance` is the backend half of "select an entity, click into
+    /// the map, spawn a brand-new instance" — this pins that it actually
+    /// adds a selectable object and records enough to reconstruct a real
+    /// `Instance` record from later (`pendingNewInstances`).
+    func testSpawnInstanceAddsSelectableObjectWithPendingRecord() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device available in this environment")
+        }
+        let asset = makeTestAsset()
+        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), asset)]))
+        let before = renderer.objectCount
+
+        let newIndex = try XCTUnwrap(renderer.spawnInstance(objectID: 42, at: SIMD3<Float>(5, 1, -3)))
+
+        XCTAssertEqual(renderer.objectCount, before + 1)
+        XCTAssertEqual(renderer.selectedObjectIndex, newIndex)
+        let pending = renderer.pendingNewInstances
+        XCTAssertEqual(pending.count, 1)
+        XCTAssertEqual(pending[0].objectID, 42)
+        XCTAssertEqual(pending[0].position, SIMD3<Float>(5, 1, -3))
+    }
+
+    /// The undo-reachable half: removing a just-placed object must both
+    /// shrink the scene and drop it from `pendingNewInstances` — otherwise
+    /// "Save" would write a record for something that's no longer even in
+    /// the viewport.
+    func testRemoveObjectClearsSelectionAndPendingRecord() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device available in this environment")
+        }
+        let asset = makeTestAsset()
+        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), asset)]))
+        let before = renderer.objectCount
+        let index = try XCTUnwrap(renderer.spawnInstance(objectID: 7, at: .zero))
+
+        renderer.removeObject(at: index)
+
+        XCTAssertEqual(renderer.objectCount, before)
+        XCTAssertNil(renderer.selectedObjectIndex)
+        XCTAssertTrue(renderer.pendingNewInstances.isEmpty)
+    }
+
+    /// A screen-center click's ray passes exactly through the orbit
+    /// target (that's what "orbit target" means for a look-at camera) — so
+    /// with a single placement at the world origin (making both the
+    /// orbit target *and* the ground plane sit at `(0, 0, 0)`), a
+    /// center-screen click must resolve to exactly the origin. This is the
+    /// simplification `worldPositionOnGroundPlane`'s own doc comment
+    /// describes (a plane intersection, not a real terrain raycast) —
+    /// verified numerically rather than trusted by inspection, since a
+    /// sign error in the unprojection would silently place every object at
+    /// the wrong depth.
+    func testWorldPositionOnGroundPlaneHitsOrbitTargetAtScreenCenter() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device available in this environment")
+        }
+        let asset = makeTestAsset()
+        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), asset)]))
+        let viewSize = CGSize(width: 800, height: 600)
+        let center = CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
+
+        let hit = try XCTUnwrap(renderer.worldPositionOnGroundPlane(at: center, viewSize: viewSize, planeY: 0))
+
+        XCTAssertEqual(hit.x, 0, accuracy: 0.01)
+        XCTAssertEqual(hit.y, 0, accuracy: 0.01)
+        XCTAssertEqual(hit.z, 0, accuracy: 0.01)
+    }
+
     /// Samples a grid of pixels and counts roughly-distinct colors — cheap
     /// proxy for "did anything actually render" without needing exact pixel
     /// matching.
