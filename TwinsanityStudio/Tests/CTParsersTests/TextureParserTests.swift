@@ -91,6 +91,22 @@ final class TextureParserTests: XCTestCase {
         XCTAssertEqual(readBack, pixels)
     }
 
+    /// A corrupt/truncated record could carry a huge `wLog2`/`hLog2` (they're
+    /// just two `Int16`s off disk) — `width`/`height` (`1 << wLog2`) are
+    /// themselves safe to compute (Swift's `<<` never traps), but a later
+    /// `width * height` easily overflows `Int`, and Swift's `*` traps
+    /// (crashes) on overflow rather than throwing. This must throw a normal,
+    /// catchable error instead of crashing the process.
+    func testImplausiblyLargeDimensionsThrowInsteadOfCrashing() {
+        let data = synthesizeHeader(width: 1 << 20, height: 1 << 20, mipCount: 0, format: 0b000000, textureBufferWidth: 1, clutBufferBasePointer: 0, rrw: 2, rrh: 2, pixelData: [])
+        var cursor = BinaryCursor(data: data)
+        XCTAssertThrowsError(try TextureParser.parse(&cursor, recordID: 1)) { error in
+            guard case TextureParseError.implausibleDimensions = error else {
+                return XCTFail("expected implausibleDimensions, got \(error)")
+            }
+        }
+    }
+
     func testUnsupportedFormatFallsBackToRawPassthrough() throws {
         let pixelData: [UInt8] = [1, 2, 3, 4, 5, 6, 7, 8]
         // PSMCT16 (0b000010) is not fully decoded by this build, matching the reference tool.

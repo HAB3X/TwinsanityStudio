@@ -2,6 +2,20 @@ import Foundation
 import CTCore
 import CTModels
 
+/// Thrown when a texture record's decoded `width`/`height` (`1 <<
+/// wLog2`/`1 << hLog2`, straight off disk) are too large to be a real PS2/
+/// Xbox texture — see `TextureParser.parse`'s guard for why this exists.
+public enum TextureParseError: Error, CustomStringConvertible {
+    case implausibleDimensions(width: Int, height: Int)
+
+    public var description: String {
+        switch self {
+        case .implausibleDimensions(let width, let height):
+            return "Texture dimensions \(width)×\(height) exceed any plausible real PS2/Xbox texture size — this record is likely corrupt or truncated."
+        }
+    }
+}
+
 /// Decodes a PS2 `Texture` record (`SectionType.texture`) — ported from
 /// `Twinsanity/Items/Graphics/Texture.cs`. Only `PSMCT32` (raw RGBA) and
 /// `PSMT8` (8bpp paletted, GS block-swizzled) are fully decoded, matching the
@@ -9,6 +23,17 @@ import CTModels
 /// byte passthrough there too, so we do the same rather than guessing at an
 /// unimplemented format's layout.
 public enum TextureParser {
+    /// No real PS2 or Xbox game texture is anywhere near this size (PS2 GS
+    /// hardware itself can't address a texture much larger than 1024 per
+    /// side) — this is purely a corrupt-input guard, generous enough to
+    /// never reject a real texture. `width`/`height` are `1 << wLog2`/
+    /// `1 << hLog2` computed straight from two `Int16`s read off disk, so a
+    /// corrupt or truncated record can make either one enormous; the `<<`
+    /// itself can't crash (Swift's shift is well-defined for any shift
+    /// amount), but a later `width * height` easily can — Swift's `*`
+    /// traps on overflow rather than throwing. Checked immediately after
+    /// computing them and before any multiplication touches them.
+    static let maxPlausibleDimension = 8192
     /// GS pixel-format codes (`Texture.TexturePixelFormat`).
     private enum GSFormat: UInt8 {
         case psmct32 = 0b000000
@@ -80,6 +105,9 @@ public enum TextureParser {
 
         let width = 1 << Int(wLog2)
         let height = 1 << Int(hLog2)
+        guard width > 0, height > 0, width <= maxPlausibleDimension, height <= maxPlausibleDimension else {
+            throw TextureParseError.implausibleDimensions(width: width, height: height)
+        }
         let mipLevels = max(0, Int(m) - 1)
         let pixelDataLength = max(0, texSize - 224)
         let gsFormat = GSFormat(rawValue: format)

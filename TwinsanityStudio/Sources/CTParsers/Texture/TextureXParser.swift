@@ -33,6 +33,12 @@ public enum TextureXParser {
 
         let width = 1 << Int(wLog2)
         let height = 1 << Int(hLog2)
+        // See `TextureParser.maxPlausibleDimension`'s doc comment: a corrupt
+        // wLog2/hLog2 can make either of these enormous, and the
+        // `width * height` below would trap on overflow rather than throw.
+        guard width > 0, height > 0, width <= TextureParser.maxPlausibleDimension, height <= TextureParser.maxPlausibleDimension else {
+            throw TextureParseError.implausibleDimensions(width: width, height: height)
+        }
         _ = max(0, Int(m) - 1) // mip levels: TextureX carries no decoded mip path in the original tool
 
         if textureType != 0 {
