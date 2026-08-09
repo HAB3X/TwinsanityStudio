@@ -1447,8 +1447,25 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                 sourceNode: node
             ))
             expandBounds(worldPosition)
-            for vector in Self.splineControlPoints(for: camera) {
-                expandBounds(SIMD3(vector.x, vector.y, vector.z))
+            // "Interactive Spline & Camera Path Visualizer" (roadmap 6.3):
+            // each real control point gets its own selectable, draggable
+            // marker — not just a static polyline. Session-only: there's
+            // no `sourceNode` (a control point is one `Pos` inside the
+            // camera's own variable-length record, not a record of its
+            // own), and no save path — this build has no encoder for a
+            // `Camera` record's full variable-length body yet (only the
+            // fixed 60-byte prefix `writeTriggerOrCameraPrefix` patches),
+            // so a dragged control point is a real, live visual/measuring
+            // tool, not yet a persisted edit.
+            for (pointIndex, vector) in Self.splineControlPoints(for: camera).enumerated() {
+                let pointPosition = SIMD3(vector.x, vector.y, vector.z)
+                levelObjects.append(GPULevelObject(
+                    worldPosition: pointPosition,
+                    displayName: "Camera #\(camera.id) control point \(pointIndex)",
+                    submeshes: [],
+                    layer: .cameras
+                ))
+                expandBounds(pointPosition)
             }
         }
 
@@ -1597,6 +1614,15 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                 let size = SIMD3(max(camera.size.x, 0.1), max(camera.size.y, 0.1), max(camera.size.z, 0.1))
                 appendBox(position: position, size: size, rotation: simd_quatf(vector: camera.rotationQuaternion), color: cameraColor)
                 let controlPoints = Self.splineControlPoints(for: camera).map { SIMD3($0.x, $0.y, $0.z) }
+                // "Interactive Spline & Camera Path Visualizer" (roadmap
+                // 6.3): a small marker box at every real control point,
+                // not just the connecting polyline — this is what actually
+                // makes each point visually distinguishable and clickable
+                // (`pickObject` targets `objects`, which now has one entry
+                // per control point too, added alongside this in `upload`).
+                for point in controlPoints {
+                    appendBox(position: point, size: SIMD3(repeating: 0.3), rotation: simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), color: splineColor)
+                }
                 guard controlPoints.count >= 2 else { continue }
                 for i in 0..<(controlPoints.count - 1) {
                     appendVertex(controlPoints[i], splineColor)
