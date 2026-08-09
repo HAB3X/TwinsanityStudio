@@ -329,6 +329,12 @@ public enum RM2Parser {
                 return .aiPath(try AINavigationParser.parseAIPath(&cursor, recordID: recordID))
             case .lodModel:
                 return .lodModel(try LodModelParser.parse(&cursor, recordID: recordID))
+            case .collisionSurface:
+                return .collisionSurface(try CollisionSurfaceParser.parse(&cursor, recordID: recordID))
+            case .skydome:
+                return .skydome(try SkydomeParser.parse(&cursor, recordID: recordID))
+            case .path:
+                return .path(try PathParser.parse(&cursor, recordID: recordID))
             default:
                 return .raw(byteCount: size)
             }

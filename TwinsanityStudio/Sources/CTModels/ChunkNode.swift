@@ -38,6 +38,19 @@ public enum ChunkPayload: Sendable {
     /// same reasoning as `.material` below, not a filterable kind of its
     /// own.
     case gameObject(GameObjectInfo)
+    /// A `CollisionSurface` record — see `CollisionSurfaceInfo`'s doc
+    /// comment. Plumbing cross-referenced *by value* from a `ColData`
+    /// triangle's `surfaceID`, not something browsed directly, same
+    /// reasoning as `.material`/`.gameObject` above.
+    case collisionSurface(CollisionSurfaceInfo)
+    /// A `Skydome` record — see `SkydomeInfo`'s doc comment. Typically a
+    /// singleton per file (the level's sky mesh reference), not a
+    /// filterable collection.
+    case skydome(SkydomeInfo)
+    /// A `Path` record — see `PathAsset`'s doc comment: a real position
+    /// list plus per-point float params, distinct from both `Position`
+    /// (one point) and `AIPosition`/`AIPath` (AI waypoints specifically).
+    case path(PathAsset)
     /// Understood record kind, but not (yet) decoded into a typed model —
     /// still browsable/exportable as a hex/raw blob.
     case raw(byteCount: Int)
@@ -61,6 +74,7 @@ public enum ChunkPayload: Sendable {
         case chunkLinks = "Chunk Links"
         case aiWaypoint = "AI Waypoints"
         case scenery = "Scenery"
+        case path = "Paths"
         public var id: String { rawValue }
     }
 
@@ -78,7 +92,8 @@ public enum ChunkPayload: Sendable {
         case .chunkLinks: return .chunkLinks
         case .aiPosition, .aiPath: return .aiWaypoint
         case .scenery, .dynamicScenery: return .scenery
-        case .material, .position, .gameObject, .lodModel, .raw: return nil
+        case .path: return .path
+        case .material, .position, .gameObject, .lodModel, .collisionSurface, .skydome, .raw: return nil
         }
     }
 }

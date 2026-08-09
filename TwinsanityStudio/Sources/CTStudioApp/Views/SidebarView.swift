@@ -336,6 +336,9 @@ private struct SidebarRow: View {
         case .aiPosition: return "figure.walk.motion"
         case .aiPath: return "point.topleft.down.curvedto.point.bottomright.up"
         case .lodModel: return "square.stack.3d.up"
+        case .collisionSurface: return "waveform.path"
+        case .skydome: return "cloud.fill"
+        case .path: return "point.topleft.down.curvedto.point.bottomright.up"
         case .raw, .none: return node.children.isEmpty ? "doc" : "folder"
         }
     }
@@ -360,6 +363,9 @@ private struct SidebarRow: View {
         case .chunkLinks: return .brown
         case .aiPosition, .aiPath: return .mint
         case .lodModel: return .teal
+        case .collisionSurface: return .cyan
+        case .skydome: return .blue
+        case .path: return .mint
         case .raw, .none: return .secondary
         }
     }
@@ -377,8 +383,8 @@ extension ChunkNode {
     /// undecoded Object/Script/Trigger/Position records to find it.
     private var displaySortRank: Int {
         switch payload {
-        case .texture, .mesh, .rigidModel, .skeleton, .animation, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .chunkLinks, .aiPosition, .aiPath: return 0
-        case .material, .position, .gameObject, .lodModel: return 1
+        case .texture, .mesh, .rigidModel, .skeleton, .animation, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .chunkLinks, .aiPosition, .aiPath, .path: return 0
+        case .material, .position, .gameObject, .lodModel, .collisionSurface, .skydome: return 1
         case .none: return children.isEmpty ? 3 : 2
         case .raw: return 3
         }
