@@ -51,6 +51,28 @@ final class ChunkHeaderTests: XCTestCase {
         }
     }
 
+    /// A corrupt/malicious file could declare a huge record count with no
+    /// actual index table behind it. Before this guard, `readHeader` would
+    /// call `reserveCapacity` for that declared count *before* validating a
+    /// single entry against the buffer — for a count near `Int32.max` that's
+    /// an attempt to allocate gigabytes, which can crash/hang the process
+    /// well before the per-entry bounds check ever gets a chance to throw a
+    /// normal, catchable error (this reader's whole stated point, per its
+    /// own doc comment, is never doing that on corrupt input).
+    func testHugeDeclaredCountOnATinyBufferThrowsInsteadOfOverAllocating() {
+        var writer = BinaryWriter()
+        writer.writeUInt32(TwinsMagic.v1)
+        writer.writeInt32(Int32.max) // declared 2+ billion entries...
+        writer.writeUInt32(0)
+        // ...but the buffer actually has zero bytes of index table behind it.
+        var cursor = BinaryCursor(data: writer.data)
+        XCTAssertThrowsError(try ChunkHeaderReader.readHeader(from: &cursor)) { error in
+            guard case TwinsChunkError.truncatedIndex = error else {
+                return XCTFail("expected truncatedIndex, got \(error)")
+            }
+        }
+    }
+
     func testNestedOffsetsAreRelativeToIndexStart() throws {
         // Simulate a nested section embedded 50 bytes into a larger buffer.
         var writer = BinaryWriter()

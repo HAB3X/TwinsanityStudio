@@ -36,6 +36,16 @@ public enum ChunkHeaderReader {
         guard count >= 0 else {
             throw TwinsChunkError.truncatedIndex(expectedCount: 0)
         }
+        // A corrupt/truncated file could declare a huge count (up to
+        // Int32.max) — reserving capacity for that many entries up front,
+        // before a single one is actually validated against the buffer,
+        // would try to allocate gigabytes and could crash/hang well before
+        // the per-entry bounds check below ever gets a chance to throw a
+        // catchable error. 12 bytes/entry, so bail out now if the buffer
+        // plainly can't hold `count` of them.
+        guard Int(count) <= cursor.remaining / 12 else {
+            throw TwinsChunkError.truncatedIndex(expectedCount: Int(count))
+        }
         var entries: [ChunkIndexEntry] = []
         entries.reserveCapacity(Int(count))
         for _ in 0..<count {
