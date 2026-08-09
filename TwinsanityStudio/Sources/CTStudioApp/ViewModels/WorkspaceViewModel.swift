@@ -512,7 +512,7 @@ public final class WorkspaceViewModel: ObservableObject {
                     group.addTask {
                         do {
                             let data = try Data(contentsOf: file.url, options: .mappedIfSafe)
-                            let node = try RM2Parser.parse(data: data, fileKind: Self.fileKind(for: file), fileName: file.url.lastPathComponent)
+                            let node = try Self.mainTreeDriver(forExtension: file.url.pathExtension).parseChunkFile(data: data, fileKind: Self.fileKind(for: file), fileName: file.url.lastPathComponent)
                             let label = file.url.lastPathComponent
                             return LooseLevelFileResult(
                                 file: file, node: node, data: data,
@@ -610,7 +610,7 @@ public final class WorkspaceViewModel: ObservableObject {
         do {
             switch file.kind {
             case .archiveIndex:
-                let index = try BDArchiveParser.readIndex(bhURL: file.url)
+                let index = try Self.mainTreeDriver(forExtension: file.url.pathExtension).parseArchiveIndex(bhURL: file.url)
                 let node = ChunkNode(
                     recordID: 0, sectionType: .null,
                     displayName: "\(file.url.lastPathComponent)  (\(index.entries.count) files)",
@@ -651,7 +651,7 @@ public final class WorkspaceViewModel: ObservableObject {
                 // the on-disk file is never touched by editing this in-memory
                 // copy.
                 let data = try Data(contentsOf: file.url, options: .mappedIfSafe)
-                let node = try RM2Parser.parse(data: data, fileKind: Self.fileKind(for: file), fileName: file.url.lastPathComponent)
+                let node = try Self.mainTreeDriver(forExtension: file.url.pathExtension).parseChunkFile(data: data, fileKind: Self.fileKind(for: file), fileName: file.url.lastPathComponent)
                 rawFileBytesByRootID[node.id] = data
                 rootNodes.append(node)
                 statusMessage = "Loaded \(file.url.lastPathComponent) — \(node.children.count) top-level chunks."
@@ -688,6 +688,21 @@ public final class WorkspaceViewModel: ObservableObject {
         case (.sceneryResource, _): return .sm2
         default: return .rm2
         }
+    }
+
+    /// "Modular Driver Dispatch" (roadmap 5.3): the one real place chunk-
+    /// file/archive parsing dispatches through `EngineDriver` instead of
+    /// calling `RM2Parser`/`BDArchiveParser` directly — every call site
+    /// below routes through this, so a real second `.mainWorkspaceTree`
+    /// driver (should one ever exist) only needs its own `EngineDriver`
+    /// conformance, not changes at every parse call site. Falls back to
+    /// `TwinsanityEngineDriver` directly only as a defensive default —
+    /// every extension this is ever called with (RM2/SM2/RMX/SMX/BH) is
+    /// already hardcoded into that driver's own `recognizedExtensions`,
+    /// so the fallback is unreachable in practice, not a silent behavior
+    /// change from before this refactor.
+    private nonisolated static func mainTreeDriver(forExtension ext: String) -> any EngineDriver {
+        EngineDriverRegistry.driver(forExtension: ext) ?? TwinsanityEngineDriver()
     }
 
     // MARK: - Drilling into archived RM2/SM2 files
@@ -767,7 +782,7 @@ public final class WorkspaceViewModel: ObservableObject {
                 let parsed = await withTaskGroup(of: ParsedEntryResult?.self) { group in
                     for pending in pendingEntries {
                         group.addTask {
-                            guard let node = try? RM2Parser.parse(data: pending.data, fileKind: pending.kind, fileName: pending.name) else { return nil }
+                            guard let node = try? Self.mainTreeDriver(forExtension: (pending.name as NSString).pathExtension).parseChunkFile(data: pending.data, fileKind: pending.kind, fileName: pending.name) else { return nil }
                             let models = Self.resolveModels(inFileRoot: node, sourceLabel: pending.name)
                             let entryOrphans = AssetResolver.scanForOrphans(fileRoot: node, sourceLabel: pending.name)
                             let entryTextures = Self.collectTextures(inFileRoot: node, sourceLabel: pending.name)
@@ -1115,7 +1130,7 @@ public final class WorkspaceViewModel: ObservableObject {
         defer { isLoading = false }
         do {
             let data = try BDArchiveParser.readEntryData(entry, index: index)
-            let parsed = try RM2Parser.parse(data: data, fileKind: kind, fileName: entry.name)
+            let parsed = try Self.mainTreeDriver(forExtension: (entry.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: kind, fileName: entry.name)
             let replacement = ChunkNode(
                 recordID: node.recordID,
                 sectionType: parsed.sectionType,
@@ -1634,7 +1649,7 @@ public final class WorkspaceViewModel: ObservableObject {
 
         let built = await Task.detached(priority: .userInitiated) { () -> GraphicsAssetIndex? in
             guard let data = try? BDArchiveParser.readEntryData(match.1, index: match.0),
-                  let fileRoot = try? RM2Parser.parse(data: data, fileKind: .rm2, fileName: match.1.name)
+                  let fileRoot = try? Self.mainTreeDriver(forExtension: (match.1.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: .rm2, fileName: match.1.name)
             else { return nil }
             return AssetResolver.buildIndex(fileRoot: fileRoot)
         }.value
@@ -1672,7 +1687,7 @@ public final class WorkspaceViewModel: ObservableObject {
 
         return await Task.detached(priority: .userInitiated) { () -> (String, [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)])? in
             guard let data = try? BDArchiveParser.readEntryData(match.1, index: match.0),
-                  let fileRoot = try? RM2Parser.parse(data: data, fileKind: .sm2, fileName: match.1.name)
+                  let fileRoot = try? Self.mainTreeDriver(forExtension: (match.1.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: .sm2, fileName: match.1.name)
             else { return nil }
 
             var scenery: SceneryAsset?
