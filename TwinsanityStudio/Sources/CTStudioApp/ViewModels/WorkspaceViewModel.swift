@@ -153,23 +153,28 @@ public final class WorkspaceViewModel: ObservableObject {
 
     // MARK: - Disc Image Mounting (roadmap 1.4/Task 7 — ISO-9660 / BIN-CUE)
 
-    /// A real mounted `.iso`/`.bin`+`.cue` — the parsed root directory plus
-    /// the `LogicalSectorSource` it was read from, kept around so
-    /// individual files can be extracted on demand (`openMountedEntry`)
-    /// without re-reading the volume descriptor/directory tree each time.
-    public struct MountedDiscImage {
-        public let displayName: String
-        public let root: ISO9660Entry
-        public let source: any LogicalSectorSource
-    }
+    /// Extension this build recognizes well enough to be worth offering an
+    /// "extract and open" action for — the same real chunk/archive/sound-
+    /// bank/cross-engine extensions the regular Open panel accepts.
+    static let recognizedDiscFileExtensions: Set<String> = ["RM2", "SM2", "RMX", "SMX", "BH", "BD", "MH", "MB", "CRT", "WMP"]
 
-    /// Non-nil presents the Disc Image Browser sheet (see `ContentView`).
-    @Published public var mountedDiscImage: MountedDiscImage?
+    /// Real `ISO9660Entry` + the `LogicalSectorSource` to extract it from,
+    /// keyed by the synthetic `ChunkNode.id` mirroring it in `rootNodes` —
+    /// lets `select(_:)` extract and open a disc-mounted file's real bytes
+    /// on click, the same one-click affordance an archive entry already
+    /// has, without `ChunkNode`/`ISO9660Entry` needing to know about each
+    /// other. Only real file leaves are registered (never directories —
+    /// nothing to extract for those, they're just tree structure).
+    private var discEntryByNodeID: [UUID: (entry: ISO9660Entry, source: any LogicalSectorSource)] = [:]
 
-    /// "Native ISO & BIN/CUE Disc Image Mounting": mounts a real `.iso`, or
-    /// a `.bin`/`.cue` pair, and reads its real ISO-9660 root directory —
-    /// a completely separate document type from the `.BD`/`.RM2` workspace
-    /// tree, same as `openMemoryCard`. `.mappedIfSafe` so mounting a
+    /// "Native ISO & BIN/CUE Disc Image Mounting" (roadmap 1.4/Task 7),
+    /// merged directly into the main sidebar tree — not a separate modal
+    /// browser. Mounts a real `.iso`, or a `.bin`/`.cue` pair, reads its
+    /// real ISO-9660 root directory, and adds it to `rootNodes` as a real
+    /// top-level entry the user can browse, filter, and search exactly
+    /// like any other opened archive — clicking a recognized file extracts
+    /// and opens it through the same real `open(url:)` pipeline a file
+    /// picked from a regular folder uses. `.mappedIfSafe` so mounting a
     /// multi-gigabyte disc image doesn't materialize the whole thing in
     /// RAM up front — only the sectors `ISO9660Reader` actually touches
     /// (the volume descriptor, directory extents, and whichever file gets
@@ -199,8 +204,10 @@ public final class WorkspaceViewModel: ObservableObject {
                 return
             }
             let root = try ISO9660Reader.readRootDirectory(from: source)
-            mountedDiscImage = MountedDiscImage(displayName: url.lastPathComponent, root: root, source: source)
-            statusMessage = "Mounted \(url.lastPathComponent)."
+            let node = Self.buildDiscNode(from: root, isRoot: true)
+            registerDiscEntries(root, node: node, source: source)
+            rootNodes.append(node)
+            statusMessage = "Mounted \(url.lastPathComponent) — \(discEntryByNodeID.count) recognized file(s) available to open."
         } catch let error as CueSheetParser.ParseError {
             lastError = "Couldn't read \(url.lastPathComponent)'s cue sheet: \(error)"
         } catch is ISO9660Error {
@@ -210,13 +217,47 @@ public final class WorkspaceViewModel: ObservableObject {
         }
     }
 
-    /// Extracts `entry`'s real bytes from the currently mounted disc image,
-    /// writes them to a temp file, and hands off to the *existing*
-    /// `open(url:)` — reusing the one real, already-tested ingestion path
-    /// rather than a second parallel one for disc-mounted files.
-    public func openMountedEntry(_ entry: ISO9660Entry) {
-        guard let mountedDiscImage, !entry.isDirectory else { return }
-        guard let data = ISO9660Reader.readFile(entry, from: mountedDiscImage.source) else {
+    /// Mirrors one `ISO9660Entry` (and, recursively, its children) into a
+    /// real `ChunkNode` so the sidebar's existing `OutlineGroup`/filter/
+    /// search machinery — all built around `ChunkNode` — renders it with
+    /// zero special-casing. `sectionType` stays `.null` (same as an
+    /// unexpanded archive-index entry): a disc entry isn't chunk-headered
+    /// data itself, just a directory listing.
+    private nonisolated static func buildDiscNode(from entry: ISO9660Entry, isRoot: Bool) -> ChunkNode {
+        let node = ChunkNode(
+            recordID: 0,
+            sectionType: .null,
+            displayName: isRoot ? "\(entry.name.isEmpty ? "Disc" : entry.name)" : entry.name,
+            byteSize: Int(entry.size),
+            fileOffset: Int(entry.lba)
+        )
+        node.children = entry.children
+            .sorted { $0.name < $1.name }
+            .map { buildDiscNode(from: $0, isRoot: false) }
+        return node
+    }
+
+    /// Populates `discEntryByNodeID` for every real (non-directory) entry
+    /// in this mounted disc's mirrored tree — walked separately from
+    /// `buildDiscNode` since that one's `nonisolated static` (safe to call
+    /// off the main actor if ever needed) while this mutates `@MainActor`
+    /// state.
+    private func registerDiscEntries(_ entry: ISO9660Entry, node: ChunkNode, source: any LogicalSectorSource) {
+        if !entry.isDirectory {
+            discEntryByNodeID[node.id] = (entry, source)
+        }
+        let sortedChildren = entry.children.sorted { $0.name < $1.name }
+        for (childEntry, childNode) in zip(sortedChildren, node.children) {
+            registerDiscEntries(childEntry, node: childNode, source: source)
+        }
+    }
+
+    /// Extracts `entry`'s real bytes from `source`, writes them to a temp
+    /// file, and hands off to the *existing* `open(url:)` — reusing the
+    /// one real, already-tested ingestion path rather than a second
+    /// parallel one for disc-mounted files.
+    private func openDiscEntry(_ entry: ISO9660Entry, source: any LogicalSectorSource) {
+        guard let data = ISO9660Reader.readFile(entry, from: source) else {
             lastError = "Couldn't read \(entry.name)'s real bytes from the mounted image."
             return
         }
@@ -224,12 +265,12 @@ public final class WorkspaceViewModel: ObservableObject {
         do {
             try FileManager.default.createDirectory(at: tempURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.write(to: tempURL)
-            self.mountedDiscImage = nil
             open(url: tempURL)
         } catch {
             lastError = "Couldn't extract \(entry.name) from the mounted image: \(error)"
         }
     }
+
     /// Non-nil presents the Model Viewer sheet (see `ContentView`).
     @Published public var modelViewerAsset: ResolvedModelAsset?
     /// Non-nil presents the Collision Viewer sheet (see `ContentView`).
@@ -1098,7 +1139,21 @@ public final class WorkspaceViewModel: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.selectedNode = node
-            guard let node, self.isExpandableArchiveEntry(node) else { return }
+            guard let node else { return }
+
+            // A disc-mounted file leaf (see `mountDiscImage`) — extract and
+            // open it the same one-click way an archive entry expands,
+            // rather than requiring a second explicit action. Checked
+            // before the archive-expand path since a disc leaf can
+            // structurally satisfy `isExpandableArchiveEntry` too (empty
+            // children, nil payload, a recognized extension) without
+            // actually being one.
+            if let (entry, source) = self.discEntryByNodeID[node.id] {
+                self.openDiscEntry(entry, source: source)
+                return
+            }
+
+            guard self.isExpandableArchiveEntry(node) else { return }
             guard let rootID = self.owningArchiveRootID(of: node) else { return }
             Task { [weak self] in
                 guard let self else { return }

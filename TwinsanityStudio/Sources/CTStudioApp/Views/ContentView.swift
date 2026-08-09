@@ -242,15 +242,6 @@ struct ContentView: View {
                     .environmentObject(workspace)
             }
         }
-        .sheet(isPresented: Binding(
-            get: { workspace.mountedDiscImage != nil },
-            set: { if !$0 { workspace.mountedDiscImage = nil } }
-        )) {
-            if let mounted = workspace.mountedDiscImage {
-                DiscImageBrowserView(mounted: mounted)
-                    .environmentObject(workspace)
-            }
-        }
         .onDrop(of: [.fileURL], isTargeted: $isTargetedForDrop) { providers in
             handleDrop(providers: providers)
         }

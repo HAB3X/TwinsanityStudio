@@ -115,25 +115,15 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
         let realLink = try XCTUnwrap(link, "nitrocav.sm2 should have at least one real ChunkLink")
 
         let rootCountBefore = workspace.rootNodes.count
-        let firstLoadExpectation = expectation(description: "openChunkLink completes")
-        Task {
-            let succeeded = await workspace.openChunkLink(realLink)
-            XCTAssertTrue(succeeded, "openChunkLink should resolve a real link against the already-open archive; lastError=\(workspace.lastError ?? "nil")")
-            firstLoadExpectation.fulfill()
-        }
-        wait(for: [firstLoadExpectation], timeout: 60)
+        let succeeded = await workspace.openChunkLink(realLink)
+        XCTAssertTrue(succeeded, "openChunkLink should resolve a real link against the already-open archive; lastError=\(workspace.lastError ?? "nil")")
 
         XCTAssertEqual(workspace.rootNodes.count, rootCountBefore + 1, "the linked chunk should be added as a new top-level sidebar entry")
         XCTAssertNotNil(workspace.selectedNode, "the newly opened chunk should be selected so the user sees it immediately")
 
         // Calling it again for the same link must not create a duplicate —
         // it should just re-select the already-open entry.
-        let secondExpectation = expectation(description: "openChunkLink is idempotent")
-        Task {
-            _ = await workspace.openChunkLink(realLink)
-            secondExpectation.fulfill()
-        }
-        wait(for: [secondExpectation], timeout: 60)
+        _ = await workspace.openChunkLink(realLink)
         XCTAssertEqual(workspace.rootNodes.count, rootCountBefore + 1, "opening the same chunk link twice should select the existing entry, not duplicate it")
     }
 
