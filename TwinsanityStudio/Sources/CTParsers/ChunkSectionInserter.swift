@@ -75,6 +75,55 @@ public enum ChunkSectionInserter {
         return rebuiltBytes
     }
 
+    /// Generalizes `insertingRecords(_:into:fileRoot:originalFileBytes:)` to
+    /// several *different* target sections in one pass — "AI Pathfinding &
+    /// Navmesh Editor" (roadmap 5.1) needed this alongside "Backend
+    /// Requirement: safely inject this new record" (Part 4D) once a single
+    /// save could add both a new `Instance` and a new `AIPosition` in one
+    /// go, and those two collections are siblings under the same
+    /// `.instance` container: calling the single-target version twice in a
+    /// row — each rebuilding its own ancestor chain from the *original*
+    /// tree's offsets against a byte buffer the *other* call had already
+    /// grown — desyncs the moment either insertion changes any shared
+    /// ancestor's size. This does one single top-down rebuild instead:
+    /// every directly-targeted section gets its own new bytes; every
+    /// ancestor of any targeted section is rebuilt from its *real*
+    /// children, substituting only whichever of those children actually
+    /// changed; everything else is copied verbatim from the original
+    /// file — so no node's offset is ever read against bytes it wasn't
+    /// computed from.
+    public static func insertingRecords(
+        intoSections targets: [(section: ChunkNode, records: [(id: UInt32, encoded: Data)])],
+        fileRoot: ChunkNode,
+        originalFileBytes: Data
+    ) -> Data? {
+        let nonEmptyTargets = targets.filter { !$0.records.isEmpty }
+        guard !nonEmptyTargets.isEmpty else { return originalFileBytes }
+
+        var rebuiltBytesByNodeID: [ObjectIdentifier: Data] = [:]
+        for target in nonEmptyTargets {
+            guard rebuiltBytesByNodeID[ObjectIdentifier(target.section)] == nil else { continue }
+            guard let bytes = appendingRecords(target.records, to: target.section, originalFileBytes: originalFileBytes) else { return nil }
+            rebuiltBytesByNodeID[ObjectIdentifier(target.section)] = bytes
+        }
+
+        func rebuild(_ node: ChunkNode) -> Data? {
+            if let direct = rebuiltBytesByNodeID[ObjectIdentifier(node)] { return direct }
+            guard !node.children.isEmpty else { return nil }
+            var childResults: [Data?] = []
+            var anyChanged = false
+            for child in node.children {
+                let result = rebuild(child)
+                if result != nil { anyChanged = true }
+                childResults.append(result)
+            }
+            guard anyChanged else { return nil }
+            return replacingChildren(node, newChildBytes: childResults, originalFileBytes: originalFileBytes)
+        }
+
+        return rebuild(fileRoot)
+    }
+
     /// The node-identity path from `root` down to `target`, root first,
     /// `target` last — `ChunkNode` is a reference type, so `===` identity
     /// is exact, no risk of matching an equal-looking sibling instead.
@@ -144,30 +193,43 @@ public enum ChunkSectionInserter {
     /// Rebuilds `ancestor`'s own on-disk span with whichever child matches
     /// `childNode`'s identity replaced by `newChildBytes`; every other
     /// child is copied verbatim from `originalFileBytes` at its own
-    /// already-known `(fileOffset, byteSize)`, and the whole span is
-    /// re-tiled tightly-packed from scratch — matching the reference
-    /// writer's own layout exactly (see this type's top-level doc
-    /// comment), not merely "shifted" from the old one.
+    /// already-known `(fileOffset, byteSize)`. Thin wrapper over
+    /// `replacingChildren` — the general form `insertingRecords(
+    /// intoSections:fileRoot:originalFileBytes:)` needs, since more than
+    /// one of `ancestor`'s children can change at once when two different
+    /// target sections share this same parent.
     private static func replacingChild(_ childNode: ChunkNode, in ancestor: ChunkNode, with newChildBytes: Data, originalFileBytes: Data) -> Data? {
-        guard ancestor.byteSize >= 12,
-              let ancestorBytes = sliceBytes(originalFileBytes, offset: ancestor.fileOffset, size: ancestor.byteSize)
+        let overrides = ancestor.children.map { $0 === childNode ? newChildBytes : nil }
+        return replacingChildren(ancestor, newChildBytes: overrides, originalFileBytes: originalFileBytes)
+    }
+
+    /// Rebuilds `node`'s own on-disk span with `newChildBytes[i]` (when
+    /// non-nil) substituted for the on-disk bytes of `node.children[i]`;
+    /// every `nil` entry is copied verbatim from `originalFileBytes` at
+    /// that child's own already-known `(fileOffset, byteSize)`. The whole
+    /// span is re-tiled tightly-packed from scratch either way — matching
+    /// the reference writer's own layout exactly (see this type's
+    /// top-level doc comment), not merely "shifted" from the old one.
+    private static func replacingChildren(_ node: ChunkNode, newChildBytes: [Data?], originalFileBytes: Data) -> Data? {
+        guard node.byteSize >= 12,
+              let nodeBytes = sliceBytes(originalFileBytes, offset: node.fileOffset, size: node.byteSize)
         else { return nil }
-        var cursor = BinaryCursor(data: ancestorBytes)
+        var cursor = BinaryCursor(data: nodeBytes)
         guard let header = try? ChunkHeaderReader.readHeader(from: &cursor) else { return nil }
         // The decoded tree's children and this section's own index table
         // must correspond 1:1, in order — true by construction for every
         // section kind this build actually calls this on (see the doc
         // comment above), checked rather than assumed so a parser edge
         // case fails this save instead of silently misattributing bytes.
-        guard header.entries.count == ancestor.children.count else { return nil }
+        guard header.entries.count == node.children.count, header.entries.count == newChildBytes.count else { return nil }
 
         var childSlices: [Data] = []
         var childIDs: [UInt32] = []
         for (index, entry) in header.entries.enumerated() {
-            if ancestor.children[index] === childNode {
-                childSlices.append(newChildBytes)
+            if let override = newChildBytes[index] {
+                childSlices.append(override)
             } else {
-                guard let slice = sliceBytes(ancestorBytes, offset: Int(entry.offset), size: Int(entry.size)) else { return nil }
+                guard let slice = sliceBytes(nodeBytes, offset: Int(entry.offset), size: Int(entry.size)) else { return nil }
                 childSlices.append(slice)
             }
             childIDs.append(entry.id)

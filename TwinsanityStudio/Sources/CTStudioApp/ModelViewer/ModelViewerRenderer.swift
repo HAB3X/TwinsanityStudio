@@ -1156,6 +1156,19 @@ private struct GPULevelObject {
     /// stays `nil` for these — there is no on-disk record yet to point at.
     var newInstanceObjectID: UInt16?
     var syntheticInstanceID: UInt32?
+    /// "AI Pathfinding & Navmesh Editor" (roadmap 5.1): non-nil only for a
+    /// waypoint added this session via `spawnAIWaypoint` — the raw
+    /// `AIPosition.Num`/node-type value to encode on save, mirroring
+    /// `newInstanceObjectID`'s role but for a distinct record type/layer
+    /// (`.aiWaypoints`, not `.actors`), so `pendingLevelOverrides`'s
+    /// `.actors`-only guard can't accidentally pick these up.
+    var newAIWaypointRawNodeType: UInt16?
+    var syntheticAIPositionID: UInt32?
+    /// The real, on-disk `AIPosition.Num` value for an *existing* waypoint
+    /// (`sourceNode != nil`) — preserved so a drag-save re-encodes with the
+    /// waypoint's real node type instead of clobbering it with a default.
+    /// `nil` for anything that isn't a real, loaded waypoint.
+    var originalAIWaypointRawNodeType: UInt16?
 }
 
 /// Which transform the gizmo currently edits — the W/E/R hotkeys switch
@@ -1320,6 +1333,12 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// object, one higher than the highest real `Instance.id` seen at
     /// upload time — see `spawnInstance`'s doc comment.
     private var nextSyntheticInstanceID: UInt32 = 1
+    /// Same idea as `nextSyntheticInstanceID`, for waypoints added this
+    /// session via `spawnAIWaypoint` — a separate counter/namespace since
+    /// `AIPosition` and `Instance` record IDs are independent (see
+    /// `ResolvedModelAsset.id`'s own doc comment for the same "these are
+    /// different on-disk ID spaces" reasoning).
+    private var nextSyntheticAIPositionID: UInt32 = 1
 
     init?(
         placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)],
@@ -1338,6 +1357,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         self.defaultAssetIndex = defaultAssetIndex
         super.init()
         nextSyntheticInstanceID = (instanceMarkers.map(\.instance.id).max() ?? 0) + 1
+        nextSyntheticAIPositionID = (aiPositions.map(\.marker.id).max() ?? 0) + 1
         upload(placements: placements, instanceMarkers: instanceMarkers, resolvedInstanceAssets: resolvedInstanceAssets, triggers: triggers, cameras: cameras, chunkLinks: chunkLinks, aiPositions: aiPositions)
     }
 
@@ -1464,7 +1484,9 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                 displayName: "AI Waypoint #\(marker.id) (\(marker.nodeType?.displayName ?? "type \(marker.rawNodeType)"))",
                 submeshes: [],
                 layer: .aiWaypoints,
-                sourceNode: node
+                sourceNode: node,
+                originalPositionW: marker.position.w,
+                originalAIWaypointRawNodeType: marker.rawNodeType
             ))
             expandBounds(worldPosition)
         }
@@ -2013,6 +2035,39 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         return (objectID, objects[index].worldPosition)
     }
 
+    /// "AI Pathfinding & Navmesh Editor" (roadmap 5.1): appends a brand-new
+    /// waypoint marker at `worldPosition` (defaulting to the level's own
+    /// visual center, same "as good a default drop point as any" reasoning
+    /// as `addObject`'s own doc comment) with a synthetic `AIPosition` ID
+    /// (namespaced separately from `spawnInstance`'s — see
+    /// `nextSyntheticAIPositionID`'s doc comment), selects it immediately.
+    /// `rawNodeType` defaults to `0` (`AIPositionMarker.NodeType.ground`)
+    /// — the most common real value, not a guess dressed up as a default;
+    /// still fully editable before saving.
+    @discardableResult
+    func spawnAIWaypoint(at worldPosition: SIMD3<Float>? = nil, rawNodeType: UInt16 = 0) -> Int? {
+        let worldPosition = worldPosition ?? boundsCenter
+        let syntheticID = nextSyntheticAIPositionID
+        nextSyntheticAIPositionID += 1
+        objects.append(GPULevelObject(
+            worldPosition: worldPosition,
+            displayName: "New AI Waypoint #\(syntheticID)",
+            submeshes: [],
+            layer: .aiWaypoints,
+            newAIWaypointRawNodeType: rawNodeType,
+            syntheticAIPositionID: syntheticID
+        ))
+        let newIndex = objects.count - 1
+        select(index: newIndex)
+        return newIndex
+    }
+
+    /// Same role as `newInstanceInfo`, for `spawnAIWaypoint`'s undo path.
+    func newAIWaypointInfo(at index: Int) -> (rawNodeType: UInt16, worldPosition: SIMD3<Float>)? {
+        guard objects.indices.contains(index), let rawNodeType = objects[index].newAIWaypointRawNodeType else { return nil }
+        return (rawNodeType, objects[index].worldPosition)
+    }
+
     /// The undo/redo-reachable counterpart to `spawnInstance` — removes
     /// whatever object currently sits at `index`. Callers (`LevelViewerWindow`'s
     /// undo registration) are responsible for only ever calling this with an
@@ -2036,6 +2091,36 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         objects.compactMap { object in
             guard let objectID = object.newInstanceObjectID, let syntheticID = object.syntheticInstanceID else { return nil }
             return (objectID, syntheticID, object.worldPosition, Self.eulerDegrees(from: object.rotation))
+        }
+    }
+
+    /// "AI Pathfinding & Navmesh Editor" (roadmap 5.1): the current
+    /// position of every *existing, real* AI waypoint marker, re-encoded
+    /// and paired with the `ChunkNode` it patches into — the waypoint
+    /// counterpart to `pendingLevelOverrides`. `.aiWaypoints`-layer only,
+    /// same reasoning as `pendingLevelOverrides`'s own `.actors`-only
+    /// guard: applying an `AIPosition` encode to any other record type
+    /// would corrupt it.
+    var pendingAIWaypointOverrides: [(node: ChunkNode, encoded: Data)] {
+        objects.compactMap { object in
+            guard object.layer == .aiWaypoints, let node = object.sourceNode,
+                  let rawNodeType = object.originalAIWaypointRawNodeType
+            else { return nil }
+            let position = SIMD4(object.worldPosition.x, object.worldPosition.y, object.worldPosition.z, object.originalPositionW)
+            let encoded = WorldPlacementWriter.writeAIPosition(position: position, rawNodeType: rawNodeType)
+            return (node, encoded)
+        }
+    }
+
+    /// Every waypoint placed this session via `spawnAIWaypoint`, ready to
+    /// hand to `WorkspaceViewModel.patchedFileBytes(applyingPrefixPatches:
+    /// insertingNewAIPositions:levelNode:)` — the waypoint counterpart to
+    /// `pendingNewInstances`.
+    var pendingNewAIPositions: [(id: UInt32, encoded: Data)] {
+        objects.compactMap { object in
+            guard let rawNodeType = object.newAIWaypointRawNodeType, let syntheticID = object.syntheticAIPositionID else { return nil }
+            let encoded = WorldPlacementWriter.writeAIPosition(position: SIMD4(object.worldPosition, 1), rawNodeType: rawNodeType)
+            return (syntheticID, encoded)
         }
     }
 

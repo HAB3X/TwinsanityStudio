@@ -41,3 +41,18 @@ final class AINavigationParserTests: XCTestCase {
         XCTAssertEqual(cursor.position, w.data.count)
     }
 }
+
+extension AINavigationParserTests {
+    func testWriteAIPositionRoundTripsThroughParser() throws {
+        let position = SIMD4<Float>(1.5, -2.5, 3.5, 0.75)
+        let encoded = WorldPlacementWriter.writeAIPosition(position: position, rawNodeType: 4)
+        XCTAssertEqual(encoded.count, 18, "AIPosition is fixed-size — 4 floats + uint16")
+
+        var cursor = BinaryCursor(data: encoded)
+        let decoded = try AINavigationParser.parseAIPosition(&cursor, recordID: 99)
+        XCTAssertEqual(decoded.position, position)
+        XCTAssertEqual(decoded.rawNodeType, 4)
+        XCTAssertEqual(decoded.nodeType, .wormPath)
+        XCTAssertEqual(cursor.position, encoded.count)
+    }
+}

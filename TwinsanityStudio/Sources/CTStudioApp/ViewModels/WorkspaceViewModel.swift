@@ -1144,42 +1144,92 @@ public final class WorkspaceViewModel: ObservableObject {
         return walk(fileRoot)
     }
 
-    /// "Backend Requirement: safely inject this new record" (Part 4D) —
-    /// the combined save path "Save Level Overrides…" uses when the Forge
-    /// Palette placed at least one brand-new object this session.
-    /// `transformEdits` (existing Instance transform patches, same as
-    /// `patchedFileBytes(applyingPrefixPatches:)` alone handles) are
-    /// applied first — they never change any record's size, so the
-    /// decoded tree's offsets stay valid against the result — and then
-    /// every new record is appended on top of *that* already-patched
-    /// buffer, so one "Save" produces one file reflecting every edit and
-    /// every placement together, not a save-per-change sequence.
+    /// The `.aiPosition` Tier 2 collection in the same file as `levelNode`
+    /// — "AI Pathfinding & Navmesh Editor" (roadmap 5.1)'s new-waypoint
+    /// insertion target, same role `objectInstanceCollectionNode` plays for
+    /// Instance placements. `nil` when the level's own file has no AI
+    /// waypoints at all yet — this build only appends to an existing
+    /// collection, matching `ChunkSectionInserter`'s own scope (it grows a
+    /// section, it doesn't fabricate a brand-new one from nothing).
+    private func aiPositionCollectionNode(inSameFileAs levelNode: ChunkNode) -> ChunkNode? {
+        guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes) else { return nil }
+        func walk(_ node: ChunkNode) -> ChunkNode? {
+            if node.sectionType == .aiPosition, !node.children.isEmpty { return node }
+            for child in node.children {
+                if let found = walk(child) { return found }
+            }
+            return nil
+        }
+        return walk(fileRoot)
+    }
+
+    /// "Backend Requirement: safely inject this new record" (Part 4D) +
+    /// "AI Pathfinding & Navmesh Editor" (roadmap 5.1) — the combined save
+    /// path "Save Chunk Overrides…" uses. `transformEdits` (a mix of
+    /// Instance transform patches and AI waypoint patches — both are just
+    /// fixed-size `(node, encoded)` prefix patches, so they compose freely
+    /// in one list) are applied first since they never change any record's
+    /// size; then every new Instance is appended into the Instance
+    /// collection, then every new AI waypoint into the AIPosition
+    /// collection — each insertion building on the previous step's
+    /// already-patched bytes, so one "Save" produces one file reflecting
+    /// every edit and every placement together, not a save-per-change
+    /// sequence. Deliberately has no matching "remove a waypoint" path:
+    /// shrinking a section's record count safely is real, separate work
+    /// `ChunkSectionInserter` doesn't do today (only growth), so waypoint
+    /// deletion stays session-only rather than risk a rushed, unverified
+    /// shrink operation.
     public func patchedFileBytes(
         applyingPrefixPatches transformEdits: [(node: ChunkNode, encoded: Data)],
         insertingNewInstances newInstances: [(id: UInt32, encoded: Data)],
+        insertingNewAIPositions newAIPositions: [(id: UInt32, encoded: Data)],
         levelNode: ChunkNode
     ) -> Data? {
         let afterTransformEdits: Data?
         if transformEdits.isEmpty {
             guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes) else {
-                lastError = "Can't save edits here — this level's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+                lastError = "Can't save edits here — this chunk's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
                 return nil
             }
             afterTransformEdits = rawFileBytesByRootID[fileRoot.id]
         } else {
             afterTransformEdits = patchedFileBytes(applyingPrefixPatches: transformEdits)
         }
-        guard let afterTransformEdits else { return nil }
-        guard !newInstances.isEmpty else { return afterTransformEdits }
+        guard let currentBytes = afterTransformEdits else { return nil }
+        guard !newInstances.isEmpty || !newAIPositions.isEmpty else { return currentBytes }
 
-        guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes),
-              let collectionNode = objectInstanceCollectionNode(inSameFileAs: levelNode)
-        else {
-            lastError = "Can't place new objects here — this level's file has no Instance collection this build recognizes."
+        guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes) else {
+            lastError = "Can't save edits here — this chunk's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
             return nil
         }
-        guard let result = ChunkSectionInserter.insertingRecords(newInstances, into: collectionNode, fileRoot: fileRoot, originalFileBytes: afterTransformEdits) else {
-            lastError = "Internal error: couldn't safely insert the new object(s) into the file structure — refusing to save a possibly-corrupt result."
+
+        // Both insertions go through the *one* multi-target rebuild
+        // (`insertingRecords(intoSections:...)`), never two sequential
+        // single-target calls — `.objectInstance` and `.aiPosition` are
+        // siblings under the same `.instance` container in real files, so
+        // calling the single-target version twice would rebuild the
+        // second insertion's ancestor chain from the *original* tree's
+        // offsets against a buffer the first call had already grown,
+        // silently corrupting the result. See that function's own doc
+        // comment.
+        var targets: [(section: ChunkNode, records: [(id: UInt32, encoded: Data)])] = []
+        if !newInstances.isEmpty {
+            guard let collectionNode = objectInstanceCollectionNode(inSameFileAs: levelNode) else {
+                lastError = "Can't place new objects here — this chunk's file has no Instance collection this build recognizes."
+                return nil
+            }
+            targets.append((collectionNode, newInstances))
+        }
+        if !newAIPositions.isEmpty {
+            guard let collectionNode = aiPositionCollectionNode(inSameFileAs: levelNode) else {
+                lastError = "Can't add new AI waypoints here — this chunk's file has no existing AIPosition collection to add into."
+                return nil
+            }
+            targets.append((collectionNode, newAIPositions))
+        }
+
+        guard let result = ChunkSectionInserter.insertingRecords(intoSections: targets, fileRoot: fileRoot, originalFileBytes: currentBytes) else {
+            lastError = "Internal error: couldn't safely insert the new record(s) into the file structure — refusing to save a possibly-corrupt result."
             return nil
         }
         return result

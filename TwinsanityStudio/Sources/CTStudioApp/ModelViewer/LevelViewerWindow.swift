@@ -361,6 +361,11 @@ struct LevelViewerWindow: View {
                     chunkLinksPanel
                 }
 
+                if !context.aiPositions.isEmpty || !context.aiPaths.isEmpty {
+                    Divider()
+                    aiWaypointsPanel
+                }
+
                 if !context.aiPaths.isEmpty {
                     Divider()
                     aiPathsPanel
@@ -683,6 +688,46 @@ struct LevelViewerWindow: View {
             .onSubmit(apply)
     }
 
+    /// "AI Pathfinding/Navmesh Editor" (roadmap 5.1): real write-back for
+    /// waypoints — "Add Waypoint" inserts a brand-new, real `AIPosition`
+    /// record (`ChunkSectionInserter`, the same generic insertion path the
+    /// Forge Palette already trusts for Instance records) and every
+    /// waypoint's current position (dragged or freshly placed) saves via
+    /// "Save Chunk Overrides…" below, since `AIPosition` is fixed-size —
+    /// no separate "remove a waypoint" button: shrinking a section safely
+    /// is real, separate work this build doesn't have yet.
+    private var aiWaypointsPanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("AI Waypoints (\(context.aiPositions.count))").font(.headline)
+            Text("Drag a waypoint with the gizmo like any other object — its new position saves for real via \"Save Chunk Overrides…\" below. \"Add Waypoint\" places a brand-new, real AIPosition record.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Button("Add Waypoint") { addAIWaypoint() }
+        }
+    }
+
+    private func addAIWaypoint() {
+        guard let renderer, let index = renderer.spawnAIWaypoint() else { return }
+        selectedIndex = index
+        refreshTransformFields()
+        guard let undoManager else { return }
+        undoManager.setActionName("Add AI Waypoint")
+        Self.registerAIWaypointPlacementUndo(undoManager: undoManager, renderer: renderer, index: index)
+    }
+
+    /// Same recursive add/remove undo shape as `registerPlacementUndo`, for
+    /// `spawnAIWaypoint` instead of `spawnInstance`.
+    private static func registerAIWaypointPlacementUndo(undoManager: UndoManager, renderer: LevelViewerRenderer, index: Int) {
+        guard let snapshot = renderer.newAIWaypointInfo(at: index) else { return }
+        undoManager.registerUndo(withTarget: renderer) { target in
+            target.removeObject(at: index)
+            undoManager.registerUndo(withTarget: target) { redoTarget in
+                let newIndex = redoTarget.spawnAIWaypoint(at: snapshot.worldPosition, rawNodeType: snapshot.rawNodeType) ?? index
+                registerAIWaypointPlacementUndo(undoManager: undoManager, renderer: redoTarget, index: newIndex)
+            }
+        }
+    }
+
     /// "AI Pathfinding/Navmesh Editor" (roadmap 5.1): the real `AIPath`
     /// records in this file — no position of their own (see
     /// `AIPathRecord`'s doc comment), so a factual list rather than a
@@ -804,9 +849,10 @@ struct LevelViewerWindow: View {
     /// by `ChunkSectionInserter`) in one combined file write.
     private func saveLevelOverrides() {
         guard let renderer, let referenceNode = referenceNodeForFileOps else { return }
-        let edits = renderer.pendingLevelOverrides
+        let edits = renderer.pendingLevelOverrides + renderer.pendingAIWaypointOverrides
         let newInstances = renderer.pendingNewInstances
-        guard !edits.isEmpty || !newInstances.isEmpty else { return }
+        let newAIPositions = renderer.pendingNewAIPositions
+        guard !edits.isEmpty || !newInstances.isEmpty || !newAIPositions.isEmpty else { return }
 
         let encodedNewInstances = newInstances.map { entry in
             (id: entry.syntheticID, encoded: WorldPlacementWriter.writeNewInstance(
@@ -815,18 +861,24 @@ struct LevelViewerWindow: View {
                 rotationDegrees: entry.rotationDegrees
             ))
         }
-        guard let patchedBytes = workspace.patchedFileBytes(applyingPrefixPatches: edits, insertingNewInstances: encodedNewInstances, levelNode: referenceNode) else { return }
+        guard let patchedBytes = workspace.patchedFileBytes(
+            applyingPrefixPatches: edits,
+            insertingNewInstances: encodedNewInstances,
+            insertingNewAIPositions: newAIPositions,
+            levelNode: referenceNode
+        ) else { return }
 
         guard let url = ExportPanel.chooseSaveLocation(
-            suggestedName: "\(workspace.originalFileName(for: referenceNode) ?? "level")_edited.rm2",
-            message: "Save the edited copy of this file, with every Instance object's current position/rotation applied and every newly placed object added. The original file on disk is not modified."
+            suggestedName: "\(workspace.originalFileName(for: referenceNode) ?? "chunk")_edited.rm2",
+            message: "Save the edited copy of this file, with every Instance/AI Waypoint's current position applied and every newly placed object/waypoint added. The original file on disk is not modified."
         ) else { return }
         do {
             try patchedBytes.write(to: url)
             var summary = "Saved edited copy to \(url.lastPathComponent)"
             var parts: [String] = []
-            if !edits.isEmpty { parts.append("\(edits.count) instance override(s)") }
+            if !edits.isEmpty { parts.append("\(edits.count) transform override(s)") }
             if !newInstances.isEmpty { parts.append("\(newInstances.count) newly placed object(s)") }
+            if !newAIPositions.isEmpty { parts.append("\(newAIPositions.count) newly placed waypoint(s)") }
             summary += " with " + parts.joined(separator: " and ") + ". The original file was not modified."
             workspace.statusMessage = summary
         } catch {

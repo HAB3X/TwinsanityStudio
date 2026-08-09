@@ -126,6 +126,65 @@ final class ChunkSectionInserterTests: XCTestCase {
         XCTAssertEqual(b.objectID, 20)
     }
 
+    /// "AI Pathfinding & Navmesh Editor" (roadmap 5.1) regression: two
+    /// *different*, sibling sections (`.aiPosition` and `.objectInstance`,
+    /// both under the same `.instance` container — exactly how real files
+    /// lay these out) each growing in the same save. Calling the
+    /// single-target `insertingRecords(_:into:...)` twice in a row here
+    /// silently corrupted the result (verified while building this): the
+    /// second call rebuilt its ancestor chain from the *original* tree's
+    /// offsets against a buffer the first call had already grown.
+    /// `insertingRecords(intoSections:...)` does one combined rebuild
+    /// instead — this pins that both insertions, and the untouched
+    /// sibling record in each collection, all survive correctly.
+    func testInsertingIntoMultipleSiblingSectionsInOnePass() throws {
+        let originalInstance = WorldPlacementWriter.writeNewInstance(objectID: 1, position: SIMD4<Float>(0, 0, 0, 1), rotationDegrees: .zero)
+        let objectInstanceCollection = makeSection(children: [(id: 100, bytes: originalInstance)])
+        let originalWaypoint = WorldPlacementWriter.writeAIPosition(position: SIMD4<Float>(9, 9, 9, 1), rawNodeType: 0)
+        let aiPositionCollection = makeSection(children: [(id: 200, bytes: originalWaypoint)])
+        let instanceContainer = makeSection(children: [(id: 1, bytes: aiPositionCollection), (id: 6, bytes: objectInstanceCollection)])
+        let fileBytes = makeSection(children: [(id: 0, bytes: instanceContainer)])
+
+        let fileRoot = try RM2Parser.parse(data: fileBytes, fileKind: .rm2, fileName: "synthetic3.rm2")
+        let objectInstanceNode = try XCTUnwrap(findFirst(fileRoot, sectionType: .objectInstance))
+        let aiPositionNode = try XCTUnwrap(findFirst(fileRoot, sectionType: .aiPosition))
+
+        let newInstance = WorldPlacementWriter.writeNewInstance(objectID: 77, position: SIMD4<Float>(5, 5, 5, 1), rotationDegrees: .zero)
+        let newWaypoint = WorldPlacementWriter.writeAIPosition(position: SIMD4<Float>(6, 6, 6, 1), rawNodeType: 4)
+        let patched = try XCTUnwrap(ChunkSectionInserter.insertingRecords(
+            intoSections: [
+                (objectInstanceNode, [(id: 999, encoded: newInstance)]),
+                (aiPositionNode, [(id: 888, encoded: newWaypoint)])
+            ],
+            fileRoot: fileRoot, originalFileBytes: fileBytes
+        ))
+
+        let reparsed = try RM2Parser.parse(data: patched, fileKind: .rm2, fileName: "synthetic3.rm2")
+
+        let reparsedInstances = try XCTUnwrap(findFirst(reparsed, sectionType: .objectInstance))
+        XCTAssertEqual(reparsedInstances.children.count, 2)
+        guard case .instance(let originalInst)? = reparsedInstances.children.first(where: { $0.recordID == 100 })?.payload else {
+            return XCTFail("pre-existing instance didn't survive")
+        }
+        XCTAssertEqual(originalInst.objectID, 1)
+        guard case .instance(let insertedInst)? = reparsedInstances.children.first(where: { $0.recordID == 999 })?.payload else {
+            return XCTFail("inserted instance didn't decode")
+        }
+        XCTAssertEqual(insertedInst.objectID, 77)
+
+        let reparsedWaypoints = try XCTUnwrap(findFirst(reparsed, sectionType: .aiPosition))
+        XCTAssertEqual(reparsedWaypoints.children.count, 2)
+        guard case .aiPosition(let originalWP)? = reparsedWaypoints.children.first(where: { $0.recordID == 200 })?.payload else {
+            return XCTFail("pre-existing waypoint didn't survive")
+        }
+        XCTAssertEqual(originalWP.position, SIMD4<Float>(9, 9, 9, 1))
+        guard case .aiPosition(let insertedWP)? = reparsedWaypoints.children.first(where: { $0.recordID == 888 })?.payload else {
+            return XCTFail("inserted waypoint didn't decode")
+        }
+        XCTAssertEqual(insertedWP.position, SIMD4<Float>(6, 6, 6, 1))
+        XCTAssertEqual(insertedWP.rawNodeType, 4)
+    }
+
     func testInsertingIntoUnreachableSectionReturnsNil() {
         let unrelatedRoot = ChunkNode(recordID: 0, sectionType: .null, displayName: "other", byteSize: 0, fileOffset: 0)
         let detachedTarget = ChunkNode(recordID: 1, sectionType: .objectInstance, displayName: "detached", byteSize: 12, fileOffset: 0)

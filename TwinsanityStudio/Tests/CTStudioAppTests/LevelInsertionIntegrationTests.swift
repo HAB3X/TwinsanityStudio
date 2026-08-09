@@ -44,7 +44,15 @@ final class LevelInsertionIntegrationTests: XCTestCase {
     func testSaveLevelOverridesInsertsNewInstanceThroughRealWorkspaceFlow() throws {
         let originalInstance = WorldPlacementWriter.writeNewInstance(objectID: 3, position: SIMD4<Float>(1, 2, 3, 1), rotationDegrees: .zero)
         let objectInstanceCollection = makeSection(children: [(id: 100, bytes: originalInstance)])
-        let instanceContainer = makeSection(children: [(id: 6, bytes: objectInstanceCollection)])
+        // "AI Pathfinding & Navmesh Editor" (roadmap 5.1): a real
+        // AIPosition collection (subID 1) alongside the Instance one
+        // (subID 6), both inside the same `.instance` container — exactly
+        // how a real file lays these out — so this fixture also exercises
+        // `insertingNewAIPositions` through the real workspace flow, not
+        // just `ChunkSectionInserter` in isolation.
+        let originalWaypoint = WorldPlacementWriter.writeAIPosition(position: SIMD4<Float>(9, 9, 9, 1), rawNodeType: 0)
+        let aiPositionCollection = makeSection(children: [(id: 200, bytes: originalWaypoint)])
+        let instanceContainer = makeSection(children: [(id: 1, bytes: aiPositionCollection), (id: 6, bytes: objectInstanceCollection)])
         // `WorkspaceViewModel.findFileRoot` recognizes a file root by its
         // having a direct `.graphics`/`.code`-family child — a real .rm2
         // always has both; this fixture only needs the empty `.code`
@@ -65,9 +73,11 @@ final class LevelInsertionIntegrationTests: XCTestCase {
         XCTAssertTrue(workspace.canSaveEdits(for: instanceLeaf), "a standalone-opened file should report as save-able")
 
         let newRecord = WorldPlacementWriter.writeNewInstance(objectID: 77, position: SIMD4<Float>(5, 5, 5, 1), rotationDegrees: .zero)
+        let newWaypoint = WorldPlacementWriter.writeAIPosition(position: SIMD4<Float>(6, 6, 6, 1), rawNodeType: 4)
         let patched = try XCTUnwrap(workspace.patchedFileBytes(
             applyingPrefixPatches: [],
             insertingNewInstances: [(id: 999, encoded: newRecord)],
+            insertingNewAIPositions: [(id: 888, encoded: newWaypoint)],
             levelNode: instanceLeaf
         ))
 
@@ -85,5 +95,17 @@ final class LevelInsertionIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(inserted.objectID, 77)
         XCTAssertEqual(inserted.position, SIMD4<Float>(5, 5, 5, 1))
+
+        let reparsedWaypoints = try XCTUnwrap(findFirst(reparsed, sectionType: .aiPosition))
+        XCTAssertEqual(reparsedWaypoints.children.count, 2)
+        guard case .aiPosition(let originalWaypointDecoded)? = reparsedWaypoints.children.first(where: { $0.recordID == 200 })?.payload else {
+            return XCTFail("pre-existing AI waypoint didn't survive a save alongside an Instance insertion")
+        }
+        XCTAssertEqual(originalWaypointDecoded.position, SIMD4<Float>(9, 9, 9, 1))
+        guard case .aiPosition(let insertedWaypoint)? = reparsedWaypoints.children.first(where: { $0.recordID == 888 })?.payload else {
+            return XCTFail("newly inserted AI waypoint didn't decode after going through the real WorkspaceViewModel save path")
+        }
+        XCTAssertEqual(insertedWaypoint.position, SIMD4<Float>(6, 6, 6, 1))
+        XCTAssertEqual(insertedWaypoint.rawNodeType, 4)
     }
 }

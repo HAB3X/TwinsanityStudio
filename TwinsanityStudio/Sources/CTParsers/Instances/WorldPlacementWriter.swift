@@ -121,6 +121,25 @@ public enum WorldPlacementWriter {
         return writer.data
     }
 
+    /// Encodes a complete `AIPosition` record — the exact inverse of
+    /// `AINavigationParser.parseAIPosition`. Fixed-size (18 bytes: `Pos`
+    /// then `Num`, matching `AIPosition.cs`'s own `GetSize() => 18`
+    /// exactly), so — like `writePosition` — this can patch straight into
+    /// an existing record's offset with no other offset in the file
+    /// needing to move, and works equally well for encoding a brand-new
+    /// record to insert (`ChunkSectionInserter` doesn't care that this
+    /// record type wasn't its original use case; the section-header/index
+    /// layout it rebuilds is the same for every collection).
+    public static func writeAIPosition(position: SIMD4<Float>, rawNodeType: UInt16) -> Data {
+        var writer = BinaryWriter()
+        writer.writeFloat32(position.x)
+        writer.writeFloat32(position.y)
+        writer.writeFloat32(position.z)
+        writer.writeFloat32(position.w)
+        writer.writeUInt16(rawNodeType)
+        return writer.data
+    }
+
     public static func writeTriggerOrCameraPrefix(header: UInt32, enabledMask: UInt32, someFloat: Float, rotationQuaternion: SIMD4<Float>, position: SIMD4<Float>, size: SIMD4<Float>) -> Data {
         var writer = BinaryWriter()
         writer.writeUInt32(header)
