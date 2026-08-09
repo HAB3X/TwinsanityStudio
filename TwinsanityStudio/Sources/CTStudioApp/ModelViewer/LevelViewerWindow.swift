@@ -1,5 +1,6 @@
 import SwiftUI
 import CTModels
+import CTParsers
 import UniformTypeIdentifiers
 import AVFoundation
 
@@ -283,10 +284,10 @@ struct LevelViewerWindow: View {
                     .font(.caption2)
                     .foregroundStyle(.orange)
 
-                if !context.instanceMarkers.isEmpty {
+                if let referenceNode = referenceNodeForFileOps {
                     Button("Save Level Overrides…") { saveLevelOverrides() }
-                        .disabled(!workspace.canSaveEdits(for: context.instanceMarkers[0].node))
-                    if !workspace.canSaveEdits(for: context.instanceMarkers[0].node) {
+                        .disabled(!workspace.canSaveEdits(for: referenceNode))
+                    if !workspace.canSaveEdits(for: referenceNode) {
                         Text("Editing only saves for a standalone-opened .RM2/.SM2 file — this level's file is archive-packed, which this build doesn't have a write path for yet.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -588,17 +589,50 @@ struct LevelViewerWindow: View {
     /// objects and saving once produces one consistent file. Scenery
     /// placements aren't included — they still have no write path (see this
     /// file's own top-level doc comment).
+    /// A node this level's file-scoped operations (`canSaveEdits`,
+    /// `originalFileName`) can anchor off of — any node in the same file
+    /// works identically for those, since they only use it to find the
+    /// enclosing file root. Prefers an Instance marker (the common case),
+    /// falling back to a Trigger/Camera so "Save Level Overrides…" is
+    /// still reachable for a level with new Forge Palette placements but
+    /// no pre-existing Instance records of its own.
+    private var referenceNodeForFileOps: ChunkNode? {
+        context.instanceMarkers.first?.node ?? context.triggers.first?.node ?? context.cameras.first?.node
+    }
+
+    /// "Backend Requirement: safely inject this new record" (Part 4D) —
+    /// one save now covers both existing-object transform edits
+    /// (`pendingLevelOverrides`, unchanged) and brand-new Forge Palette
+    /// placements (`pendingNewInstances`, encoded here via
+    /// `WorldPlacementWriter.writeNewInstance` and structurally inserted
+    /// by `ChunkSectionInserter`) in one combined file write.
     private func saveLevelOverrides() {
-        guard let renderer, let firstNode = context.instanceMarkers.first?.node else { return }
+        guard let renderer, let referenceNode = referenceNodeForFileOps else { return }
         let edits = renderer.pendingLevelOverrides
-        guard !edits.isEmpty, let patchedBytes = workspace.patchedFileBytes(applyingPrefixPatches: edits) else { return }
+        let newInstances = renderer.pendingNewInstances
+        guard !edits.isEmpty || !newInstances.isEmpty else { return }
+
+        let encodedNewInstances = newInstances.map { entry in
+            (id: entry.syntheticID, encoded: WorldPlacementWriter.writeNewInstance(
+                objectID: entry.objectID,
+                position: SIMD4<Float>(entry.position, 1),
+                rotationDegrees: entry.rotationDegrees
+            ))
+        }
+        guard let patchedBytes = workspace.patchedFileBytes(applyingPrefixPatches: edits, insertingNewInstances: encodedNewInstances, levelNode: referenceNode) else { return }
+
         guard let url = ExportPanel.chooseSaveLocation(
-            suggestedName: "\(workspace.originalFileName(for: firstNode) ?? "level")_edited.rm2",
-            message: "Save the edited copy of this file, with every Instance object's current position/rotation applied. The original file on disk is not modified."
+            suggestedName: "\(workspace.originalFileName(for: referenceNode) ?? "level")_edited.rm2",
+            message: "Save the edited copy of this file, with every Instance object's current position/rotation applied and every newly placed object added. The original file on disk is not modified."
         ) else { return }
         do {
             try patchedBytes.write(to: url)
-            workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent) with \(edits.count) instance override(s). The original file was not modified."
+            var summary = "Saved edited copy to \(url.lastPathComponent)"
+            var parts: [String] = []
+            if !edits.isEmpty { parts.append("\(edits.count) instance override(s)") }
+            if !newInstances.isEmpty { parts.append("\(newInstances.count) newly placed object(s)") }
+            summary += " with " + parts.joined(separator: " and ") + ". The original file was not modified."
+            workspace.statusMessage = summary
         } catch {
             workspace.lastError = "Save failed: \(error)"
         }

@@ -1013,6 +1013,67 @@ public final class WorkspaceViewModel: ObservableObject {
         return bytes
     }
 
+    /// The `.objectInstance` (or, for a Demo file, `.objectInstanceDemo`)
+    /// Tier 2 collection in the same file as `levelNode` — "The Forge
+    /// Palette"'s (Part 4C/4D) new-Instance insertion target. Distinct from
+    /// `instanceRecords(inSameFileAs:)`, which returns the already-decoded
+    /// leaf records themselves; this returns the *collection node* those
+    /// leaves live under, since that's what `ChunkSectionInserter` needs to
+    /// append a new one.
+    private func objectInstanceCollectionNode(inSameFileAs levelNode: ChunkNode) -> ChunkNode? {
+        guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes) else { return nil }
+        let targetTypes: Set<SectionType> = [.objectInstance, .objectInstanceDemo]
+        func walk(_ node: ChunkNode) -> ChunkNode? {
+            if targetTypes.contains(node.sectionType) { return node }
+            for child in node.children {
+                if let found = walk(child) { return found }
+            }
+            return nil
+        }
+        return walk(fileRoot)
+    }
+
+    /// "Backend Requirement: safely inject this new record" (Part 4D) —
+    /// the combined save path "Save Level Overrides…" uses when the Forge
+    /// Palette placed at least one brand-new object this session.
+    /// `transformEdits` (existing Instance transform patches, same as
+    /// `patchedFileBytes(applyingPrefixPatches:)` alone handles) are
+    /// applied first — they never change any record's size, so the
+    /// decoded tree's offsets stay valid against the result — and then
+    /// every new record is appended on top of *that* already-patched
+    /// buffer, so one "Save" produces one file reflecting every edit and
+    /// every placement together, not a save-per-change sequence.
+    public func patchedFileBytes(
+        applyingPrefixPatches transformEdits: [(node: ChunkNode, encoded: Data)],
+        insertingNewInstances newInstances: [(id: UInt32, encoded: Data)],
+        levelNode: ChunkNode
+    ) -> Data? {
+        let afterTransformEdits: Data?
+        if transformEdits.isEmpty {
+            guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes) else {
+                lastError = "Can't save edits here — this level's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+                return nil
+            }
+            afterTransformEdits = rawFileBytesByRootID[fileRoot.id]
+        } else {
+            afterTransformEdits = patchedFileBytes(applyingPrefixPatches: transformEdits)
+        }
+        guard let afterTransformEdits else { return nil }
+        guard !newInstances.isEmpty else { return afterTransformEdits }
+
+        guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes),
+              let collectionNode = objectInstanceCollectionNode(inSameFileAs: levelNode)
+        else {
+            lastError = "Can't place new objects here — this level's file has no Instance collection this build recognizes."
+            return nil
+        }
+        guard let result = ChunkSectionInserter.insertingRecords(newInstances, into: collectionNode, fileRoot: fileRoot, originalFileBytes: afterTransformEdits) else {
+            lastError = "Internal error: couldn't safely insert the new object(s) into the file structure — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        return result
+    }
+
     /// Packages an edited file's patched bytes (see `patchedFileBytes`) into
     /// a real, installable `CrateModLoader` `.crate` — the "Crate Mod
     /// Loader & Multi-Game Packager" export path (blueprint 3.3), built on

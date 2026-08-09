@@ -61,6 +61,66 @@ public enum WorldPlacementWriter {
     /// polymorphic sub-payload), so same reasoning as `writeInstanceTransform`:
     /// this patches only the fixed-size, fixed-offset prefix, never the
     /// record's total size.
+    /// "Backend Requirement: safely inject this new record" (Part 4D) —
+    /// encodes a **complete**, brand-new `Instance` record, not just the
+    /// transform prefix `writeInstanceTransform` patches into an existing
+    /// one. Field order matches `Instance.cs`'s `Save` exactly (verified
+    /// against `WorldPlacementParser.parseInstance`'s matching `Load`
+    /// order); every field this build has no reason to give a specific
+    /// value to uses the *reference class's own default-constructor
+    /// values* (`SomeNum1/2/3 = 10`, `RefList = -1`, `ScriptID = -1`,
+    /// `Flags = 0x6`, `UnkI321 = []`, `UnkI322 = [1]`, `UnkI323 = [0, 0]`)
+    /// — real defaults a freshly-`new Instance()`'d record in the
+    /// reference tool actually has, not invented placeholder data. No
+    /// child Instance/Position/Path IDs: a newly placed object starts
+    /// with no scripted relationships to anything else in the level. Takes
+    /// no record ID — unlike every field encoded below, the ID lives in
+    /// the *enclosing section's* index-table entry (see
+    /// `ChunkSectionInserter`), not inside the record's own bytes.
+    public static func writeNewInstance(objectID: UInt16, position: SIMD4<Float>, rotationDegrees: SIMD3<Float>) -> Data {
+        var writer = BinaryWriter()
+        writer.writeFloat32(position.x)
+        writer.writeFloat32(position.y)
+        writer.writeFloat32(position.z)
+        writer.writeFloat32(position.w)
+
+        let rotX = PlacedInstance.rawAngle(fromDegrees: rotationDegrees.x)
+        let rotY = PlacedInstance.rawAngle(fromDegrees: rotationDegrees.y)
+        let rotZ = PlacedInstance.rawAngle(fromDegrees: rotationDegrees.z)
+        writer.writeUInt16(rotX)
+        writer.writeUInt16(0) // COMRotX — no COM offset for a fresh placement
+        writer.writeUInt16(rotY)
+        writer.writeUInt16(0) // COMRotY
+        writer.writeUInt16(rotZ)
+        writer.writeUInt16(0) // COMRotZ
+
+        // Three counted ID lists (InstanceIDs/PositionIDs/PathIDs), each
+        // [count, count (written twice, per Instance.cs's own Save), SomeNum, values...] —
+        // empty for a fresh placement, SomeNum defaults to 10 either way.
+        for someNum: Int32 in [10, 10, 10] {
+            writer.writeInt32(0)
+            writer.writeInt32(0)
+            writer.writeInt32(someNum)
+        }
+
+        writer.writeUInt16(objectID)
+        writer.writeInt16(-1) // RefList
+        writer.writeInt16(-1) // ScriptID — no script attached
+        // PHeader: (byte)UnkI321.Count | (UnkI322.Count << 8) | (UnkI323.Count << 16)
+        // = 0 | (1 << 8) | (2 << 16), matching the UnkI322/UnkI323 defaults below.
+        writer.writeUInt32(0x0002_0100)
+        writer.writeUInt32(0x6) // Flags — reference default
+
+        writer.writeInt32(0) // UnkI321.Count — empty
+        writer.writeInt32(1) // UnkI322.Count
+        writer.writeFloat32(1) // UnkI322[0] — reference default
+        writer.writeInt32(2) // UnkI323.Count
+        writer.writeUInt32(0) // UnkI323[0]
+        writer.writeUInt32(0) // UnkI323[1]
+
+        return writer.data
+    }
+
     public static func writeTriggerOrCameraPrefix(header: UInt32, enabledMask: UInt32, someFloat: Float, rotationQuaternion: SIMD4<Float>, position: SIMD4<Float>, size: SIMD4<Float>) -> Data {
         var writer = BinaryWriter()
         writer.writeUInt32(header)
