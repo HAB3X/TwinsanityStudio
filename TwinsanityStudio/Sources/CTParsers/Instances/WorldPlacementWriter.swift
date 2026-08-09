@@ -48,4 +48,36 @@ public enum WorldPlacementWriter {
         writer.writeUInt16(comRotationRaw.z)
         return writer.data
     }
+
+    /// Encodes the leading 60-byte prefix `Trigger` and `Camera` records
+    /// share byte-for-byte — `header`/`enabledMask`/`someFloat`/
+    /// `rotationQuaternion`/`position`/`size`, in that order — the exact
+    /// inverse of the first six reads in `WorldPlacementParser.parseTrigger`
+    /// (and, separately, `parseCamera`, whose first six reads are
+    /// identical; see `PlacedCamera`'s own doc comment: "same Header/
+    /// Enabled/Coords/Instances shape as Trigger"). Both records go
+    /// variable-length immediately after this (a counted `instanceIDs`
+    /// list, then — for `Camera` only — many more fields and an optional
+    /// polymorphic sub-payload), so same reasoning as `writeInstanceTransform`:
+    /// this patches only the fixed-size, fixed-offset prefix, never the
+    /// record's total size.
+    public static func writeTriggerOrCameraPrefix(header: UInt32, enabledMask: UInt32, someFloat: Float, rotationQuaternion: SIMD4<Float>, position: SIMD4<Float>, size: SIMD4<Float>) -> Data {
+        var writer = BinaryWriter()
+        writer.writeUInt32(header)
+        writer.writeUInt32(enabledMask)
+        writer.writeFloat32(someFloat)
+        writer.writeFloat32(rotationQuaternion.x)
+        writer.writeFloat32(rotationQuaternion.y)
+        writer.writeFloat32(rotationQuaternion.z)
+        writer.writeFloat32(rotationQuaternion.w)
+        writer.writeFloat32(position.x)
+        writer.writeFloat32(position.y)
+        writer.writeFloat32(position.z)
+        writer.writeFloat32(position.w)
+        writer.writeFloat32(size.x)
+        writer.writeFloat32(size.y)
+        writer.writeFloat32(size.z)
+        writer.writeFloat32(size.w)
+        return writer.data
+    }
 }

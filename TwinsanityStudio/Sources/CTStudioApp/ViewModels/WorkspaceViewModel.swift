@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import CTCore
 import CTModels
 import CTParsers
@@ -68,6 +69,15 @@ public final class WorkspaceViewModel: ObservableObject {
     /// `nil` means "every kind" — set to jump straight to e.g. every decoded
     /// `Animation` in the workspace, regardless of which file it's buried in.
     @Published public var typeFilter: ChunkPayload.Kind?
+    /// "Smart File Filtering" (Settings' Developer Mode toggle): when
+    /// `false` (the default), `filteredRootNodes` prunes undecoded/raw
+    /// leaves and any folder that only contains them — see `ChunkNode.
+    /// prunedOfRawContent()`. Persisted so a developer who turns this on
+    /// doesn't have to re-toggle it every launch.
+    @Published public var showRawFiles = false {
+        didSet { UserDefaults.standard.set(showRawFiles, forKey: Self.showRawFilesDefaultsKey) }
+    }
+    private static let showRawFilesDefaultsKey = "TwinsanityStudio.ShowRawFiles"
     @Published public var selectedNode: ChunkNode?
     /// "Real-Time Engine Console" (blueprint 7.5): every non-empty value
     /// this property (and `lastError` below) ever takes is also appended to
@@ -186,7 +196,61 @@ public final class WorkspaceViewModel: ObservableObject {
 
     public init() {
         loadRecentFiles()
+        if UserDefaults.standard.object(forKey: Self.showRawFilesDefaultsKey) != nil {
+            showRawFiles = UserDefaults.standard.bool(forKey: Self.showRawFilesDefaultsKey)
+        }
+        if let rawAccent = UserDefaults.standard.string(forKey: Self.accentColorDefaultsKey), let accent = AccentColorChoice(rawValue: rawAccent) {
+            accentColorChoice = accent
+        }
+        if let path = UserDefaults.standard.string(forKey: Self.masterDirectoryDefaultsKey) {
+            masterDirectoryURL = URL(fileURLWithPath: path)
+        }
     }
+
+    // MARK: - Settings (Preferences window)
+
+    /// "Theme/Appearance": an in-app control tint, applied via `.tint(...)`
+    /// at `ContentView`'s root — this is a real, working native SwiftUI
+    /// mechanism, not a claim about overriding macOS's own system-wide
+    /// accent color (which no sandboxed or unsandboxed app can actually do;
+    /// System Settings owns that).
+    public enum AccentColorChoice: String, CaseIterable, Identifiable {
+        case blue, purple, pink, red, orange, yellow, green, teal, indigo
+        public var id: String { rawValue }
+        public var color: Color {
+            switch self {
+            case .blue: return .blue
+            case .purple: return .purple
+            case .pink: return .pink
+            case .red: return .red
+            case .orange: return .orange
+            case .yellow: return .yellow
+            case .green: return .green
+            case .teal: return .teal
+            case .indigo: return .indigo
+            }
+        }
+        public var displayName: String { rawValue.capitalized }
+    }
+
+    @Published public var accentColorChoice: AccentColorChoice = .blue {
+        didSet { UserDefaults.standard.set(accentColorChoice.rawValue, forKey: Self.accentColorDefaultsKey) }
+    }
+    private static let accentColorDefaultsKey = "TwinsanityStudio.AccentColorChoice"
+
+    /// "Directory Config": the folder Settings' "Choose…" picker points at
+    /// — surfaced in the sidebar's empty state as a real "Open Master
+    /// Directory" action (`SidebarView`), not just stored inertly.
+    @Published public var masterDirectoryURL: URL? {
+        didSet {
+            if let masterDirectoryURL {
+                UserDefaults.standard.set(masterDirectoryURL.path, forKey: Self.masterDirectoryDefaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.masterDirectoryDefaultsKey)
+            }
+        }
+    }
+    private static let masterDirectoryDefaultsKey = "TwinsanityStudio.MasterDirectoryURL"
 
     /// The tree the sidebar actually renders: `rootNodes` narrowed by the
     /// type filter (see `ChunkNode.filtered(byKind:)`) and then by the
@@ -194,6 +258,14 @@ public final class WorkspaceViewModel: ObservableObject {
     /// ancestors of any match so the result stays a navigable tree.
     public var filteredRootNodes: [ChunkNode] {
         var nodes = rootNodes
+        // "Smart File Filtering": applied first, as the baseline view —
+        // undecoded/raw content (and folders that only contain it) is
+        // hidden by default regardless of the type/search filters below,
+        // not just when one happens to be active. Settings' Developer Mode
+        // toggle (`showRawFiles`) brings it back.
+        if !showRawFiles {
+            nodes = nodes.compactMap { $0.prunedOfRawContent() }
+        }
         if let typeFilter {
             nodes = nodes.compactMap { $0.filtered(byKind: typeFilter) }
         }

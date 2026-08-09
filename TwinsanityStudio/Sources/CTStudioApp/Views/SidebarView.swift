@@ -164,6 +164,17 @@ struct SidebarView: View {
                 .buttonStyle(.link)
                 .font(.caption)
             }
+            // "Directory Config" (Settings): the master directory picked
+            // there is a real, working shortcut here, not just stored
+            // inertly — same "offer, don't auto-load" reasoning as Recent
+            // Files above.
+            if let masterDirectory = workspace.masterDirectoryURL {
+                Button("Open Master Directory (\(masterDirectory.lastPathComponent))") {
+                    workspace.open(url: masterDirectory)
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 24)

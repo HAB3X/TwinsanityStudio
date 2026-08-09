@@ -53,14 +53,26 @@ struct CTStudioApp: App {
         Window("Model Viewer", id: GPUViewerWindowID.model) {
             ModelViewerWindowHost()
                 .environmentObject(workspace)
+                .tint(workspace.accentColorChoice.color)
         }
         Window("Collision Viewer", id: GPUViewerWindowID.collision) {
             CollisionViewerWindowHost()
                 .environmentObject(workspace)
+                .tint(workspace.accentColorChoice.color)
         }
         Window("Level Viewer", id: GPUViewerWindowID.level) {
             LevelViewerWindowHost()
                 .environmentObject(workspace)
+                .tint(workspace.accentColorChoice.color)
+        }
+
+        // "New Settings Window": `Settings { }` is SwiftUI's dedicated
+        // macOS Preferences scene — it wires the standard app-menu
+        // "Settings…" item and ⌘, automatically, no manual command needed.
+        Settings {
+            SettingsView()
+                .environmentObject(workspace)
+                .tint(workspace.accentColorChoice.color)
         }
     }
 }

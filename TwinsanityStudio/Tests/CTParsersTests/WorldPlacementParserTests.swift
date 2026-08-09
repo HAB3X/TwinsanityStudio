@@ -143,6 +143,40 @@ final class WorldPlacementParserTests: XCTestCase {
         XCTAssertEqual(cursor.position, w.count)
     }
 
+    /// "Make Trigger/Camera inspectors writable": `writeTriggerOrCameraPrefix`'s
+    /// output, followed by whatever `parseTrigger` expects next (the
+    /// variable-length tail), must parse back out to exactly the edited
+    /// header/enabledMask/someFloat/rotation/position/size — proving the
+    /// prefix writer's field order/widths genuinely match the parser's,
+    /// not just "looks right by inspection."
+    func testTriggerPrefixRoundTripsThroughWriter() throws {
+        let encodedPrefix = WorldPlacementWriter.writeTriggerOrCameraPrefix(
+            header: 42,
+            enabledMask: 0b101,
+            someFloat: 1.25,
+            rotationQuaternion: SIMD4<Float>(0, 0.7071, 0, 0.7071),
+            position: SIMD4<Float>(10, -20, 30, 1),
+            size: SIMD4<Float>(2, 3, 4, 1)
+        )
+        XCTAssertEqual(encodedPrefix.count, 60)
+
+        var w = BinaryWriter()
+        w.writeBytes(encodedPrefix)
+        w.writeInt32(0); w.writeInt32(0); w.writeUInt32(10) // empty instanceIDs list
+        w.writeUInt16(1); w.writeUInt16(2); w.writeUInt16(3); w.writeUInt16(4) // Arg1..4
+
+        var cursor = BinaryCursor(data: w.data)
+        let trigger = try WorldPlacementParser.parseTrigger(&cursor, recordID: 1)
+
+        XCTAssertEqual(trigger.header, 42)
+        XCTAssertEqual(trigger.enabledMask, 0b101)
+        XCTAssertEqual(trigger.someFloat, 1.25, accuracy: 0.0001)
+        XCTAssertEqual(trigger.rotationQuaternion, SIMD4<Float>(0, 0.7071, 0, 0.7071))
+        XCTAssertEqual(trigger.position, SIMD4<Float>(10, -20, 30, 1))
+        XCTAssertEqual(trigger.size, SIMD4<Float>(2, 3, 4, 1))
+        XCTAssertEqual(cursor.position, w.count)
+    }
+
     func testParseTriggerWithInstances() throws {
         var w = BinaryWriter()
         w.writeUInt32(0)

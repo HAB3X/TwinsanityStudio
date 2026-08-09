@@ -225,7 +225,7 @@ struct LevelViewerWindow: View {
                 }
                 .formStyle(.grouped)
 
-                Text("Scenery objects are drawn at their correct world position, but not yet rotated or scaled to match the level data — only translation is currently applied, and scenery has no write path yet (in-session sandbox only). The amber cubes are Instance records (crate/enemy/platform placements) — their position/rotation is real, live-editable with the gizmo, and \"Save Level Overrides…\" below writes it back to a copy of the file. Red/cyan wireframe boxes are Triggers/Cameras — click to inspect, no gizmo (no verified write path for either record type yet).")
+                Text("Scenery objects are drawn at their correct world position, but not yet rotated or scaled to match the level data — only translation is currently applied, and scenery has no write path yet (in-session sandbox only). The amber cubes are Instance records (crate/enemy/platform placements) — their position/rotation is real, live-editable with the gizmo, and \"Save Level Overrides…\" below writes it back to a copy of the file. Green/cyan wireframe boxes are Triggers/Cameras — click to select and inspect; no 3D gizmo yet, but their inspector panel below has real, writable position/size/rotation fields with their own \"Save Edited Copy…\" button.")
                     .font(.caption2)
                     .foregroundStyle(.orange)
 
@@ -314,9 +314,9 @@ struct LevelViewerWindow: View {
             case .instance(let instance):
                 InstanceInspectorView(node: node, instance: instance)
             case .trigger(let trigger):
-                TriggerInspectorView(trigger: trigger)
+                TriggerInspectorView(node: node, trigger: trigger)
             case .camera(let camera):
-                CameraInspectorView(camera: camera)
+                CameraInspectorView(node: node, camera: camera)
             default:
                 Text("No inspector available for this record type.")
                     .font(.caption2)

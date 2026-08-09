@@ -1080,7 +1080,18 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             }
         }
 
-        let triggerColor = SIMD3<Float>(0.95, 0.25, 0.25)
+        // Roadmap 4.1 asks for a 3-color Red=Death/Green=Trigger/Blue=Solid
+        // scheme. Green is real: every wireframe box here genuinely *is* a
+        // `Trigger` record — a verified category, not a guess. Splitting
+        // further into "death" vs. other triggers is not: `TriggerVolume`'s
+        // `arg1`-`arg4`/`enabledMask`/`header` carry no decoded meaning
+        // anywhere in this codebase (see `ModelViewerRenderer.color(forSurfaceID:)`'s
+        // own doc comment for the identical situation with collision
+        // surface IDs) — inventing a "this bit pattern means deadly" rule
+        // would be presenting a guess as decoded data. "Solid" isn't a
+        // trigger-layer concept at all; that's what the Collision layer's
+        // own (already real, already surface-ID-based) coloring covers.
+        let triggerColor = SIMD3<Float>(0.35, 0.9, 0.4)
         let cameraColor = SIMD3<Float>(0.3, 0.85, 0.95)
         let splineColor = SIMD3<Float>(0.85, 0.35, 0.95)
 

@@ -73,7 +73,12 @@ public enum ChunkPayload: Sendable {
 /// discipline for a reference type, so it's asserted here rather than
 /// inferred.
 public final class ChunkNode: Identifiable, @unchecked Sendable {
-    public let id = UUID()
+    /// Was `let id = UUID()` (always freshly minted) — see `filtered(matching:)`/
+    /// `filtered(byKind:)`'s doc comments for why that was a real, user-facing
+    /// bug: it's now a settable-at-init identity so a filtered *view* of an
+    /// existing node can preserve that node's real identity instead of
+    /// inventing a new one every time the filter re-runs.
+    public let id: UUID
     public var recordID: UInt32
     public var sectionType: SectionType
     public var displayName: String
@@ -85,6 +90,7 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
     public var fileOffset: Int
 
     public init(
+        id: UUID = UUID(),
         recordID: UInt32,
         sectionType: SectionType,
         displayName: String,
@@ -93,6 +99,7 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
         children: [ChunkNode] = [],
         payload: ChunkPayload? = nil
     ) {
+        self.id = id
         self.recordID = recordID
         self.sectionType = sectionType
         self.displayName = displayName
@@ -106,6 +113,23 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
 
     /// Depth-first search across this node and its descendants for nodes whose
     /// display name or section type contains `query` (case-insensitive).
+    ///
+    /// Returns a *view* over the matching subset, not a copy with a new
+    /// identity — critically, `id: self.id` below. This used to omit `id:`,
+    /// which let the synthesized `ChunkNode(id: UUID())` default mint a
+    /// fresh random UUID for every filtered node, on every single
+    /// evaluation of this (uncached, computed-property-backed) filter. In
+    /// the sidebar, clicking a filtered row round-trips through exactly two
+    /// separate evaluations of `filteredRootNodes` (once to tag the row
+    /// when the `List` renders, once again inside the selection
+    /// `Binding`'s `set` to look the clicked id back up) — with fresh IDs
+    /// each time, the id captured by the click could never match anything
+    /// in the freshly-recomputed tree, `findNode` always returned `nil`,
+    /// and `select(nil)` silently wiped the entire selection. Every click
+    /// on a filtered item looked like it "closed all the files." Preserving
+    /// the real underlying node's `id` here makes a filtered node's
+    /// identity stable across every re-evaluation, exactly like the
+    /// unfiltered tree's already was.
     public func filtered(matching query: String) -> ChunkNode? {
         guard !query.isEmpty else { return self }
         let matchesSelf = displayName.localizedCaseInsensitiveContains(query)
@@ -114,6 +138,7 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
         let matchingChildren = children.compactMap { $0.filtered(matching: query) }
         guard matchesSelf || !matchingChildren.isEmpty else { return nil }
         let node = ChunkNode(
+            id: id,
             recordID: recordID,
             sectionType: sectionType,
             displayName: displayName,
@@ -129,11 +154,14 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
     /// whose decoded payload matches `kind` (e.g. every `Animation` record
     /// anywhere under this node, no matter how deep). Ancestors of a match
     /// are kept so the result is still a navigable tree, not a flat list.
+    /// See `filtered(matching:)`'s doc comment — `id: self.id` here fixes
+    /// the exact same identity bug for the type-filter picker.
     public func filtered(byKind kind: ChunkPayload.Kind) -> ChunkNode? {
         let matchesSelf = payload?.kind == kind
         let matchingChildren = children.compactMap { $0.filtered(byKind: kind) }
         guard matchesSelf || !matchingChildren.isEmpty else { return nil }
         return ChunkNode(
+            id: id,
             recordID: recordID,
             sectionType: sectionType,
             displayName: displayName,
@@ -142,5 +170,56 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
             children: matchesSelf ? children : matchingChildren,
             payload: payload
         )
+    }
+
+    /// "Smart File Filtering": recursively drops undecoded/raw leaves
+    /// (payload `.none`/`.raw`) and any container whose entire subtree
+    /// pruned away — the "hide folders that only contain raw files" half of
+    /// the same feature. `nil` means "this whole node is uninteresting,
+    /// drop it"; a non-`nil` result always preserves `id: self.id` on every
+    /// surviving node, same reasoning as `filtered(matching:)`'s own doc
+    /// comment: a filtered *view* must keep the real node's identity, or
+    /// sidebar selection breaks exactly like it did before that fix.
+    public func prunedOfRawContent() -> ChunkNode? {
+        guard !children.isEmpty else {
+            // An unexpanded archive entry (`.RM2`/`.SM2`/etc. sitting inside
+            // a `.BH` archive, not yet parsed) looks identical to a genuinely
+            // uninteresting leaf at this point — no children, `payload ==
+            // nil` — but it's the exact opposite: it's a real file the user
+            // can still click "Parse" on (see `WorkspaceViewModel.
+            // isExpandableArchiveEntry`), and every archive starts with
+            // hundreds of these before scanning finishes. Pruning it away
+            // would hide the entire unscanned tree, not just raw junk.
+            if payload == nil, byteSize > 0, Self.looksLikeChunkFileName(displayName) {
+                return self
+            }
+            switch payload {
+            case .none, .raw: return nil
+            default: return self
+            }
+        }
+        let keptChildren = children.compactMap { $0.prunedOfRawContent() }
+        guard !keptChildren.isEmpty else { return nil }
+        return ChunkNode(
+            id: id,
+            recordID: recordID,
+            sectionType: sectionType,
+            displayName: displayName,
+            byteSize: byteSize,
+            fileOffset: fileOffset,
+            children: keptChildren,
+            payload: payload
+        )
+    }
+
+    /// Same "does this filename look like a chunk file" check
+    /// `WorkspaceViewModel`/`WorkspaceAutoDetector` each already make their
+    /// own way (extension-based, no magic-number peek needed at this
+    /// layer) — small enough, and different enough in what each caller
+    /// already has on hand, that sharing one implementation across module
+    /// boundaries wasn't worth it; this one only needs a display name.
+    private static func looksLikeChunkFileName(_ name: String) -> Bool {
+        let ext = (name as NSString).pathExtension.uppercased()
+        return ["RM2", "SM2", "RMX", "SMX"].contains(ext)
     }
 }

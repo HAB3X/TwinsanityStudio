@@ -232,86 +232,276 @@ struct InstanceInspectorView: View {
     }
 }
 
+/// "Make Trigger/Camera inspectors writable": position/size/rotation are
+/// editable and save through the same decode -> edit -> encode -> patch ->
+/// save-as-copy loop `PositionInspectorView`/`InstanceInspectorView`
+/// established — see `WorldPlacementWriter.writeTriggerOrCameraPrefix`'s
+/// doc comment for why only this leading fixed-size prefix (not the whole
+/// variable-length record) is writable. `header`/`enabledMask`/`someFloat`/
+/// `arg1`-`arg4` stay read-only and round-trip through unedited: their bit
+/// patterns carry no decoded meaning anywhere in this codebase, so exposing
+/// them as editable fields would invite editing values whose effect is
+/// genuinely unknown, not a real capability.
 struct TriggerInspectorView: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    let node: ChunkNode
     let trigger: TriggerVolume
 
+    @State private var x = ""
+    @State private var y = ""
+    @State private var z = ""
+    @State private var w = ""
+    @State private var sx = ""
+    @State private var sy = ""
+    @State private var sz = ""
+    @State private var rotX = ""
+    @State private var rotY = ""
+    @State private var rotZ = ""
+
     var body: some View {
-        Form {
-            Section("Volume") {
-                LabeledContent("Position", value: vectorString(trigger.position))
-                LabeledContent("Size", value: vectorString(trigger.size))
-                LabeledContent("Rotation Angle", value: String(format: "%.1f°", trigger.rotationAngleDegrees))
-                LabeledContent("Rotation Quaternion", value: vectorString(trigger.rotationQuaternion))
-            }
-            Section("Header") {
-                LabeledContent("Header", value: "0x\(String(trigger.header, radix: 16))")
-                LabeledContent("Enabled Mask", value: "0b\(String(trigger.enabledMask, radix: 2))")
-                LabeledContent("Some Float", value: String(format: "%.3f", trigger.someFloat))
-            }
-            Section("Arguments") {
-                LabeledContent("Arg 1", value: "\(trigger.arg1)")
-                LabeledContent("Arg 2", value: "\(trigger.arg2)")
-                LabeledContent("Arg 3", value: "\(trigger.arg3)")
-                LabeledContent("Arg 4", value: "\(trigger.arg4)")
-            }
-            if !trigger.instanceIDs.isEmpty {
-                Section("Referenced Instances (\(trigger.instanceIDs.count))") {
-                    Text(trigger.instanceIDs.map { "#\($0)" }.joined(separator: ", "))
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 0) {
+            Form {
+                Section("Volume") {
+                    LabeledContent("Position X") { TextField("X", text: $x).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Position Y") { TextField("Y", text: $y).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Position Z") { TextField("Z", text: $z).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Position W") { TextField("W", text: $w).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Size X") { TextField("X", text: $sx).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Size Y") { TextField("Y", text: $sy).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Size Z") { TextField("Z", text: $sz).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Rotation X°") { TextField("X°", text: $rotX).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Rotation Y°") { TextField("Y°", text: $rotY).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Rotation Z°") { TextField("Z°", text: $rotZ).textFieldStyle(.roundedBorder) }
+                }
+                Section("Header") {
+                    LabeledContent("Header", value: "0x\(String(trigger.header, radix: 16))")
+                    LabeledContent("Enabled Mask", value: "0b\(String(trigger.enabledMask, radix: 2))")
+                    LabeledContent("Some Float", value: String(format: "%.3f", trigger.someFloat))
+                }
+                Section("Arguments") {
+                    LabeledContent("Arg 1", value: "\(trigger.arg1)")
+                    LabeledContent("Arg 2", value: "\(trigger.arg2)")
+                    LabeledContent("Arg 3", value: "\(trigger.arg3)")
+                    LabeledContent("Arg 4", value: "\(trigger.arg4)")
+                }
+                if !trigger.instanceIDs.isEmpty {
+                    Section("Referenced Instances (\(trigger.instanceIDs.count))") {
+                        Text(trigger.instanceIDs.map { "#\($0)" }.joined(separator: ", "))
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
+            .formStyle(.grouped)
+            .onAppear { loadFields() }
+            .onChange(of: node.id) { _, _ in loadFields() }
+
+            HStack {
+                Button("Save Edited Copy…") { save() }
+                    .disabled(editedPrefix == nil || !workspace.canSaveEdits(for: node))
+                Spacer()
+            }
+            .padding(.horizontal)
+
+            if !workspace.canSaveEdits(for: node) {
+                Text("Editing only saves for a standalone-opened .RM2/.SM2 file — this record's file is archive-packed, which this build doesn't have a write path for yet.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+            } else {
+                Text("Saves an edited copy under a new name — the file you opened is never modified in place.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+            }
         }
-        .formStyle(.grouped)
+    }
+
+    private func loadFields() {
+        x = String(trigger.position.x); y = String(trigger.position.y); z = String(trigger.position.z); w = String(trigger.position.w)
+        sx = String(trigger.size.x); sy = String(trigger.size.y); sz = String(trigger.size.z)
+        let degrees = eulerDegrees(from: trigger.rotationQuaternion)
+        rotX = String(format: "%.2f", degrees.x); rotY = String(format: "%.2f", degrees.y); rotZ = String(format: "%.2f", degrees.z)
+    }
+
+    private var editedPrefix: Data? {
+        guard let fx = Float(x), let fy = Float(y), let fz = Float(z), let fw = Float(w),
+              let fsx = Float(sx), let fsy = Float(sy), let fsz = Float(sz),
+              let frx = Float(rotX), let fry = Float(rotY), let frz = Float(rotZ)
+        else { return nil }
+        let quaternion = quaternionFromEuler(SIMD3(frx, fry, frz))
+        return WorldPlacementWriter.writeTriggerOrCameraPrefix(
+            header: trigger.header, enabledMask: trigger.enabledMask, someFloat: trigger.someFloat,
+            rotationQuaternion: quaternion, position: SIMD4(fx, fy, fz, fw), size: SIMD4(fsx, fsy, fsz, trigger.size.w)
+        )
+    }
+
+    private func save() {
+        guard let encoded = editedPrefix else { return }
+        guard let patchedBytes = workspace.patchedFileBytes(replacingPrefixOf: node, with: encoded) else { return }
+        guard let url = ExportPanel.chooseSaveLocation(suggestedName: "\(node.displayName)_edited.rm2", message: "Save the edited copy of this file. The original file on disk is not modified.") else { return }
+        do {
+            try patchedBytes.write(to: url)
+            workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent). The original file was not modified."
+        } catch {
+            workspace.lastError = "Save failed: \(error)"
+        }
     }
 }
 
 struct CameraInspectorView: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    let node: ChunkNode
     let camera: PlacedCamera
 
+    @State private var x = ""
+    @State private var y = ""
+    @State private var z = ""
+    @State private var w = ""
+    @State private var sx = ""
+    @State private var sy = ""
+    @State private var sz = ""
+    @State private var rotX = ""
+    @State private var rotY = ""
+    @State private var rotZ = ""
+
     var body: some View {
-        Form {
-            Section("Volume") {
-                LabeledContent("Position", value: vectorString(camera.position))
-                LabeledContent("Size", value: vectorString(camera.size))
-                LabeledContent("Rotation Angle", value: String(format: "%.1f°", camera.rotationAngleDegrees))
-            }
-            Section("Camera Types") {
-                LabeledContent("Slot 1", value: camera.cameraType1.displayName)
-                LabeledContent("Slot 2", value: camera.cameraType2.displayName)
-            }
-            if let subtype1 = camera.subtype1 {
-                Section("Slot 1 Data") {
-                    CameraSubtypeSummaryView(subtype: subtype1)
+        VStack(alignment: .leading, spacing: 0) {
+            Form {
+                Section("Volume") {
+                    LabeledContent("Position X") { TextField("X", text: $x).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Position Y") { TextField("Y", text: $y).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Position Z") { TextField("Z", text: $z).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Position W") { TextField("W", text: $w).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Size X") { TextField("X", text: $sx).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Size Y") { TextField("Y", text: $sy).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Size Z") { TextField("Z", text: $sz).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Rotation X°") { TextField("X°", text: $rotX).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Rotation Y°") { TextField("Y°", text: $rotY).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Rotation Z°") { TextField("Z°", text: $rotZ).textFieldStyle(.roundedBorder) }
+                }
+                Section("Camera Types") {
+                    LabeledContent("Slot 1", value: camera.cameraType1.displayName)
+                    LabeledContent("Slot 2", value: camera.cameraType2.displayName)
+                }
+                if let subtype1 = camera.subtype1 {
+                    Section("Slot 1 Data") {
+                        CameraSubtypeSummaryView(subtype: subtype1)
+                    }
+                }
+                if let subtype2 = camera.subtype2 {
+                    Section("Slot 2 Data") {
+                        CameraSubtypeSummaryView(subtype: subtype2)
+                    }
+                }
+                if !camera.instanceIDs.isEmpty {
+                    Section("Referenced Instances (\(camera.instanceIDs.count))") {
+                        Text(camera.instanceIDs.map { "#\($0)" }.joined(separator: ", "))
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Section("Advanced / Undecoded") {
+                    DisclosureGroup("Header & Camera Fields") {
+                        LabeledContent("Header", value: "0x\(String(camera.header, radix: 16))")
+                        LabeledContent("Enabled Mask", value: "0b\(String(camera.enabledMask, radix: 2))")
+                        LabeledContent("Cam Header", value: "0x\(String(camera.camHeader, radix: 16))")
+                        LabeledContent("Coords 1", value: vectorString(camera.unkCoords1))
+                        LabeledContent("Coords 2", value: vectorString(camera.unkCoords2))
+                        Text("Every other field on this record is genuinely undocumented by the reference tool this was ported from — shown for completeness, not because its meaning is known.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
-            if let subtype2 = camera.subtype2 {
-                Section("Slot 2 Data") {
-                    CameraSubtypeSummaryView(subtype: subtype2)
-                }
+            .formStyle(.grouped)
+            .onAppear { loadFields() }
+            .onChange(of: node.id) { _, _ in loadFields() }
+
+            HStack {
+                Button("Save Edited Copy…") { save() }
+                    .disabled(editedPrefix == nil || !workspace.canSaveEdits(for: node))
+                Spacer()
             }
-            if !camera.instanceIDs.isEmpty {
-                Section("Referenced Instances (\(camera.instanceIDs.count))") {
-                    Text(camera.instanceIDs.map { "#\($0)" }.joined(separator: ", "))
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section("Advanced / Undecoded") {
-                DisclosureGroup("Header & Camera Fields") {
-                    LabeledContent("Header", value: "0x\(String(camera.header, radix: 16))")
-                    LabeledContent("Enabled Mask", value: "0b\(String(camera.enabledMask, radix: 2))")
-                    LabeledContent("Cam Header", value: "0x\(String(camera.camHeader, radix: 16))")
-                    LabeledContent("Coords 1", value: vectorString(camera.unkCoords1))
-                    LabeledContent("Coords 2", value: vectorString(camera.unkCoords2))
-                    Text("Every other field on this record is genuinely undocumented by the reference tool this was ported from — shown for completeness, not because its meaning is known.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+            .padding(.horizontal)
+
+            if !workspace.canSaveEdits(for: node) {
+                Text("Editing only saves for a standalone-opened .RM2/.SM2 file — this record's file is archive-packed, which this build doesn't have a write path for yet.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+            } else {
+                Text("Saves an edited copy under a new name — the file you opened is never modified in place.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
             }
         }
-        .formStyle(.grouped)
     }
+
+    private func loadFields() {
+        x = String(camera.position.x); y = String(camera.position.y); z = String(camera.position.z); w = String(camera.position.w)
+        sx = String(camera.size.x); sy = String(camera.size.y); sz = String(camera.size.z)
+        let degrees = eulerDegrees(from: camera.rotationQuaternion)
+        rotX = String(format: "%.2f", degrees.x); rotY = String(format: "%.2f", degrees.y); rotZ = String(format: "%.2f", degrees.z)
+    }
+
+    private var editedPrefix: Data? {
+        guard let fx = Float(x), let fy = Float(y), let fz = Float(z), let fw = Float(w),
+              let fsx = Float(sx), let fsy = Float(sy), let fsz = Float(sz),
+              let frx = Float(rotX), let fry = Float(rotY), let frz = Float(rotZ)
+        else { return nil }
+        let quaternion = quaternionFromEuler(SIMD3(frx, fry, frz))
+        return WorldPlacementWriter.writeTriggerOrCameraPrefix(
+            header: camera.header, enabledMask: camera.enabledMask, someFloat: camera.someFloat,
+            rotationQuaternion: quaternion, position: SIMD4(fx, fy, fz, fw), size: SIMD4(fsx, fsy, fsz, camera.size.w)
+        )
+    }
+
+    private func save() {
+        guard let encoded = editedPrefix else { return }
+        guard let patchedBytes = workspace.patchedFileBytes(replacingPrefixOf: node, with: encoded) else { return }
+        guard let url = ExportPanel.chooseSaveLocation(suggestedName: "\(node.displayName)_edited.rm2", message: "Save the edited copy of this file. The original file on disk is not modified.") else { return }
+        do {
+            try patchedBytes.write(to: url)
+            workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent). The original file was not modified."
+        } catch {
+            workspace.lastError = "Save failed: \(error)"
+        }
+    }
+}
+
+/// Quaternion <-> XYZ-order Euler degrees, for the Trigger/Camera
+/// inspectors' rotation fields — the same technique `LevelViewerRenderer`
+/// uses for its own gizmo rotation fields, reimplemented locally here since
+/// that one is `private` to a different, unrelated type (a 3D renderer);
+/// this is plain, self-contained trig, not logic worth sharing machinery for.
+private func eulerDegrees(from quaternion: SIMD4<Float>) -> SIMD3<Float> {
+    let q = simd_quatf(vector: quaternion)
+    let m = simd_float3x3(q)
+    let sy = sqrt(m.columns.0.x * m.columns.0.x + m.columns.0.y * m.columns.0.y)
+    let singular = sy < 1e-6
+    let x: Float, y: Float, z: Float
+    if !singular {
+        x = atan2(m.columns.1.z, m.columns.2.z)
+        y = atan2(-m.columns.0.z, sy)
+        z = atan2(m.columns.0.y, m.columns.0.x)
+    } else {
+        x = atan2(-m.columns.2.y, m.columns.1.y)
+        y = atan2(-m.columns.0.z, sy)
+        z = 0
+    }
+    let toDegrees: Float = 180 / .pi
+    return SIMD3(x * toDegrees, y * toDegrees, z * toDegrees)
+}
+
+private func quaternionFromEuler(_ degrees: SIMD3<Float>) -> SIMD4<Float> {
+    let toRadians: Float = .pi / 180
+    let r = degrees * toRadians
+    let qx = simd_quatf(angle: r.x, axis: SIMD3(1, 0, 0))
+    let qy = simd_quatf(angle: r.y, axis: SIMD3(0, 1, 0))
+    let qz = simd_quatf(angle: r.z, axis: SIMD3(0, 0, 1))
+    return (qz * qy * qx).vector
 }
 
 /// Compact, per-subtype field summary — full raw byte-for-byte detail

@@ -45,6 +45,11 @@ struct ContentView: View {
             Divider()
             EngineConsoleView(isExpanded: $isConsoleExpanded)
         }
+        // "Theme/Appearance" (Settings): a real, working in-app control
+        // tint — see `WorkspaceViewModel.AccentColorChoice`'s doc comment
+        // for why this isn't a claim about overriding the system-wide
+        // macOS accent color.
+        .tint(workspace.accentColorChoice.color)
         .navigationTitle("Twinsanity Studio")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
