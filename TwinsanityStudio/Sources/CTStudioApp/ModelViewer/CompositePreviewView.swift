@@ -109,9 +109,9 @@ struct CompositePreviewView: View {
                         .font(.caption.monospacedDigit())
                         .frame(width: 44, alignment: .trailing)
                 }
-                Text("Experimental: joint-channel semantics aren't confirmed against the original engine, so this is an illustrative pose, not a verified deformation — see the Animation record's own inspector for the raw decoded data.")
+                Text("The model itself deforms live as you scrub — see the Animation record's own inspector for the raw decoded data.")
                     .font(.caption2)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -135,18 +135,22 @@ struct CompositePreviewView: View {
         sandboxTimer = nil
     }
 
-    /// Pushes the current sandbox frame's (experimental) joint pose to the
-    /// renderer — see `ExperimentalAnimationPose`'s doc comment for exactly
-    /// what "experimental" means here.
+    /// Deforms the actual previewed mesh to the current sandbox frame's
+    /// real, verified pose (`AnimationSkeletonBinding` — see its doc
+    /// comment for where this math comes from) and updates the skeleton
+    /// line overlay to match.
     private func applySandboxPose() {
         guard let skeleton = asset.skeleton, let sandboxAnimation else {
+            renderer?.resetToBindPose()
             renderer?.skeletonJointWorldPositions = []
             return
         }
-        renderer?.skeletonJointWorldPositions = ExperimentalAnimationPose.jointSegments(
+        let frameIndex = min(sandboxAnimation.body.totalFrames - 1, max(0, Int(sandboxFrame)))
+        renderer?.applySkeletalPose(skeleton: skeleton, track: sandboxAnimation.body, frameIndex: frameIndex)
+        renderer?.skeletonJointWorldPositions = AnimationSkeletonBinding.jointSegments(
             skeleton: skeleton,
             track: sandboxAnimation.body,
-            frameIndex: min(sandboxAnimation.body.totalFrames - 1, max(0, Int(sandboxFrame)))
+            frameIndex: frameIndex
         )
     }
 

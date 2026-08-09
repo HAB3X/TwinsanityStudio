@@ -32,6 +32,15 @@ private struct GPUSubmesh {
     let indexBuffer: MTLBuffer
     let indexCount: Int
     let texture: MTLTexture
+    /// Bind-space (unanimated) vertex data, retained alongside the GPU
+    /// buffer so real skeletal animation (`AnimationSkeletonBinding`) can
+    /// re-skin *from bind pose* every frame — never from the previous
+    /// frame's already-deformed result, which would compound error. Empty
+    /// for non-skinned submeshes (rigid scenery/props, and the Level
+    /// Viewer's placeholder markers), which never need re-skinning.
+    let bindVertices: [StaticVertex]
+    let jointIndices: [SIMD4<UInt16>]
+    let jointWeights: [SIMD4<Float>]
 }
 
 /// Matches the Metal shader's `Uniforms` struct byte-for-byte:
@@ -353,6 +362,107 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         return device.makeBuffer(bytes: floats, length: floats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
     }
 
+    /// "Model Viewer & Animation Playback": deforms every skinned submesh's
+    /// GPU vertex buffer *in place* (no reallocation — same reasoning as
+    /// `skeletonJointWorldPositions`'s own doc comment) to the real,
+    /// verified pose at `frameIndex` — see `AnimationSkeletonBinding`'s doc
+    /// comment for where this math actually comes from. Always re-skins
+    /// from each submesh's own retained bind-space vertices
+    /// (`GPUSubmesh.bindVertices`), never from whatever the buffer
+    /// currently holds, so scrubbing back and forth never compounds error.
+    /// A submesh with no joint weight data (rigid, non-skinned) is left
+    /// completely untouched — its buffer was already correct at upload and
+    /// nothing here has any basis to change it.
+    func applySkeletalPose(skeleton: SkeletonAsset, track: AnimationTrack, frameIndex: Int) {
+        let skinning = AnimationSkeletonBinding.skinningMatrices(skeleton: skeleton, track: track, frame: frameIndex)
+        for submesh in submeshes {
+            guard !submesh.jointWeights.isEmpty else { continue }
+            Self.skinVertices(submesh: submesh, skinningMatrices: skinning)
+        }
+    }
+
+    /// Restores every skinned submesh to its original bind-pose geometry —
+    /// called when animation playback stops/resets, or no animation is
+    /// selected.
+    func resetToBindPose() {
+        for submesh in submeshes {
+            guard !submesh.jointWeights.isEmpty else { continue }
+            Self.writeVertices(submesh.bindVertices, into: submesh.vertexBuffer)
+        }
+    }
+
+    /// Weighted-blend skinning: each vertex's position/normal is the sum of
+    /// up to 4 joint influences (`StaticVertex.color`'s parallel
+    /// `jointIndices`/`jointWeights` — "up to 3 active joints per vertex,
+    /// padded to 4 lanes," see `MeshSubmesh`'s own doc comment), each joint
+    /// contributing `weight * (skinningMatrix * bindSpacePosition)`. Normals
+    /// use the same matrix's upper-left 3x3 (rotation/scale, no
+    /// translation) — the standard real-time-skinning approximation; it
+    /// doesn't correct for non-uniform-scale shearing, which no renderer in
+    /// this codebase claims to handle anywhere else either.
+    private static func skinVertices(submesh: GPUSubmesh, skinningMatrices: [UInt32: simd_float4x4]) {
+        var gpuVertices: [ModelVertexGPU] = []
+        gpuVertices.reserveCapacity(submesh.bindVertices.count)
+        for (i, v) in submesh.bindVertices.enumerated() {
+            var skinnedPosition = SIMD3<Float>.zero
+            var skinnedNormal = SIMD3<Float>.zero
+            if i < submesh.jointIndices.count, i < submesh.jointWeights.count {
+                let indices = submesh.jointIndices[i]
+                let weights = submesh.jointWeights[i]
+                for lane in 0..<4 {
+                    let weight = weights[lane]
+                    guard weight > 0 else { continue }
+                    guard let matrix = skinningMatrices[UInt32(indices[lane])] else { continue }
+                    let pos4 = matrix * SIMD4(v.position, 1)
+                    skinnedPosition += weight * SIMD3(pos4.x, pos4.y, pos4.z)
+                    let rotationScale = simd_float3x3(
+                        SIMD3(matrix.columns.0.x, matrix.columns.0.y, matrix.columns.0.z),
+                        SIMD3(matrix.columns.1.x, matrix.columns.1.y, matrix.columns.1.z),
+                        SIMD3(matrix.columns.2.x, matrix.columns.2.y, matrix.columns.2.z)
+                    )
+                    skinnedNormal += weight * (rotationScale * v.normal)
+                }
+            }
+            if simd_length(skinnedNormal) < 0.0001 {
+                // No (or zero-weight) joint influence recorded for this
+                // vertex — leave it exactly at bind pose rather than
+                // collapsing it to the origin.
+                skinnedPosition = v.position
+                skinnedNormal = v.normal
+            } else {
+                skinnedNormal = simd_normalize(skinnedNormal)
+            }
+            gpuVertices.append(ModelVertexGPU(
+                px: skinnedPosition.x, py: skinnedPosition.y, pz: skinnedPosition.z,
+                nx: skinnedNormal.x, ny: skinnedNormal.y, nz: skinnedNormal.z,
+                u: v.uv.x, v: v.uv.y,
+                r: Float(v.color.x) / 255.0, g: Float(v.color.y) / 255.0,
+                b: Float(v.color.z) / 255.0, a: Float(v.color.w) / 255.0
+            ))
+        }
+        Self.writeVertices(gpuVertices, into: submesh.vertexBuffer)
+    }
+
+    private static func writeVertices(_ vertices: [StaticVertex], into buffer: MTLBuffer) {
+        let gpuVertices = vertices.map {
+            ModelVertexGPU(
+                px: $0.position.x, py: $0.position.y, pz: $0.position.z,
+                nx: $0.normal.x, ny: $0.normal.y, nz: $0.normal.z,
+                u: $0.uv.x, v: $0.uv.y,
+                r: Float($0.color.x) / 255.0, g: Float($0.color.y) / 255.0,
+                b: Float($0.color.z) / 255.0, a: Float($0.color.w) / 255.0
+            )
+        }
+        writeVertices(gpuVertices, into: buffer)
+    }
+
+    private static func writeVertices(_ gpuVertices: [ModelVertexGPU], into buffer: MTLBuffer) {
+        guard buffer.length >= gpuVertices.count * MemoryLayout<ModelVertexGPU>.stride else { return }
+        gpuVertices.withUnsafeBytes { raw in
+            buffer.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
+        }
+    }
+
     private func upload(asset: ResolvedModelAsset) {
         let built = Self.buildGPUSubmeshes(mesh: asset.mesh, submeshMaterials: asset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
         submeshes = built.submeshes
@@ -407,7 +517,10 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
                 texture = fallbackTexture
             }
 
-            gpuSubmeshes.append(GPUSubmesh(originalIndex: index, vertexBuffer: vertexBuffer, indexBuffer: indexBuffer, indexCount: indices.count, texture: texture))
+            gpuSubmeshes.append(GPUSubmesh(
+                originalIndex: index, vertexBuffer: vertexBuffer, indexBuffer: indexBuffer, indexCount: indices.count, texture: texture,
+                bindVertices: submesh.vertices, jointIndices: submesh.jointIndices, jointWeights: submesh.jointWeights
+            ))
         }
 
         return (gpuSubmeshes, minBound, maxBound)
@@ -1731,7 +1844,10 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
 
 extension LevelViewerRenderer: GizmoInteractiveRenderer {}
 
-private extension simd_float4x4 {
+// Was `private` — widened to file-default (internal) so `AnimationSkeletonBinding`
+// (a separate file needing the exact same TRS-composition helper) can reuse
+// it instead of a second, possibly-diverging copy.
+extension simd_float4x4 {
     init(translation: SIMD3<Float>) {
         self = matrix_identity_float4x4
         columns.3 = SIMD4<Float>(translation.x, translation.y, translation.z, 1)

@@ -31,26 +31,35 @@ struct ModelViewerWindow: View {
         .frame(minWidth: 900, minHeight: 600)
         .onAppear { renderer = ModelViewerRenderer(asset: asset) }
         .onDisappear { stopPlayback() }
-        .onChange(of: showSkeletonOverlay) { _, _ in updateSkeletonOverlay() }
-        .onChange(of: selectedAnimation?.id) { _, _ in updateSkeletonOverlay() }
-        .onChange(of: currentFrame) { _, _ in updateSkeletonOverlay() }
+        .onChange(of: showSkeletonOverlay) { _, _ in updateAnimationPose() }
+        .onChange(of: selectedAnimation?.id) { _, _ in updateAnimationPose() }
+        .onChange(of: currentFrame) { _, _ in updateAnimationPose() }
     }
 
-    /// Drives the skeleton line overlay: the animated (experimental —
-    /// see `ExperimentalAnimationPose`) pose at the current playback frame
-    /// when an animation is selected, otherwise the bind pose. Both only
-    /// show when the user has opted into the overlay at all.
-    private func updateSkeletonOverlay() {
-        guard showSkeletonOverlay, let skeleton = asset.skeleton else {
+    /// Drives both the actual mesh deformation (`applySkeletalPose`/
+    /// `resetToBindPose` — the "Parent Object" itself visibly playing the
+    /// animation, per this session's "Parent Object Mandate") and the
+    /// optional skeleton line overlay, using the real, verified pose at the
+    /// current playback frame (`AnimationSkeletonBinding`) — not the old
+    /// `ExperimentalAnimationPose` guess. Mesh deformation always runs when
+    /// an animation is selected, independent of whether the debug skeleton
+    /// overlay is toggled on; the overlay is a visualization aid on top of
+    /// that, not a prerequisite for it.
+    private func updateAnimationPose() {
+        guard let skeleton = asset.skeleton else {
             renderer?.skeletonJointWorldPositions = []
             return
         }
-        if let selectedAnimation {
-            let frameIndex = min(selectedAnimation.body.totalFrames - 1, max(0, Int(currentFrame)))
-            renderer?.skeletonJointWorldPositions = ExperimentalAnimationPose.jointSegments(skeleton: skeleton, track: selectedAnimation.body, frameIndex: frameIndex)
-        } else {
-            renderer?.skeletonJointWorldPositions = bindPoseSkeletonSegments()
+        guard let selectedAnimation else {
+            renderer?.resetToBindPose()
+            renderer?.skeletonJointWorldPositions = showSkeletonOverlay ? AnimationSkeletonBinding.bindPoseJointSegments(skeleton: skeleton) : []
+            return
         }
+        let frameIndex = min(selectedAnimation.body.totalFrames - 1, max(0, Int(currentFrame)))
+        renderer?.applySkeletalPose(skeleton: skeleton, track: selectedAnimation.body, frameIndex: frameIndex)
+        renderer?.skeletonJointWorldPositions = showSkeletonOverlay
+            ? AnimationSkeletonBinding.jointSegments(skeleton: skeleton, track: selectedAnimation.body, frameIndex: frameIndex)
+            : []
     }
 
     @ViewBuilder
@@ -288,27 +297,6 @@ struct ModelViewerWindow: View {
         playbackTimer = nil
     }
 
-    /// Best-effort bind-pose joint positions: `Joint.matrix[3].xyz` treated
-    /// as a parent-relative local offset, accumulated down the hierarchy.
-    /// See `skeletonSection`'s caption — this is a visualization aid, not a
-    /// confirmed-correct decode of the matrix layout.
-    private func bindPoseSkeletonSegments() -> [(SIMD3<Float>, SIMD3<Float>)] {
-        guard let skeleton = asset.skeleton, let root = skeleton.joints.first else { return [] }
-        func localPosition(_ joint: Joint) -> SIMD3<Float> {
-            guard joint.matrix.count > 3 else { return .zero }
-            let v = joint.matrix[3]
-            return SIMD3<Float>(v.x, v.y, v.z)
-        }
-        var worldPositions: [UInt32: SIMD3<Float>] = [root.jointIndex: localPosition(root)]
-        var segments: [(SIMD3<Float>, SIMD3<Float>)] = []
-        for joint in skeleton.joints.dropFirst() {
-            let parentPos = worldPositions[joint.parentJointIndex] ?? .zero
-            let pos = parentPos + localPosition(joint)
-            worldPositions[joint.jointIndex] = pos
-            segments.append((parentPos, pos))
-        }
-        return segments
-    }
 
     private func exportCompleteAsset() {
         guard let directory = ExportPanel.chooseFolder(message: "Choose a folder to export this model, its textures, and its animations into.") else { return }
