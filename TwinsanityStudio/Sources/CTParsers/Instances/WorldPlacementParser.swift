@@ -40,6 +40,7 @@ public enum WorldPlacementParser {
         let childPositionIDs = try readCountedUInt16List(&cursor)
         let childPathIDs = try readCountedUInt16List(&cursor)
 
+        let objectIDFileOffset = cursor.position
         let objectID = try cursor.readUInt16()
         let refList = try cursor.readInt16()
         let scriptID = try cursor.readInt16()
@@ -64,7 +65,8 @@ public enum WorldPlacementParser {
             flags: flags,
             unknownUInt32List: unknownUInt32List,
             unknownFloatList: unknownFloatList,
-            unknownUInt32List2: unknownUInt32List2
+            unknownUInt32List2: unknownUInt32List2,
+            objectIDFileOffset: objectIDFileOffset
         )
     }
 

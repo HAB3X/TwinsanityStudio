@@ -140,6 +140,19 @@ public enum WorldPlacementWriter {
         return writer.data
     }
 
+    /// Encodes an `Instance`'s `objectID` back to its on-disk 2-byte form
+    /// — "Recipe Book" (roadmap 6.4) character/prop swap: reassigning
+    /// which real `GameObject`/`RigidModel` an existing placement resolves
+    /// to, patched at `PlacedInstance.objectIDFileOffset` the same way a
+    /// moved camera control point patches its own offset. Never changes
+    /// the record's size (`UInt16` in, `UInt16` out), so — like every
+    /// other patch in this file — nothing else in the file needs to move.
+    public static func writeInstanceObjectID(_ objectID: UInt16) -> Data {
+        var writer = BinaryWriter()
+        writer.writeUInt16(objectID)
+        return writer.data
+    }
+
     /// Encodes one Camera Path/Spline control point (`CameraPath.unkVectors`/
     /// `CameraSpline.unkVectors`) back to its on-disk 16-byte form — the
     /// exact inverse of `BinaryCursor.readVector4` at the offset captured

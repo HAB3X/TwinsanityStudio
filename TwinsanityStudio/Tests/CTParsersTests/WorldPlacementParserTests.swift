@@ -108,6 +108,25 @@ final class WorldPlacementParserTests: XCTestCase {
         XCTAssertEqual(instance.unknownFloatList, [1.5])
         XCTAssertEqual(instance.unknownUInt32List2, [1, 2])
         XCTAssertEqual(cursor.position, w.count)
+
+        // "Recipe Book" (roadmap 6.4) write-back: objectIDFileOffset must
+        // point at the real bytes, and writeInstanceObjectID's 2 bytes
+        // patched there must round-trip a reassigned objectID while
+        // leaving every other field (including the child ID lists right
+        // before it) untouched.
+        var probe = BinaryCursor(data: w.data)
+        _ = try probe.seek(to: instance.objectIDFileOffset)
+        XCTAssertEqual(try probe.readUInt16(), 42)
+
+        var patched = w.data
+        let offset = instance.objectIDFileOffset
+        patched.replaceSubrange(offset..<(offset + 2), with: WorldPlacementWriter.writeInstanceObjectID(777))
+        var reparseCursor = BinaryCursor(data: patched)
+        let reparsed = try WorldPlacementParser.parseInstance(&reparseCursor, recordID: 1)
+        XCTAssertEqual(reparsed.objectID, 777)
+        XCTAssertEqual(reparsed.childInstanceIDs, [101, 102])
+        XCTAssertEqual(reparsed.refList, 5)
+        XCTAssertEqual(patched.count, w.count)
     }
 
     /// Zero-instance case should read exactly 80 bytes — matching

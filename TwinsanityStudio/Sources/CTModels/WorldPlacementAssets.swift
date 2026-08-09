@@ -41,6 +41,16 @@ public struct PlacedInstance: Sendable, Identifiable {
     public var unknownUInt32List: [UInt32]
     public var unknownFloatList: [Float]
     public var unknownUInt32List2: [UInt32]
+    /// Byte offset of `objectID` itself, relative to this `Instance`
+    /// record's own start — captured during parse
+    /// (`WorldPlacementParser.parseInstance`) since, unlike the fixed
+    /// 28-byte transform prefix, `objectID`'s position varies per record
+    /// (it comes after three variable-length counted ID lists). Lets
+    /// "Recipe Book" (roadmap 6.4) reassign which real object a placement
+    /// resolves to — a fixed-size 2-byte overwrite, patched the same way
+    /// `CameraPath.controlPointFileOffsets` patches a control point (see
+    /// `WorkspaceViewModel.patchedFileBytes(applyingAbsoluteByteRangePatches:)`).
+    public var objectIDFileOffset: Int
 
     public init(
         id: UInt32,
@@ -56,8 +66,10 @@ public struct PlacedInstance: Sendable, Identifiable {
         flags: UInt32,
         unknownUInt32List: [UInt32],
         unknownFloatList: [Float],
-        unknownUInt32List2: [UInt32]
+        unknownUInt32List2: [UInt32],
+        objectIDFileOffset: Int = 0
     ) {
+        self.objectIDFileOffset = objectIDFileOffset
         self.id = id
         self.position = position
         self.rotationRaw = rotationRaw

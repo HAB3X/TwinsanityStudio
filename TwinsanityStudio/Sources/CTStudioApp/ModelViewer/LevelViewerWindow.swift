@@ -154,6 +154,8 @@ struct LevelViewerWindow: View {
     /// doc comment.
     @State private var isScenePreviewMode = false
     @State private var scenePreviewTimer: Timer?
+    /// "Recipe Book" (roadmap 6.4).
+    @State private var isRecipeBookPresented = false
     /// "Chunk-Based Architecture" (Part 2): which `ChunkLink.id`s have
     /// already been loaded into the viewport this session (so the button
     /// can show "Loaded" instead of offering to reload the same neighbor),
@@ -409,6 +411,25 @@ struct LevelViewerWindow: View {
 
             Divider()
             scenePreviewModeToggle
+
+            Divider()
+            Button {
+                isRecipeBookPresented = true
+            } label: {
+                Label("Recipe Book…", systemImage: "wand.and.stars")
+            }
+            .disabled(context.instanceMarkers.isEmpty)
+            .help("Reassign which real object each placement in this chunk resolves to.")
+        }
+        .sheet(isPresented: $isRecipeBookPresented) {
+            if let referenceNode = referenceNodeForFileOps {
+                RecipeBookView(
+                    instanceMarkers: context.instanceMarkers,
+                    resolvedInstanceAssets: context.resolvedInstanceAssets,
+                    referenceNode: referenceNode
+                )
+                .environmentObject(workspace)
+            }
         }
     }
 
