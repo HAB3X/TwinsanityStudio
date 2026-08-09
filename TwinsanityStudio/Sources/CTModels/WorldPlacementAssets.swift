@@ -51,6 +51,12 @@ public struct PlacedInstance: Sendable, Identifiable {
     /// `CameraPath.controlPointFileOffsets` patches a control point (see
     /// `WorkspaceViewModel.patchedFileBytes(applyingAbsoluteByteRangePatches:)`).
     public var objectIDFileOffset: Int
+    /// Byte offset of `flags` itself, relative to this `Instance` record's
+    /// own start — same reasoning and same capture point as
+    /// `objectIDFileOffset` (this comes right after it, `PHeader`'s 4
+    /// bytes later), for the "Instance Flags" checkbox editor
+    /// (`WorldPlacementWriter.writeInstanceFlags`).
+    public var flagsFileOffset: Int
 
     public init(
         id: UInt32,
@@ -67,9 +73,11 @@ public struct PlacedInstance: Sendable, Identifiable {
         unknownUInt32List: [UInt32],
         unknownFloatList: [Float],
         unknownUInt32List2: [UInt32],
-        objectIDFileOffset: Int = 0
+        objectIDFileOffset: Int = 0,
+        flagsFileOffset: Int = 0
     ) {
         self.objectIDFileOffset = objectIDFileOffset
+        self.flagsFileOffset = flagsFileOffset
         self.id = id
         self.position = position
         self.rotationRaw = rotationRaw
@@ -85,6 +93,23 @@ public struct PlacedInstance: Sendable, Identifiable {
         self.unknownFloatList = unknownFloatList
         self.unknownUInt32List2 = unknownUInt32List2
     }
+
+    /// Real, verified per-bit names from the reference tool's
+    /// `InstanceFlagsEditor.flagtext` — genuinely unnamed bits (the
+    /// reference tool itself never determined them) are empty strings,
+    /// kept that way here rather than invented; bits 18–31 keep the
+    /// reference's own generic `"ScriptSoftFlagN"` placeholder names
+    /// (real names *that* editor gives them, not ones this port made up).
+    public static let flagNames: [String] = [
+        "Inactive", "Collidable", "Visible", "Shadow", "", "",
+        "HasLoadZoneState", "", "", "Harmful", "SolidToBodyslam", "SolidToSlide",
+        "SolidToSpin", "SolidToTwinSlam", "SolidToTwinThrow", "Targetable", "",
+        "BounceRegularProjectiles",
+        "ScriptSoftFlag18", "ScriptSoftFlag19", "ScriptSoftFlag20", "ScriptSoftFlag21",
+        "ScriptSoftFlag22", "ScriptSoftFlag23", "ScriptSoftFlag24", "ScriptSoftFlag25",
+        "ScriptSoftFlag26", "ScriptSoftFlag27", "ScriptSoftFlag28", "ScriptSoftFlag29",
+        "ScriptSoftFlag30", "ScriptSoftFlag31"
+    ]
 
     /// Converts a raw 16-bit angle to degrees the same way the reference
     /// tool's `InstanceEditor.cs` does (`raw / 65536 * 360`).
@@ -133,6 +158,15 @@ public struct TriggerVolume: Sendable, Identifiable {
     public var arg2: UInt16
     public var arg3: UInt16
     public var arg4: UInt16
+    /// Byte offset of `arg1` (the first of the four contiguous `uint16`
+    /// arguments), relative to this `Trigger` record's own start —
+    /// captured during parse (`WorldPlacementParser.parseTrigger`) for
+    /// the arguments editor's write-back, same "capture the real offset
+    /// once, patch a fixed-size range there" pattern as
+    /// `PlacedInstance.objectIDFileOffset`/`flagsFileOffset`. No verified
+    /// per-argument names exist for these (unlike `PlacedInstance.flags`,
+    /// which has a real reference table) — edited as raw values.
+    public var argsFileOffset: Int
 
     public init(
         id: UInt32,
@@ -146,7 +180,8 @@ public struct TriggerVolume: Sendable, Identifiable {
         arg1: UInt16,
         arg2: UInt16,
         arg3: UInt16,
-        arg4: UInt16
+        arg4: UInt16,
+        argsFileOffset: Int = 0
     ) {
         self.id = id
         self.header = header
@@ -160,6 +195,7 @@ public struct TriggerVolume: Sendable, Identifiable {
         self.arg2 = arg2
         self.arg3 = arg3
         self.arg4 = arg4
+        self.argsFileOffset = argsFileOffset
     }
 
     /// Rotation angle in degrees, decoded the same way as the reference

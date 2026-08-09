@@ -153,6 +153,31 @@ public enum WorldPlacementWriter {
         return writer.data
     }
 
+    /// Encodes an `Instance`'s `flags` back to its on-disk 4-byte form —
+    /// the "Instance Flags" checkbox editor's write-back, patched at
+    /// `PlacedInstance.flagsFileOffset` the same way `writeInstanceObjectID`
+    /// patches its own offset. Never changes the record's size (`UInt32`
+    /// in, `UInt32` out).
+    public static func writeInstanceFlags(_ flags: UInt32) -> Data {
+        var writer = BinaryWriter()
+        writer.writeUInt32(flags)
+        return writer.data
+    }
+
+    /// Encodes `Trigger`'s four `arg1...arg4` values back to their
+    /// on-disk 8-byte form — patched at `TriggerVolume.argsFileOffset`.
+    /// No verified per-argument names exist for these (unlike
+    /// `PlacedInstance.flags`), so this is a raw round trip only, same
+    /// discipline as `AgentLabWriter`.
+    public static func writeTriggerArguments(_ arg1: UInt16, _ arg2: UInt16, _ arg3: UInt16, _ arg4: UInt16) -> Data {
+        var writer = BinaryWriter()
+        writer.writeUInt16(arg1)
+        writer.writeUInt16(arg2)
+        writer.writeUInt16(arg3)
+        writer.writeUInt16(arg4)
+        return writer.data
+    }
+
     /// Encodes one Camera Path/Spline control point (`CameraPath.unkVectors`/
     /// `CameraSpline.unkVectors`) back to its on-disk 16-byte form — the
     /// exact inverse of `BinaryCursor.readVector4` at the offset captured

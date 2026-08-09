@@ -129,6 +129,47 @@ final class WorldPlacementParserTests: XCTestCase {
         XCTAssertEqual(patched.count, w.count)
     }
 
+    /// "Instance Flags" write-back: `flagsFileOffset` must point at the
+    /// real bytes (4 later than `objectIDFileOffset` — past RefList,
+    /// ScriptID, and PHeader), and `writeInstanceFlags`'s 4 bytes patched
+    /// there must round-trip a changed flags value while leaving every
+    /// other field untouched.
+    func testInstanceFlagsFileOffsetRoundTripsThroughWriter() throws {
+        var w = BinaryWriter()
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeUInt16(0); w.writeUInt16(0)
+        w.writeUInt16(0); w.writeUInt16(0)
+        w.writeUInt16(0); w.writeUInt16(0)
+        w.writeInt32(0); w.writeInt32(0); w.writeInt32(10) // childInstanceIDs, empty
+        w.writeInt32(0); w.writeInt32(0); w.writeInt32(10) // childPositionIDs, empty
+        w.writeInt32(0); w.writeInt32(0); w.writeInt32(10) // childPathIDs, empty
+        w.writeUInt16(42) // objectID
+        w.writeInt16(5)   // refList
+        w.writeInt16(9)   // scriptID
+        w.writeUInt32(0)  // PHeader
+        w.writeUInt32(0x0000_0007) // flags: bits 0,1,2 set
+        w.writeInt32(0); w.writeInt32(0); w.writeInt32(0) // three empty unknown lists
+
+        var cursor = BinaryCursor(data: w.data)
+        let instance = try WorldPlacementParser.parseInstance(&cursor, recordID: 1)
+
+        XCTAssertEqual(instance.flags, 0x7)
+        XCTAssertEqual(instance.flagsFileOffset, instance.objectIDFileOffset + 10) // objectID(2) + refList(2) + scriptID(2) + PHeader(4)
+
+        var probe = BinaryCursor(data: w.data)
+        _ = try probe.seek(to: instance.flagsFileOffset)
+        XCTAssertEqual(try probe.readUInt32(), 0x7)
+
+        var patched = w.data
+        let offset = instance.flagsFileOffset
+        patched.replaceSubrange(offset..<(offset + 4), with: WorldPlacementWriter.writeInstanceFlags(0x8000_0001))
+        var reparseCursor = BinaryCursor(data: patched)
+        let reparsed = try WorldPlacementParser.parseInstance(&reparseCursor, recordID: 1)
+        XCTAssertEqual(reparsed.flags, 0x8000_0001)
+        XCTAssertEqual(reparsed.objectID, 42) // untouched
+        XCTAssertEqual(patched.count, w.count)
+    }
+
     /// Zero-instance case should read exactly 80 bytes — matching
     /// `Trigger.GetSize()`'s base constant (`Trigger.cs:270`).
     func testParseTriggerConsumesExactly80BytesWithNoInstances() throws {
@@ -215,6 +256,46 @@ final class WorldPlacementParserTests: XCTestCase {
         XCTAssertEqual(trigger.instanceIDs, [11, 22, 33])
         XCTAssertEqual(trigger.rotationAngleDegrees, 180, accuracy: 0.01)
         XCTAssertEqual(cursor.position, w.count)
+    }
+
+    /// "Trigger Arguments" write-back: `argsFileOffset` must point at the
+    /// real bytes right after the (real, 3-element) `instanceIDs` list,
+    /// and `writeTriggerArguments`'s 8 bytes patched there must round-trip
+    /// changed values while leaving the rest of the record untouched.
+    func testTriggerArgsFileOffsetRoundTripsThroughWriter() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(0)
+        w.writeUInt32(0b111)
+        w.writeFloat32(0)
+        w.writeFloat32(1); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(1); w.writeFloat32(1); w.writeFloat32(1); w.writeFloat32(1)
+        w.writeInt32(3); w.writeInt32(3); w.writeUInt32(10)
+        w.writeUInt16(11); w.writeUInt16(22); w.writeUInt16(33)
+        w.writeUInt16(1); w.writeUInt16(2); w.writeUInt16(3); w.writeUInt16(4)
+
+        var cursor = BinaryCursor(data: w.data)
+        let trigger = try WorldPlacementParser.parseTrigger(&cursor, recordID: 2)
+        XCTAssertEqual(trigger.arg1, 1)
+        XCTAssertEqual(trigger.arg2, 2)
+        XCTAssertEqual(trigger.arg3, 3)
+        XCTAssertEqual(trigger.arg4, 4)
+
+        var probe = BinaryCursor(data: w.data)
+        _ = try probe.seek(to: trigger.argsFileOffset)
+        XCTAssertEqual(try probe.readUInt16(), 1)
+
+        var patched = w.data
+        let offset = trigger.argsFileOffset
+        patched.replaceSubrange(offset..<(offset + 8), with: WorldPlacementWriter.writeTriggerArguments(100, 200, 300, 400))
+        var reparseCursor = BinaryCursor(data: patched)
+        let reparsed = try WorldPlacementParser.parseTrigger(&reparseCursor, recordID: 2)
+        XCTAssertEqual(reparsed.arg1, 100)
+        XCTAssertEqual(reparsed.arg2, 200)
+        XCTAssertEqual(reparsed.arg3, 300)
+        XCTAssertEqual(reparsed.arg4, 400)
+        XCTAssertEqual(reparsed.instanceIDs, [11, 22, 33]) // untouched
+        XCTAssertEqual(patched.count, w.count)
     }
 
     /// Empty-instances, non-Demo, both slots `.none` (3) case should read

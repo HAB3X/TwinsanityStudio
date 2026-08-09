@@ -130,6 +130,7 @@ struct InstanceInspectorView: View {
     @State private var rotX: String = ""
     @State private var rotY: String = ""
     @State private var rotZ: String = ""
+    @State private var isEditingFlags = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -152,7 +153,13 @@ struct InstanceInspectorView: View {
                     LabeledContent("Object ID", value: "\(instance.objectID)")
                     LabeledContent("Script ID", value: instance.scriptID == -1 ? "None" : "\(instance.scriptID)")
                     LabeledContent("Ref List", value: instance.refList == -1 ? "None" : "\(instance.refList)")
-                    LabeledContent("Flags", value: "0x\(String(instance.flags, radix: 16))")
+                    LabeledContent("Flags") {
+                        HStack {
+                            Text("0x\(String(instance.flags, radix: 16))")
+                            Button("Edit…") { isEditingFlags = true }
+                                .disabled(!workspace.canSaveEdits(for: node))
+                        }
+                    }
                 }
                 if !instance.childInstanceIDs.isEmpty {
                     Section("Child Instances (\(instance.childInstanceIDs.count))") {
@@ -192,6 +199,9 @@ struct InstanceInspectorView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal)
             }
+        }
+        .sheet(isPresented: $isEditingFlags) {
+            InstanceFlagsEditorSheet(node: node, instance: instance)
         }
     }
 
@@ -263,6 +273,7 @@ struct TriggerInspectorView: View {
     @State private var rotX = ""
     @State private var rotY = ""
     @State private var rotZ = ""
+    @State private var isEditingArguments = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -289,6 +300,8 @@ struct TriggerInspectorView: View {
                     LabeledContent("Arg 2", value: "\(trigger.arg2)")
                     LabeledContent("Arg 3", value: "\(trigger.arg3)")
                     LabeledContent("Arg 4", value: "\(trigger.arg4)")
+                    Button("Edit Arguments…") { isEditingArguments = true }
+                        .disabled(!workspace.canSaveEdits(for: node))
                 }
                 if !trigger.instanceIDs.isEmpty {
                     Section("Referenced Instances (\(trigger.instanceIDs.count))") {
@@ -320,6 +333,9 @@ struct TriggerInspectorView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal)
             }
+        }
+        .sheet(isPresented: $isEditingArguments) {
+            TriggerArgumentsEditorSheet(node: node, trigger: trigger)
         }
     }
 

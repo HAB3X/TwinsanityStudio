@@ -45,6 +45,7 @@ public enum WorldPlacementParser {
         let refList = try cursor.readInt16()
         let scriptID = try cursor.readInt16()
         _ = try cursor.readUInt32() // PHeader — redundant packed count of the three unknown lists below, recomputed on save
+        let flagsFileOffset = cursor.position
         let flags = try cursor.readUInt32()
 
         let unknownUInt32List = try readUInt32List(&cursor)
@@ -66,7 +67,8 @@ public enum WorldPlacementParser {
             unknownUInt32List: unknownUInt32List,
             unknownFloatList: unknownFloatList,
             unknownUInt32List2: unknownUInt32List2,
-            objectIDFileOffset: objectIDFileOffset
+            objectIDFileOffset: objectIDFileOffset,
+            flagsFileOffset: flagsFileOffset
         )
     }
 
@@ -80,6 +82,7 @@ public enum WorldPlacementParser {
 
         let instanceIDs = try readCountedUInt16List(&cursor)
 
+        let argsFileOffset = cursor.position
         let arg1 = try cursor.readUInt16()
         let arg2 = try cursor.readUInt16()
         let arg3 = try cursor.readUInt16()
@@ -97,7 +100,8 @@ public enum WorldPlacementParser {
             arg1: arg1,
             arg2: arg2,
             arg3: arg3,
-            arg4: arg4
+            arg4: arg4,
+            argsFileOffset: argsFileOffset
         )
     }
 
