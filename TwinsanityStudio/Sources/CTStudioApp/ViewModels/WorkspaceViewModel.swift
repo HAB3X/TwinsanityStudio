@@ -1113,14 +1113,39 @@ public final class WorkspaceViewModel: ObservableObject {
     /// supposed to be the same view.
     public func openLevelViewer(for scenery: SceneryAsset, node: ChunkNode) async {
         let placements = await resolvedLevelPlacements(for: scenery, node: node)
+        let instanceMarkers = instanceRecords(inSameFileAs: node)
         levelViewerContext = LevelViewerContext(
             scenery: scenery,
             placements: placements,
-            instanceMarkers: instanceRecords(inSameFileAs: node),
+            instanceMarkers: instanceMarkers,
+            resolvedInstanceAssets: await resolvedInstanceAssets(for: instanceMarkers, node: node),
             triggers: triggerRecords(inSameFileAs: node),
             cameras: cameraRecords(inSameFileAs: node),
             sounds: soundEffectRecords(inSameFileAs: node)
         )
+    }
+
+    /// "Comprehensive Instance Population" (Part 4B): resolves every
+    /// `Instance.objectID` to real geometry where this build's decoded data
+    /// allows it (`AssetResolver.resolveInstanceObject` — `GameObject` ->
+    /// `GraphicsInfo` -> skinned mesh or rigid model-link parts), keyed by
+    /// the `Instance` node's own identity so `LevelViewerRenderer` can look
+    /// each one up directly. Missing from this dictionary is exactly the
+    /// "no 3D model available" case `LevelViewerRenderer.upload` falls back
+    /// to the colored placeholder marker for — this never fabricates a
+    /// substitute for one that doesn't resolve.
+    private func resolvedInstanceAssets(for instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)], node: ChunkNode) async -> [UUID: ResolvedModelAsset] {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return [:] }
+        return await Task.detached(priority: .userInitiated) {
+            let index = AssetResolver.buildIndex(fileRoot: fileRoot)
+            var results: [UUID: ResolvedModelAsset] = [:]
+            for (markerNode, instance) in instanceMarkers {
+                let selector = instance.unknownUInt32List2.first ?? 0
+                guard let resolved = AssetResolver.resolveInstanceObject(objectID: instance.objectID, instanceSelector: selector, index: index) else { continue }
+                results[markerNode.id] = resolved
+            }
+            return results
+        }.value
     }
 
     /// "Deep Hierarchy & Linked Asset Resolution": the parent composite

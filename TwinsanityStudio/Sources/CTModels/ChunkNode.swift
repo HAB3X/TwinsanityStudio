@@ -18,6 +18,11 @@ public enum ChunkPayload: Sendable {
     case scenery(SceneryAsset)
     case dynamicScenery(DynamicSceneryAsset)
     case soundEffect(SoundEffectAsset)
+    /// A `GameObject` record — see `GameObjectInfo`'s own doc comment.
+    /// Plumbing (`Instance.objectID` -> this -> a `GraphicsInfo`/mesh),
+    /// same reasoning as `.material` below, not a filterable kind of its
+    /// own.
+    case gameObject(GameObjectInfo)
     /// Understood record kind, but not (yet) decoded into a typed model —
     /// still browsable/exportable as a hex/raw blob.
     case raw(byteCount: Int)
@@ -52,7 +57,7 @@ public enum ChunkPayload: Sendable {
         case .camera: return .camera
         case .collision: return .collision
         case .soundEffect: return .soundEffect
-        case .material, .position, .scenery, .dynamicScenery, .raw: return nil
+        case .material, .position, .scenery, .dynamicScenery, .gameObject, .raw: return nil
         }
     }
 }

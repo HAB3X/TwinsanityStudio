@@ -297,6 +297,8 @@ public enum RM2Parser {
                 return .material(try MaterialParser.parse(&cursor, recordID: recordID))
             case .ogi:
                 return .skeleton(try GraphicsInfoParser.parse(&cursor, recordID: recordID))
+            case .object:
+                return .gameObject(try GameObjectParser.parse(&cursor, recordID: recordID))
             case .animation:
                 return .animation(try AnimationParser.parse(&cursor, recordID: recordID))
             case .position:

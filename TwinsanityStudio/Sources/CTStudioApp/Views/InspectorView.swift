@@ -67,6 +67,8 @@ struct InspectorView: View {
                                 DynamicSceneryInspectorView(scenery: dynamicScenery)
                             case .soundEffect(let sound):
                                 SoundEffectInspectorView(node: node, sound: sound)
+                            case .gameObject(let gameObject):
+                                GameObjectInspectorView(gameObject: gameObject)
                             case .raw, .none:
                                 RawInspectorView(node: node)
                             }
@@ -96,7 +98,7 @@ struct InspectorView: View {
     private static func isCompositeEligible(_ payload: ChunkPayload?) -> Bool {
         switch payload {
         case .texture, .mesh, .material, .animation, .rigidModel, .skeleton: return true
-        case .position, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .raw, .none: return false
+        case .position, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .gameObject, .raw, .none: return false
         }
     }
 
@@ -178,6 +180,30 @@ struct MaterialInspectorView: View {
                 DisclosureGroup("Shaders") {
                     ForEach(Array(material.shaders.enumerated()), id: \.offset) { _, shader in
                         LabeledContent("Type \(shader.shaderType)", value: "texture #\(shader.textureId)")
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+/// "Comprehensive Instance Population" (Part 4B): a read-only view of the
+/// `GameObject` record an `Instance.objectID` resolves through on its way
+/// to real geometry — see `GameObjectInfo`'s own doc comment for why only
+/// the `OGIs` list is decoded (name + OGI links only, not the script
+/// bytecode tail this codebase doesn't decode anywhere else either).
+struct GameObjectInspectorView: View {
+    let gameObject: GameObjectInfo
+
+    var body: some View {
+        Form {
+            LabeledContent("Name", value: gameObject.name)
+            LabeledContent("Object ID", value: "\(gameObject.id)")
+            if !gameObject.ogiIDs.isEmpty {
+                DisclosureGroup("Graphics Info Links (\(gameObject.ogiIDs.count))") {
+                    ForEach(Array(gameObject.ogiIDs.enumerated()), id: \.offset) { index, ogiID in
+                        LabeledContent("[\(index)]", value: ogiID == 65535 ? "none" : "#\(ogiID)")
                     }
                 }
             }

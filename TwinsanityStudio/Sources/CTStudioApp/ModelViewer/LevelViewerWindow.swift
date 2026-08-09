@@ -21,6 +21,13 @@ public struct LevelViewerContext: Identifiable {
     /// here would be a guess dressed up as data. The marker's *position* is
     /// exactly what's on disk, and dragging/saving it is fully real.
     public var instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)]
+    /// "Comprehensive Instance Population" (Part 4B): real resolved
+    /// geometry for whichever `instanceMarkers` entries this build could
+    /// actually resolve (`WorkspaceViewModel.resolvedInstanceAssets`),
+    /// keyed by that entry's `node.id`. An entry with no matching key here
+    /// draws as the amber placeholder marker instead — the mandate's own
+    /// "use a colored bounding-box proxy when a model is missing."
+    public var resolvedInstanceAssets: [UUID: ResolvedModelAsset]
     /// "Level Editor Overhaul": every `Trigger`/`Camera`/`SoundEffect`
     /// record from the same file — triggers/cameras feed their scene
     /// layers (wireframe boxes, select-and-inspect only, no write path
@@ -33,6 +40,7 @@ public struct LevelViewerContext: Identifiable {
         scenery: SceneryAsset,
         placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)],
         instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)] = [],
+        resolvedInstanceAssets: [UUID: ResolvedModelAsset] = [:],
         triggers: [(node: ChunkNode, trigger: TriggerVolume)] = [],
         cameras: [(node: ChunkNode, camera: PlacedCamera)] = [],
         sounds: [(node: ChunkNode, sound: SoundEffectAsset)] = []
@@ -40,6 +48,7 @@ public struct LevelViewerContext: Identifiable {
         self.scenery = scenery
         self.placements = placements
         self.instanceMarkers = instanceMarkers
+        self.resolvedInstanceAssets = resolvedInstanceAssets
         self.triggers = triggers
         self.cameras = cameras
         self.sounds = sounds
@@ -126,6 +135,7 @@ struct LevelViewerWindow: View {
             renderer = LevelViewerRenderer(
                 placements: context.placements,
                 instanceMarkers: context.instanceMarkers,
+                resolvedInstanceAssets: context.resolvedInstanceAssets,
                 triggers: context.triggers,
                 cameras: context.cameras
             )

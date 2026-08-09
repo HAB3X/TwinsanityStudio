@@ -19,6 +19,9 @@ public struct GraphicsAssetIndex: Sendable {
     public var rigidModels: [UInt32: RigidModelInfo] = [:]
     public var skeletons: [UInt32: SkeletonAsset] = [:]
     public var animations: [UInt32: AnimationAsset] = [:]
+    /// `GameObject` records, keyed by their own ID — `Instance.objectID`
+    /// looks up into this. "Comprehensive Instance Population" (Part 4B).
+    public var gameObjects: [UInt32: GameObjectInfo] = [:]
 
     public init() {}
 }
@@ -104,7 +107,7 @@ public enum AssetResolver {
                         }
                     case .rigidModel(let rigidModel):
                         index.rigidModels[leaf.recordID] = rigidModel
-                    case .skeleton, .animation, .position, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .raw:
+                    case .skeleton, .animation, .position, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .gameObject, .raw:
                         break
                     }
                 }
@@ -123,6 +126,13 @@ public enum AssetResolver {
                 for leaf in animationSection.children {
                     if case .animation(let animation) = leaf.payload {
                         index.animations[leaf.recordID] = animation
+                    }
+                }
+            }
+            if let objectSection = code.children.first(where: { $0.sectionType == .object }) {
+                for leaf in objectSection.children {
+                    if case .gameObject(let gameObject) = leaf.payload {
+                        index.gameObjects[leaf.recordID] = gameObject
                     }
                 }
             }
@@ -172,6 +182,80 @@ public enum AssetResolver {
         }
         let animations = Array(index.animations.values)
         return ResolvedModelAsset(recordID: skeleton.id, displayName: displayName, mesh: mesh, submeshMaterials: materials, skeleton: skeleton, availableAnimations: animations)
+    }
+
+    /// Resolves a rigid part attached to a joint via `GraphicsInfo.
+    /// modelLinks` (`GI.ModelIDs` in the reference) — the mechanism a
+    /// non-skinned prop (a crate, a fruit, a switch — anything simple
+    /// enough not to need smooth per-vertex skin weights) uses instead of
+    /// `skinID`: one or more independent `RigidModel` parts, each nominally
+    /// attached to a specific joint. Every part is merged into one
+    /// `ResolvedModelAsset` (concatenated submeshes/materials) so the
+    /// caller gets a single drawable object per `Instance`, same as the
+    /// skinned path.
+    ///
+    /// Deliberately positions every part at the object's own local origin,
+    /// **not** offset by that joint's own local transform (`RMViewer.cs`'s
+    /// `LocalRot`, built from `SkinTransforms[jointIndex]`/`Joints[jointIndex]
+    /// .Matrix[1]`) — this build's already-established simplification for
+    /// joint-relative placement (see `ModelViewerRenderer`'s bind-pose
+    /// skeleton doc comments) extended to this new path rather than
+    /// guessing at a second, independently-unverified matrix-slot meaning
+    /// on top of the ones Part 3 already confirmed. For a single-part prop
+    /// (the overwhelming common case — a crate, a fruit, a single pickup)
+    /// this has no visible effect at all, since there's only one part and
+    /// it belongs at the instance's own position regardless.
+    public static func resolveModelLinks(_ skeleton: SkeletonAsset, displayName: String, index: GraphicsAssetIndex) -> ResolvedModelAsset? {
+        guard !skeleton.modelLinks.isEmpty else { return nil }
+        var mergedSubmeshes: [MeshSubmesh] = []
+        var mergedMaterials: [ResolvedSubmeshMaterial] = []
+        for link in skeleton.modelLinks {
+            guard let rigidModel = index.rigidModels[link.modelID],
+                  let resolvedPart = resolveRigidModel(rigidModel, displayName: displayName, index: index)
+            else { continue }
+            mergedSubmeshes.append(contentsOf: resolvedPart.mesh.submeshes)
+            mergedMaterials.append(contentsOf: resolvedPart.submeshMaterials)
+        }
+        guard !mergedSubmeshes.isEmpty else { return nil }
+        let mesh = MeshAsset(id: skeleton.id, isSkinned: false, submeshes: mergedSubmeshes)
+        return ResolvedModelAsset(recordID: skeleton.id, displayName: displayName, mesh: mesh, submeshMaterials: mergedMaterials)
+    }
+
+    /// "Comprehensive Instance Population" (Part 4B): resolves an
+    /// `Instance.objectID` all the way to real, drawable geometry — the
+    /// exact chain `RMViewer.cs`'s own instance-rendering path uses
+    /// (`GameObject` lookup by `ObjectID`, pick an `OGIs` entry, then
+    /// either a skinned character via `skinID` or one-or-more rigid parts
+    /// via `modelLinks`), ported field-for-field including the `OGIs`
+    /// index-selection quirk: index 0 is the default, but
+    /// `instanceSelector` (the *Instance* record's own third unknown
+    /// trailing list, `unknownUInt32List2[0]` — `ins.UnkI323[0]` in the
+    /// reference), when non-zero and in range, picks a different `OGIs`
+    /// entry instead. `nil` whenever any link in this chain doesn't
+    /// resolve (no matching `GameObject`, no usable `OGIs` entry, neither
+    /// `skinID` nor `modelLinks` resolves to real geometry) — the caller's
+    /// fallback to a colored placeholder marker for exactly this case is
+    /// what the "comprehensive population" mandate itself asks for.
+    public static func resolveInstanceObject(objectID: UInt16, instanceSelector: UInt32, index: GraphicsAssetIndex) -> ResolvedModelAsset? {
+        let noValue: UInt32 = 65535
+        guard let gameObject = index.gameObjects[UInt32(objectID)],
+              !gameObject.ogiIDs.isEmpty, gameObject.ogiIDs[0] != noValue
+        else { return nil }
+
+        var targetOGI = gameObject.ogiIDs[0]
+        if instanceSelector != 0,
+           gameObject.ogiIDs.count > Int(instanceSelector),
+           gameObject.ogiIDs[Int(instanceSelector)] != noValue {
+            targetOGI = gameObject.ogiIDs[Int(instanceSelector)]
+        }
+
+        guard let skeleton = index.skeletons[targetOGI] else { return nil }
+        let displayName = "Object #\(objectID) (\(gameObject.name))"
+
+        if skeleton.skinID != 0, index.skins[skeleton.skinID] != nil {
+            return resolveSkeleton(skeleton, displayName: displayName, index: index)
+        }
+        return resolveModelLinks(skeleton, displayName: displayName, index: index)
     }
 
     /// Resolves *any* composite-eligible node — not just a `RigidModel`/

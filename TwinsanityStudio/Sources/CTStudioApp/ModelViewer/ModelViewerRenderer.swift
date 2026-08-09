@@ -1105,18 +1105,20 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     init?(
         placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)],
         instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)] = [],
+        resolvedInstanceAssets: [UUID: ResolvedModelAsset] = [:],
         triggers: [(node: ChunkNode, trigger: TriggerVolume)] = [],
         cameras: [(node: ChunkNode, camera: PlacedCamera)] = []
     ) {
         guard let context = ModelViewerGPUContext.shared else { return nil }
         self.context = context
         super.init()
-        upload(placements: placements, instanceMarkers: instanceMarkers, triggers: triggers, cameras: cameras)
+        upload(placements: placements, instanceMarkers: instanceMarkers, resolvedInstanceAssets: resolvedInstanceAssets, triggers: triggers, cameras: cameras)
     }
 
     private func upload(
         placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)],
         instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)],
+        resolvedInstanceAssets: [UUID: ResolvedModelAsset],
         triggers: [(node: ChunkNode, trigger: TriggerVolume)],
         cameras: [(node: ChunkNode, camera: PlacedCamera)]
     ) {
@@ -1144,15 +1146,28 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         let markerBuilt = ModelViewerRenderer.buildGPUSubmeshes(mesh: markerMesh.mesh, submeshMaterials: [markerMesh.material], device: device, fallbackTexture: context.fallbackTexture)
         let markerRadius = Self.boundingRadius(of: markerMesh.mesh)
         for (node, instance) in instanceMarkers {
-            guard !markerBuilt.submeshes.isEmpty else { break }
             let worldPosition = SIMD3(instance.position.x, instance.position.y, instance.position.z)
+            // "Comprehensive Instance Population" (Part 4B): real geometry
+            // when this build could resolve one (GameObject -> GraphicsInfo
+            // -> skinned mesh or rigid model-link parts), the amber
+            // placeholder cube otherwise — never a fabricated stand-in.
+            var submeshes = markerBuilt.submeshes
+            var boundingRadius = markerRadius
+            if let resolvedAsset = resolvedInstanceAssets[node.id] {
+                let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: resolvedAsset.mesh, submeshMaterials: resolvedAsset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
+                if !built.submeshes.isEmpty {
+                    submeshes = built.submeshes
+                    boundingRadius = Self.boundingRadius(of: resolvedAsset.mesh)
+                }
+            }
+            guard !submeshes.isEmpty else { continue }
             levelObjects.append(GPULevelObject(
                 worldPosition: worldPosition,
                 rotation: Self.quaternion(fromEulerDegrees: instance.rotationDegrees),
                 displayName: "Instance #\(instance.id) (Object \(instance.objectID))",
-                submeshes: markerBuilt.submeshes,
+                submeshes: submeshes,
                 layer: .actors,
-                boundingRadius: markerRadius,
+                boundingRadius: boundingRadius,
                 sourceNode: node,
                 originalPositionW: instance.position.w,
                 comRotationRaw: instance.comRotationRaw
