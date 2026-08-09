@@ -114,6 +114,11 @@ struct ContentView: View {
                     } label: {
                         Label("Open Memory Card…", systemImage: "externaldrive")
                     }
+                    Button {
+                        presentDiscImageOpenPanel()
+                    } label: {
+                        Label("Mount Disc Image…", systemImage: "opticaldiscdrive")
+                    }
                 } label: {
                     Label("Library", systemImage: "books.vertical.fill")
                 }
@@ -216,6 +221,15 @@ struct ContentView: View {
                     .environmentObject(workspace)
             }
         }
+        .sheet(isPresented: Binding(
+            get: { workspace.mountedDiscImage != nil },
+            set: { if !$0 { workspace.mountedDiscImage = nil } }
+        )) {
+            if let mounted = workspace.mountedDiscImage {
+                DiscImageBrowserView(mounted: mounted)
+                    .environmentObject(workspace)
+            }
+        }
         .onDrop(of: [.fileURL], isTargeted: $isTargetedForDrop) { providers in
             handleDrop(providers: providers)
         }
@@ -274,6 +288,21 @@ struct ContentView: View {
         panel.message = "Choose a PS2 memory card image (.mcr/.ps2/.mc2)."
         if panel.runModal() == .OK, let url = panel.urls.first {
             workspace.openMemoryCard(url: url)
+        }
+    }
+
+    /// "Native ISO & BIN/CUE Disc Image Mounting" (Task 7) — a separate
+    /// entry point from `presentOpenPanel()`, not a replacement for it:
+    /// regular folder/file opening is untouched, this just adds a second,
+    /// real way in for a whole disc image.
+    private func presentDiscImageOpenPanel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.message = "Choose a disc image: .iso, or .bin/.cue (pick either file — its match is found automatically alongside it)."
+        if panel.runModal() == .OK, let url = panel.urls.first {
+            workspace.mountDiscImage(url: url)
         }
     }
 }

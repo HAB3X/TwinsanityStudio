@@ -127,6 +127,86 @@ public final class WorkspaceViewModel: ObservableObject {
             lastError = "Couldn't read \(url.lastPathComponent) as a PS2 memory card: \(error)"
         }
     }
+
+    // MARK: - Disc Image Mounting (roadmap 1.4/Task 7 — ISO-9660 / BIN-CUE)
+
+    /// A real mounted `.iso`/`.bin`+`.cue` — the parsed root directory plus
+    /// the `LogicalSectorSource` it was read from, kept around so
+    /// individual files can be extracted on demand (`openMountedEntry`)
+    /// without re-reading the volume descriptor/directory tree each time.
+    public struct MountedDiscImage {
+        public let displayName: String
+        public let root: ISO9660Entry
+        public let source: any LogicalSectorSource
+    }
+
+    /// Non-nil presents the Disc Image Browser sheet (see `ContentView`).
+    @Published public var mountedDiscImage: MountedDiscImage?
+
+    /// "Native ISO & BIN/CUE Disc Image Mounting": mounts a real `.iso`, or
+    /// a `.bin`/`.cue` pair, and reads its real ISO-9660 root directory —
+    /// a completely separate document type from the `.BD`/`.RM2` workspace
+    /// tree, same as `openMemoryCard`. `.mappedIfSafe` so mounting a
+    /// multi-gigabyte disc image doesn't materialize the whole thing in
+    /// RAM up front — only the sectors `ISO9660Reader` actually touches
+    /// (the volume descriptor, directory extents, and whichever file gets
+    /// opened) get paged in.
+    public func mountDiscImage(url: URL) {
+        do {
+            let source: any LogicalSectorSource
+            switch url.pathExtension.uppercased() {
+            case "ISO":
+                source = PlainISOSource(data: try Data(contentsOf: url, options: .mappedIfSafe))
+            case "CUE":
+                let cue = try CueSheetParser.parse(contents: try String(contentsOf: url, encoding: .ascii))
+                let binURL = url.deletingLastPathComponent().appendingPathComponent(cue.binFileName)
+                let binData = try Data(contentsOf: binURL, options: .mappedIfSafe)
+                source = BinCueLogicalSource(binData: binData, framing: cue.framing)
+            case "BIN":
+                let cueURL = url.deletingPathExtension().appendingPathExtension("cue")
+                guard FileManager.default.fileExists(atPath: cueURL.path) else {
+                    lastError = "\(url.lastPathComponent) has no matching .cue file alongside it — a raw .bin's sector framing can't be determined without one."
+                    return
+                }
+                let cue = try CueSheetParser.parse(contents: try String(contentsOf: cueURL, encoding: .ascii))
+                let binData = try Data(contentsOf: url, options: .mappedIfSafe)
+                source = BinCueLogicalSource(binData: binData, framing: cue.framing)
+            default:
+                lastError = "\(url.lastPathComponent) isn't a recognized disc image — choose a .iso, .bin, or .cue file."
+                return
+            }
+            let root = try ISO9660Reader.readRootDirectory(from: source)
+            mountedDiscImage = MountedDiscImage(displayName: url.lastPathComponent, root: root, source: source)
+            statusMessage = "Mounted \(url.lastPathComponent)."
+        } catch let error as CueSheetParser.ParseError {
+            lastError = "Couldn't read \(url.lastPathComponent)'s cue sheet: \(error)"
+        } catch is ISO9660Error {
+            lastError = "\(url.lastPathComponent) doesn't look like a real ISO-9660 disc image (no valid volume descriptor found)."
+        } catch {
+            lastError = "Couldn't mount \(url.lastPathComponent): \(error)"
+        }
+    }
+
+    /// Extracts `entry`'s real bytes from the currently mounted disc image,
+    /// writes them to a temp file, and hands off to the *existing*
+    /// `open(url:)` — reusing the one real, already-tested ingestion path
+    /// rather than a second parallel one for disc-mounted files.
+    public func openMountedEntry(_ entry: ISO9660Entry) {
+        guard let mountedDiscImage, !entry.isDirectory else { return }
+        guard let data = ISO9660Reader.readFile(entry, from: mountedDiscImage.source) else {
+            lastError = "Couldn't read \(entry.name)'s real bytes from the mounted image."
+            return
+        }
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent(entry.name)
+        do {
+            try FileManager.default.createDirectory(at: tempURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: tempURL)
+            self.mountedDiscImage = nil
+            open(url: tempURL)
+        } catch {
+            lastError = "Couldn't extract \(entry.name) from the mounted image: \(error)"
+        }
+    }
     /// Non-nil presents the Model Viewer sheet (see `ContentView`).
     @Published public var modelViewerAsset: ResolvedModelAsset?
     /// Non-nil presents the Collision Viewer sheet (see `ContentView`).
