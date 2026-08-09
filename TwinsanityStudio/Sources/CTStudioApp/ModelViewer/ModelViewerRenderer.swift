@@ -22,7 +22,11 @@ struct ModelVertexGPU {
 /// One submesh's GPU resources: its own vertex/index buffers (submeshes
 /// have independent vertex streams, since each can use a different
 /// triangle-strip connectivity pattern) and its resolved texture, if any.
-private struct GPUSubmesh {
+/// Not `private` — `skinVertices(submesh:skinningMatrices:)` below takes
+/// this type directly, and a synthetic-weight regression test (the
+/// "totalWeight renormalization" fix) needs to construct one without going
+/// through a full skeleton/animation-track pipeline.
+struct GPUSubmesh {
     /// Index into the source `ResolvedModelAsset.mesh.submeshes` — *not*
     /// necessarily this array's own index, since submeshes with no
     /// vertices are skipped during upload and would otherwise shift
@@ -623,7 +627,11 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     /// translation) — the standard real-time-skinning approximation; it
     /// doesn't correct for non-uniform-scale shearing, which no renderer in
     /// this codebase claims to handle anywhere else either.
-    private static func skinVertices(submesh: GPUSubmesh, skinningMatrices: [UInt32: simd_float4x4]) {
+    // Not `private` — see `GPUSubmesh`'s own doc comment for why: a
+    // synthetic regression test needs to call this directly with a
+    // hand-built submesh and a deliberately incomplete `skinningMatrices`
+    // dictionary, without standing up a full skeleton/animation pipeline.
+    static func skinVertices(submesh: GPUSubmesh, skinningMatrices: [UInt32: simd_float4x4]) {
         var gpuVertices: [ModelVertexGPU] = []
         gpuVertices.reserveCapacity(submesh.bindVertices.count)
         for (i, v) in submesh.bindVertices.enumerated() {
@@ -668,8 +676,25 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
                 // pose rather than collapsing it to the origin.
                 skinnedPosition = v.position
                 skinnedNormal = v.normal
-            } else if simd_length(skinnedNormal) > 0.0001 {
-                skinnedNormal = simd_normalize(skinnedNormal)
+            } else {
+                // Linear blend skinning is a weighted *average*, not a
+                // weighted sum: divide by the weight actually applied
+                // rather than assuming it already summed to 1. Source
+                // weights normally do sum to ~1, so this is a no-op in the
+                // common case — but `skinningMatrices` is a
+                // `[UInt32: simd_float4x4]` dictionary, and any lane whose
+                // joint index has no entry (an unresolved/out-of-range
+                // joint for this frame) gets silently skipped by the
+                // `guard let matrix = ...` above, leaving `totalWeight`
+                // short of 1 for that vertex specifically. Without this
+                // divide, that vertex's position is scaled down toward the
+                // coordinate origin by exactly the missing fraction —
+                // every affected vertex pulled toward (0,0,0), which is
+                // the "model scrunches into a ball" symptom.
+                skinnedPosition /= totalWeight
+                if simd_length(skinnedNormal) > 0.0001 {
+                    skinnedNormal = simd_normalize(skinnedNormal)
+                }
             }
             // else: real influence found (skinnedPosition is valid), but
             // the blended normal came out ~zero because the source
