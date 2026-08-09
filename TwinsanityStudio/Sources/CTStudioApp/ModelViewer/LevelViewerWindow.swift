@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import CTModels
 import CTParsers
 import UniformTypeIdentifiers
@@ -156,6 +157,10 @@ struct LevelViewerWindow: View {
     /// indicator on that one row only).
     @State private var stitchedLinkIDs: Set<Int> = []
     @State private var stitchingLinkID: Int?
+    /// "Cross-Engine Chunk Stitcher" (roadmap 5.3): a running log of what's
+    /// been loaded this session — file name plus real decoded counts, or
+    /// an error, so the user can see what actually got stitched in.
+    @State private var crossEngineLoadLog: [String] = []
     /// Full transform captured at the start of a gizmo drag or a
     /// nudge-field edit, so ⌘Z has something to restore to — see
     /// `registerUndo`. Snapshotting all three (not just whichever one a
@@ -360,6 +365,9 @@ struct LevelViewerWindow: View {
                     Divider()
                     aiPathsPanel
                 }
+
+                Divider()
+                crossEngineDataPanel
             }
             .padding(16)
         }
@@ -542,6 +550,68 @@ struct LevelViewerWindow: View {
             layerVisibility.insert(.linkedChunks)
             renderer?.layerVisibility = layerVisibility
             workspace.statusMessage = "Stitched \(added) object(s) from \(result.fileName)."
+        }
+    }
+
+    /// "Cross-Engine Chunk Stitcher" (roadmap 5.3): the mandate's other
+    /// half of "load chunk files from different engines... side-by-side."
+    /// A real Wrath of Cortex `.CRT`/`.WMP` file, parsed by
+    /// `WrathOfCortexParser` (ported from CrateModLoader's real, working
+    /// decoder — see `WOCCrateFile`'s doc comment for the "not verified
+    /// against real WoC bytes" caveat, since no WoC disc image is
+    /// available in this environment), plotted directly into this same
+    /// Twinsanity chunk's viewport as a separate, offset, independently
+    /// toggleable layer.
+    private var crossEngineDataPanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Cross-Engine Data").font(.headline)
+            Text("Load a real Wrath of Cortex .CRT (crates) or .WMP (Wumpa fruit) file and plot it alongside this chunk, offset 20 units on X so it doesn't overlap.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Button("Load Wrath of Cortex File…") { loadCrossEngineFile() }
+            ForEach(Array(crossEngineLoadLog.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func loadCrossEngineFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a real Wrath of Cortex .CRT (crates) or .WMP (Wumpa fruit) file."
+        panel.prompt = "Load"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        // Fixed offset so the cross-engine data doesn't land on top of the
+        // currently loaded chunk — these two games have no real shared
+        // coordinate space to align through, unlike `ChunkLink.chunkMatrix`
+        // (a real, decoded alignment transform for same-engine neighbors).
+        let offset = SIMD3<Float>(20, 0, 0)
+        do {
+            let data = try Data(contentsOf: url)
+            switch url.pathExtension.lowercased() {
+            case "crt":
+                let file = try WrathOfCortexParser.parseCrateFile(data)
+                let positions = file.groups.flatMap { $0.crates.map(\.position) }
+                renderer?.stitchCrossEngineData(crates: positions, wumpas: [], worldOffset: offset)
+                layerVisibility.insert(.crossEngine)
+                renderer?.layerVisibility = layerVisibility
+                crossEngineLoadLog.append("\(url.lastPathComponent): \(file.groups.count) group(s), \(file.totalCrateCount) crate(s)")
+            case "wmp":
+                let file = try WrathOfCortexParser.parseWumpaFile(data)
+                renderer?.stitchCrossEngineData(crates: [], wumpas: file.positions, worldOffset: offset)
+                layerVisibility.insert(.crossEngine)
+                renderer?.layerVisibility = layerVisibility
+                crossEngineLoadLog.append("\(url.lastPathComponent): \(file.positions.count) Wumpa position(s)")
+            default:
+                workspace.lastError = "Unrecognized file — expected a .CRT or .WMP Wrath of Cortex file."
+            }
+        } catch {
+            workspace.lastError = "Failed to parse \(url.lastPathComponent): \(error)"
         }
     }
 

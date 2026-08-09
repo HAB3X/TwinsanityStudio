@@ -1101,7 +1101,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
 /// four groups an object belongs to — drives both draw-time visibility
 /// filtering and the "Geometry Only"/"Fully Populated" mode preset.
 enum SceneLayer: CaseIterable, Hashable {
-    case scenery, actors, triggers, cameras, chunkBoundaries, linkedChunks, aiWaypoints
+    case scenery, actors, triggers, cameras, chunkBoundaries, linkedChunks, aiWaypoints, crossEngine
 
     var displayName: String {
         switch self {
@@ -1112,6 +1112,7 @@ enum SceneLayer: CaseIterable, Hashable {
         case .chunkBoundaries: return "Chunk Boundaries"
         case .linkedChunks: return "Loaded Neighboring Chunks"
         case .aiWaypoints: return "AI Waypoints"
+        case .crossEngine: return "Cross-Engine Data (Wrath of Cortex)"
         }
     }
 }
@@ -1898,6 +1899,59 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         return added
     }
 
+    /// "Cross-Engine Chunk Stitcher" (roadmap 5.3): plots real *Wrath of
+    /// Cortex* crate/wumpa positions — a genuinely different TT-engine
+    /// game's data, see `WOCCrateFile`'s doc comment for the "ported, not
+    /// verified against real WoC bytes" caveat — as small colored wireframe
+    /// markers in this same viewport, `worldOffset` letting the caller
+    /// place them next to (not on top of) the currently loaded Twinsanity
+    /// chunk. No `sourceNode` (these don't come from an `.RM2`/`.SM2` tree
+    /// at all), so they're visible/toggleable but not click-to-inspect.
+    func stitchCrossEngineData(crates: [SIMD3<Float>], wumpas: [SIMD3<Float>], worldOffset: SIMD3<Float>) {
+        for position in crates {
+            objects.append(GPULevelObject(worldPosition: position + worldOffset, displayName: "WoC Crate", submeshes: [], layer: .crossEngine))
+        }
+        for position in wumpas {
+            objects.append(GPULevelObject(worldPosition: position + worldOffset, displayName: "WoC Wumpa", submeshes: [], layer: .crossEngine))
+        }
+        crossEngineMarkerPositions.append(contentsOf: crates.map { ($0 + worldOffset, Self.woCCrateColor) })
+        crossEngineMarkerPositions.append(contentsOf: wumpas.map { ($0 + worldOffset, Self.woCWumpaColor) })
+        rebuildCrossEngineBuffer()
+    }
+
+    private static let woCCrateColor = SIMD3<Float>(0.95, 0.45, 0.15)
+    private static let woCWumpaColor = SIMD3<Float>(0.95, 0.85, 0.2)
+    private var crossEngineMarkerPositions: [(SIMD3<Float>, SIMD3<Float>)] = []
+    private var crossEngineLineBuffer: MTLBuffer?
+    private var crossEngineLineVertexCount = 0
+
+    private func rebuildCrossEngineBuffer() {
+        var floats: [Float] = []
+        func appendVertex(_ position: SIMD3<Float>, _ color: SIMD3<Float>) {
+            floats.append(contentsOf: [position.x, position.y, position.z, color.x, color.y, color.z])
+        }
+        for (position, color) in crossEngineMarkerPositions {
+            let half: Float = 0.25
+            let corners: [SIMD3<Float>] = [
+                position + SIMD3(-half, -half, -half), position + SIMD3(half, -half, -half),
+                position + SIMD3(half, half, -half), position + SIMD3(-half, half, -half),
+                position + SIMD3(-half, -half, half), position + SIMD3(half, -half, half),
+                position + SIMD3(half, half, half), position + SIMD3(-half, half, half)
+            ]
+            let edges: [(Int, Int)] = [
+                (0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7)
+            ]
+            for (a, b) in edges { appendVertex(corners[a], color); appendVertex(corners[b], color) }
+        }
+        guard !floats.isEmpty else {
+            crossEngineLineBuffer = nil
+            crossEngineLineVertexCount = 0
+            return
+        }
+        crossEngineLineVertexCount = floats.count / 6
+        crossEngineLineBuffer = device.makeBuffer(bytes: floats, length: floats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
+    }
+
     // MARK: - The Forge Palette: new-item placement (Part 4C)
 
     /// "I must be able to select an entity from this directory, click into
@@ -2128,6 +2182,11 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             if let gizmoBuffer {
                 encoder.setVertexBuffer(gizmoBuffer, offset: 0, index: 0)
                 encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: gizmoVertexCount)
+            }
+            // "Cross-Engine Chunk Stitcher" (roadmap 5.3).
+            if layerVisibility.contains(.crossEngine), let crossEngineLineBuffer, crossEngineLineVertexCount > 0 {
+                encoder.setVertexBuffer(crossEngineLineBuffer, offset: 0, index: 0)
+                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: crossEngineLineVertexCount)
             }
         }
 
