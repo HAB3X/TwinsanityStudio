@@ -39,20 +39,35 @@ struct CommandPaletteView: View {
             }
             .padding(12)
             Divider()
-            List(results) { result in
-                Button(action: result.action) {
-                    HStack {
-                        Image(systemName: result.systemImage).frame(width: 20)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(result.title).lineLimit(1)
-                            Text(result.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            if results.isEmpty {
+                // The palette used to just go blank with no explanation
+                // whenever a search had zero hits (or, before anything was
+                // even open, on first appearance) — indistinguishable from
+                // it being broken.
+                ContentUnavailableView(
+                    query.isEmpty ? "Nothing Open Yet" : "No Matches",
+                    systemImage: query.isEmpty ? "shippingbox" : "magnifyingglass",
+                    description: Text(query.isEmpty
+                        ? "Open a file to search its chunks and resolved models here."
+                        : "Try a different name or record ID.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(results) { result in
+                    Button(action: result.action) {
+                        HStack {
+                            Image(systemName: result.systemImage).frame(width: 20)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(result.title).lineLimit(1)
+                                Text(result.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            Spacer()
                         }
-                        Spacer()
                     }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
+                .listStyle(.plain)
             }
-            .listStyle(.plain)
         }
         .frame(width: 560, height: 420)
         .onAppear { isSearchFocused = true }
