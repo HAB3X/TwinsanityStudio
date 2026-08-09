@@ -26,7 +26,7 @@ public enum ColDataParser {
         let vertexCount = try cursor.readUInt32()
 
         var triggerBoxes: [CollisionTriggerBox] = []
-        triggerBoxes.reserveCapacity(Int(triggerCount))
+        triggerBoxes.reserveCapacity(cursor.safeReserveCount(triggerCount, elementSize: 32))
         for _ in 0..<triggerCount {
             let x1 = try cursor.readFloat32()
             let y1 = try cursor.readFloat32()
@@ -40,7 +40,7 @@ public enum ColDataParser {
         }
 
         var groups: [CollisionGroup] = []
-        groups.reserveCapacity(Int(groupCount))
+        groups.reserveCapacity(cursor.safeReserveCount(groupCount, elementSize: 8))
         for _ in 0..<groupCount {
             let groupSize = try cursor.readUInt32()
             let offset = try cursor.readUInt32()
@@ -48,7 +48,7 @@ public enum ColDataParser {
         }
 
         var triangles: [CollisionTriangle] = []
-        triangles.reserveCapacity(Int(triCount))
+        triangles.reserveCapacity(cursor.safeReserveCount(triCount, elementSize: 8))
         for _ in 0..<triCount {
             let packed = try cursor.readUInt64()
             let v1 = Int(packed & vertexIndexMask)
@@ -59,7 +59,7 @@ public enum ColDataParser {
         }
 
         var vertices: [SIMD4<Float>] = []
-        vertices.reserveCapacity(Int(vertexCount))
+        vertices.reserveCapacity(cursor.safeReserveCount(vertexCount, elementSize: 16))
         for _ in 0..<vertexCount {
             vertices.append(try cursor.readVector4())
         }

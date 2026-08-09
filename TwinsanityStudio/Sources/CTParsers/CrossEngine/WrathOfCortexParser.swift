@@ -64,7 +64,7 @@ public enum WrathOfCortexParser {
         var cursor = BinaryCursor(data: data)
         let count = try cursor.readUInt32()
         var positions: [SIMD3<Float>] = []
-        positions.reserveCapacity(Int(count))
+        positions.reserveCapacity(cursor.safeReserveCount(count, elementSize: 12)) // Vector3 = 3 x float32
         for _ in 0..<count { positions.append(try cursor.readVector3()) }
         return WOCWumpaFile(positions: positions)
     }

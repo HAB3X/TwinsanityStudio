@@ -21,7 +21,7 @@ public enum MaterialParser {
         let shaderCount = try cursor.readInt32()
 
         var shaders: [TwinsShaderInfo] = []
-        shaders.reserveCapacity(Int(shaderCount))
+        shaders.reserveCapacity(cursor.safeReserveCount(shaderCount, elementSize: 94)) // smallest real TwinsShader block
         for _ in 0..<max(0, shaderCount) {
             shaders.append(try readShader(&cursor))
         }

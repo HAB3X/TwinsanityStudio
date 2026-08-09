@@ -11,7 +11,7 @@ public enum RigidModelParser {
         let header = try cursor.readUInt32()
         let count = try cursor.readInt32()
         var materialIDs: [UInt32] = []
-        materialIDs.reserveCapacity(Int(count))
+        materialIDs.reserveCapacity(cursor.safeReserveCount(count, elementSize: 4))
         for _ in 0..<max(0, count) {
             materialIDs.append(try cursor.readUInt32())
         }

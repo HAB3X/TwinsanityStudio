@@ -72,4 +72,24 @@ final class ColDataParserTests: XCTestCase {
 
         XCTAssertEqual(cursor.position, w.count)
     }
+
+    /// A corrupt/crafted record could declare a huge count (up to
+    /// `UInt32.max`) for any of the four collections with no real data
+    /// behind it. Before this was fixed, `reserveCapacity` sized directly
+    /// from that declared count would try to allocate gigabytes before a
+    /// single element was read — this should instead throw the normal,
+    /// catchable `BinaryCursorError` from running out of real bytes.
+    func testHugeDeclaredCountsThrowInsteadOfOverAllocating() {
+        var w = BinaryWriter()
+        w.writeUInt32(1) // someNumber
+        w.writeUInt32(.max) // triggerCount — declared ~4 billion, no data behind it
+        w.writeUInt32(0)
+        w.writeUInt32(0)
+        w.writeUInt32(0)
+
+        var cursor = BinaryCursor(data: w.data)
+        XCTAssertThrowsError(try ColDataParser.parse(&cursor, recordID: 1, size: w.count)) { error in
+            XCTAssertTrue(error is BinaryCursorError)
+        }
+    }
 }

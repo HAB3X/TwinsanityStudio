@@ -18,7 +18,7 @@ public enum SkinParser {
     public static func parse(_ cursor: inout BinaryCursor, recordID: UInt32) throws -> MeshAsset {
         let subModelCount = try cursor.readUInt32()
         var submeshes: [MeshSubmesh] = []
-        submeshes.reserveCapacity(Int(subModelCount))
+        submeshes.reserveCapacity(cursor.safeReserveCount(subModelCount, elementSize: 12)) // materialID + codeSize + vertex amount, minimum
 
         for _ in 0..<subModelCount {
             let materialID = try cursor.readUInt32()

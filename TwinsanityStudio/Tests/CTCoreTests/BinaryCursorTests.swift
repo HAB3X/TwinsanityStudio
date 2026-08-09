@@ -69,6 +69,24 @@ final class BinaryCursorTests: XCTestCase {
         XCTAssertThrowsError(try full.subCursor(offset: 6, length: 10))
     }
 
+    func testSafeReserveCountClampsToWhatCouldActuallyFit() {
+        // 8 bytes remaining, 4 bytes/element -> at most 2 could ever fit,
+        // even though the file declares 1,000,000.
+        let cursor = BinaryCursor(data: Data(repeating: 0, count: 8))
+        XCTAssertEqual(cursor.safeReserveCount(Int32(1_000_000), elementSize: 4), 2)
+    }
+
+    func testSafeReserveCountPassesThroughWhenItActuallyFits() {
+        let cursor = BinaryCursor(data: Data(repeating: 0, count: 100))
+        XCTAssertEqual(cursor.safeReserveCount(Int32(10), elementSize: 4), 10)
+    }
+
+    func testSafeReserveCountRejectsNonPositiveInputs() {
+        let cursor = BinaryCursor(data: Data(repeating: 0, count: 100))
+        XCTAssertEqual(cursor.safeReserveCount(Int32(-1), elementSize: 4), 0)
+        XCTAssertEqual(cursor.safeReserveCount(Int32(0), elementSize: 4), 0)
+    }
+
     func testWithTemporarySeekRestoresPosition() throws {
         var cursor = BinaryCursor(data: Data([0, 1, 2, 3, 4]))
         try cursor.skip(2)

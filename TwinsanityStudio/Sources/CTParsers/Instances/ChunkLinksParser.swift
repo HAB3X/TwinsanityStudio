@@ -34,7 +34,11 @@ public enum ChunkLinksParser {
     public static func parse(_ cursor: inout BinaryCursor, recordID: UInt32) throws -> ChunkLinksAsset {
         let count = Int(try cursor.readInt32())
         var links: [ChunkLink] = []
-        links.reserveCapacity(max(0, count))
+        // Minimum real on-disk size of one ChunkLink (type + pathLength +
+        // empty path + flags + objectMatrix + chunkMatrix, before any
+        // optional loadWall/tree data) — a conservative lower bound so a
+        // corrupt/crafted `count` can't force a huge blind allocation.
+        links.reserveCapacity(cursor.safeReserveCount(count, elementSize: 140))
 
         for index in 0..<max(0, count) {
             let type = try cursor.readInt32()

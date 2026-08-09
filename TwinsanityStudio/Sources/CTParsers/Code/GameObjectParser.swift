@@ -32,7 +32,7 @@ public enum GameObjectParser {
 
         let ogiCount = try cursor.readInt32()
         var ogiIDs: [UInt32] = []
-        ogiIDs.reserveCapacity(max(0, Int(ogiCount)))
+        ogiIDs.reserveCapacity(cursor.safeReserveCount(ogiCount, elementSize: 2))
         for _ in 0..<max(0, ogiCount) {
             ogiIDs.append(UInt32(try cursor.readUInt16()))
         }

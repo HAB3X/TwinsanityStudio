@@ -47,7 +47,7 @@ public enum SoundBankParser {
         let interleave = try cursor.readUInt32()
 
         var entries: [SoundBankEntry] = []
-        entries.reserveCapacity(Int(count))
+        entries.reserveCapacity(cursor.safeReserveCount(count, elementSize: 20)) // 5 x uint32 minimum per entry
         for index in 0..<Int(count) {
             let rawKind = try cursor.readUInt32()
             let size = try cursor.readUInt32()

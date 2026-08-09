@@ -161,6 +161,30 @@ public struct BinaryCursor {
         SIMD3<Float>(try readFloat32(), try readFloat32(), try readFloat32())
     }
 
+    /// Clamps a file-declared element count against how many elements could
+    /// actually still fit in the remaining buffer, for safely sizing a
+    /// `reserveCapacity` call before reading them one at a time in a loop.
+    ///
+    /// Parsers throughout this package read a `count` field straight off
+    /// disk, then `reserveCapacity(Int(count))` before looping to read that
+    /// many elements. Every individual read in that loop is already
+    /// bounds-checked and throws on truncated data — but the *reservation*
+    /// itself happens before a single element is read or validated, so a
+    /// corrupt or crafted file declaring a huge count (up to `Int32.max`)
+    /// could make that one `reserveCapacity` call try to allocate gigabytes
+    /// immediately, crashing/hanging the process well before the loop's own
+    /// bounds check ever gets a chance to throw the normal, catchable error
+    /// this reader exists to produce instead. This never changes how many
+    /// elements actually get read (still `declaredCount`, still throwing on
+    /// truncation) — it only keeps the up-front allocation honest about
+    /// what the buffer could possibly contain.
+    public func safeReserveCount<T: BinaryInteger>(_ declaredCount: T, elementSize: Int) -> Int {
+        guard declaredCount > 0, elementSize > 0 else { return 0 }
+        let requested = Int(declaredCount)
+        let maxPossible = remaining / elementSize
+        return max(0, min(requested, maxPossible))
+    }
+
     /// A cursor scoped to a sub-range of this cursor's buffer, positioned at 0.
     /// Used to hand off e.g. a VIF microcode blob to a dedicated interpreter
     /// without letting it read past its own bounds.

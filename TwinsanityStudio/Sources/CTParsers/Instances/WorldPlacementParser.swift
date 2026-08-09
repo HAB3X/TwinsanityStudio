@@ -312,7 +312,7 @@ public enum WorldPlacementParser {
         let count = try cursor.readInt32()
         _ = try cursor.readInt32() // SomeNum / SectionHead — unused by this reader
         var values: [UInt16] = []
-        values.reserveCapacity(max(0, Int(count)))
+        values.reserveCapacity(cursor.safeReserveCount(count, elementSize: 2))
         for _ in 0..<max(0, count) {
             values.append(try cursor.readUInt16())
         }
@@ -322,7 +322,7 @@ public enum WorldPlacementParser {
     private static func readUInt32List(_ cursor: inout BinaryCursor) throws -> [UInt32] {
         let count = try cursor.readInt32()
         var values: [UInt32] = []
-        values.reserveCapacity(max(0, Int(count)))
+        values.reserveCapacity(cursor.safeReserveCount(count, elementSize: 4))
         for _ in 0..<max(0, count) {
             values.append(try cursor.readUInt32())
         }
@@ -332,7 +332,7 @@ public enum WorldPlacementParser {
     private static func readFloatList(_ cursor: inout BinaryCursor) throws -> [Float] {
         let count = try cursor.readInt32()
         var values: [Float] = []
-        values.reserveCapacity(max(0, Int(count)))
+        values.reserveCapacity(cursor.safeReserveCount(count, elementSize: 4))
         for _ in 0..<max(0, count) {
             values.append(try cursor.readFloat32())
         }

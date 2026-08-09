@@ -59,7 +59,15 @@ public enum ISO9660Reader {
     public static func readFile(_ entry: ISO9660Entry, from source: any LogicalSectorSource) -> Data? {
         guard !entry.isDirectory else { return nil }
         var result = Data()
-        result.reserveCapacity(Int(entry.size))
+        // `entry.size` comes straight from the directory record — a
+        // corrupt/malformed image could declare a bogus huge size with no
+        // real sectors behind it. Cap the up-front reservation at what
+        // `source` could possibly contain, so a bad size can't force a
+        // multi-gigabyte blind allocation before the per-sector read below
+        // (which already returns nil on a genuinely out-of-range sector)
+        // gets a chance to fail gracefully.
+        let maxPossibleBytes = source.sectorCount * sectorSize
+        result.reserveCapacity(min(Int(entry.size), maxPossibleBytes))
         let sectorCount = max(1, Int((Int(entry.size) + sectorSize - 1) / sectorSize))
         for i in 0..<sectorCount {
             guard let sector = source.sector(Int(entry.lba) + i) else { return nil }

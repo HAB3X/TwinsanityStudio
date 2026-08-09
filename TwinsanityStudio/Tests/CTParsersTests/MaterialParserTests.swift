@@ -89,4 +89,21 @@ final class MaterialParserTests: XCTestCase {
         let material = try MaterialParser.parse(&cursor, recordID: 3)
         XCTAssertEqual(material.primaryTextureID, 99)
     }
+
+    /// A corrupt/crafted record could declare a huge shader count with no
+    /// real shader data behind it — should throw the normal, catchable
+    /// error from running out of real bytes, not attempt a huge blind
+    /// `reserveCapacity` allocation before a single shader is read.
+    func testHugeDeclaredShaderCountThrowsInsteadOfOverAllocating() {
+        var w = BinaryWriter()
+        w.writeUInt64(2)
+        w.writeInt32(2)
+        w.writeInt32(0) // empty name
+        w.writeInt32(Int32.max) // shader count — declared ~2 billion, no data behind it
+
+        var cursor = BinaryCursor(data: w.data)
+        XCTAssertThrowsError(try MaterialParser.parse(&cursor, recordID: 1)) { error in
+            XCTAssertTrue(error is BinaryCursorError)
+        }
+    }
 }

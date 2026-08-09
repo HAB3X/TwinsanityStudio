@@ -22,7 +22,7 @@ public enum ModelParser {
     public static func parse(_ cursor: inout BinaryCursor, recordID: UInt32) throws -> MeshAsset {
         let subModelCount = try cursor.readInt32()
         var submeshes: [MeshSubmesh] = []
-        submeshes.reserveCapacity(Int(subModelCount))
+        submeshes.reserveCapacity(cursor.safeReserveCount(subModelCount, elementSize: 12)) // vertex count + vifCodeLength + unusedBlobLength, minimum
 
         for _ in 0..<max(0, subModelCount) {
             _ = try cursor.readUInt32() // declared vertex count; the decoded count is authoritative
