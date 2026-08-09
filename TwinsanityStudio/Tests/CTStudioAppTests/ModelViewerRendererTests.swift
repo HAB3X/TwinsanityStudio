@@ -301,3 +301,50 @@ final class ModelViewerRendererTests: XCTestCase {
         return seen.count
     }
 }
+
+/// "Scene Preview Mode" (roadmap 7.1) — real oriented-box containment
+/// tested directly, independent of any renderer/GPU state.
+final class TriggerContainmentTests: XCTestCase {
+    private func makeTrigger(position: SIMD4<Float>, size: SIMD4<Float>, rotationQuaternion: SIMD4<Float> = SIMD4(0, 0, 0, 1)) -> TriggerVolume {
+        TriggerVolume(
+            id: 1, header: 0, enabledMask: 0, someFloat: 0,
+            rotationQuaternion: rotationQuaternion, position: position, size: size,
+            instanceIDs: [], arg1: 0, arg2: 0, arg3: 0, arg4: 0
+        )
+    }
+
+    func testPointInsideAxisAlignedTrigger() {
+        let trigger = makeTrigger(position: SIMD4(0, 0, 0, 1), size: SIMD4(4, 4, 4, 1))
+        XCTAssertTrue(LevelViewerRenderer.triggerContains(trigger, point: SIMD3(0, 0, 0)))
+        XCTAssertTrue(LevelViewerRenderer.triggerContains(trigger, point: SIMD3(1.9, -1.9, 0)))
+    }
+
+    func testPointOutsideAxisAlignedTrigger() {
+        let trigger = makeTrigger(position: SIMD4(0, 0, 0, 1), size: SIMD4(4, 4, 4, 1))
+        XCTAssertFalse(LevelViewerRenderer.triggerContains(trigger, point: SIMD3(3, 0, 0)))
+        XCTAssertFalse(LevelViewerRenderer.triggerContains(trigger, point: SIMD3(0, 0, 100)))
+    }
+
+    func testPointRespectsRealWorldOffset() {
+        let trigger = makeTrigger(position: SIMD4(10, 20, 30, 1), size: SIMD4(2, 2, 2, 1))
+        XCTAssertTrue(LevelViewerRenderer.triggerContains(trigger, point: SIMD3(10, 20, 30)))
+        XCTAssertFalse(LevelViewerRenderer.triggerContains(trigger, point: SIMD3(0, 0, 0)))
+    }
+
+    /// A point that's outside the trigger's *axis-aligned* extent from its
+    /// center, but inside once the trigger's real 90°-around-Y rotation is
+    /// correctly undone first (a box 6 long on X, 1 on Z, rotated 90°
+    /// around Y, becomes 1 long on X and 6 on Z in world space).
+    func testPointRespectsRealRotation() {
+        let rotation90AroundY = simd_quatf(angle: .pi / 2, axis: SIMD3(0, 1, 0))
+        let trigger = makeTrigger(
+            position: SIMD4(0, 0, 0, 1),
+            size: SIMD4(6, 2, 1, 1),
+            rotationQuaternion: SIMD4(rotation90AroundY.vector.x, rotation90AroundY.vector.y, rotation90AroundY.vector.z, rotation90AroundY.vector.w)
+        )
+        // World-space: this point is far along Z, just barely off X — only
+        // inside if the box's long axis actually rotated with it.
+        XCTAssertTrue(LevelViewerRenderer.triggerContains(trigger, point: SIMD3(0.4, 0, 2.9)))
+        XCTAssertFalse(LevelViewerRenderer.triggerContains(trigger, point: SIMD3(2.9, 0, 0.4)))
+    }
+}

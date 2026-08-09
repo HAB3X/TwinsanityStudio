@@ -150,6 +150,10 @@ struct LevelViewerWindow: View {
     /// the renderer itself is a plain class AppKit mutates directly, not an
     /// `ObservableObject`.
     @State private var armedPlacement: (objectID: UInt16, name: String)?
+    /// "Scene Preview Mode" (roadmap 7.1) — see `scenePreviewModeToggle`'s
+    /// doc comment.
+    @State private var isScenePreviewMode = false
+    @State private var scenePreviewTimer: Timer?
     /// "Chunk-Based Architecture" (Part 2): which `ChunkLink.id`s have
     /// already been loaded into the viewport this session (so the button
     /// can show "Loaded" instead of offering to reload the same neighbor),
@@ -208,6 +212,7 @@ struct LevelViewerWindow: View {
         // selection/position fields in sync after ⌘Z/⌘⇧Z.
         .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidUndoChange)) { _ in syncFromRenderer() }
         .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidRedoChange)) { _ in syncFromRenderer() }
+        .onDisappear { stopScenePreviewTimer() }
     }
 
     private func syncFromRenderer() {
@@ -401,7 +406,61 @@ struct LevelViewerWindow: View {
                     .toggleStyle(.checkbox)
                     .font(.caption)
             }
+
+            Divider()
+            scenePreviewModeToggle
         }
+    }
+
+    /// "Active Chunk & Asset Preview Engine" (roadmap 7.1) — a real,
+    /// honest slice of "Scene Preview Mode": while orbiting/zooming, the
+    /// camera's real world position is tested against every real decoded
+    /// Trigger volume (`LevelViewerRenderer.triggerContains`), and any
+    /// trigger the camera is currently "inside" highlights bright red.
+    /// Deliberately not a game runtime — no player character, no physics,
+    /// no live BGM/animation-cycling system; this build has no decoded
+    /// trigger *semantics* to react to (see `SceneLayer.triggers`'s own
+    /// history in this codebase for why "what a trigger does" isn't
+    /// claimed anywhere else either), just real geometry a real camera
+    /// position can be tested against.
+    private var scenePreviewModeToggle: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Scene Preview Mode", isOn: $isScenePreviewMode)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .disabled(context.triggers.isEmpty)
+                .onChange(of: isScenePreviewMode) { _, isOn in
+                    if isOn { startScenePreviewTimer() } else { stopScenePreviewTimer() }
+                }
+            if isScenePreviewMode {
+                Text(activeTriggerStatusText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Highlights any real Trigger volume the camera is currently inside while orbiting — the camera itself, not a player character (this build has no physics/player controller).")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var activeTriggerStatusText: String {
+        let activeIDs = renderer?.activeTriggerIDs ?? []
+        guard !activeIDs.isEmpty else { return "Camera is outside every trigger volume." }
+        return "Camera is inside: " + activeIDs.sorted().map { "#\($0)" }.joined(separator: ", ")
+    }
+
+    private func startScenePreviewTimer() {
+        scenePreviewTimer?.invalidate()
+        scenePreviewTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 10.0, repeats: true) { _ in
+            renderer?.updateActiveTriggers()
+        }
+    }
+
+    private func stopScenePreviewTimer() {
+        scenePreviewTimer?.invalidate()
+        scenePreviewTimer = nil
+        renderer?.activeTriggerIDs = []
     }
 
     private func layerBinding(for layer: SceneLayer) -> Binding<Bool> {

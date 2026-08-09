@@ -1287,6 +1287,13 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     var layerVisibility: Set<SceneLayer> = Set(SceneLayer.allCases) {
         didSet { rebuildOverlayBuffer() }
     }
+    /// "Scene Preview Mode" (roadmap 7.1): real `Trigger.id`s the camera is
+    /// currently "inside" per `triggerContains` — see that function's doc
+    /// comment. Empty (the default) when preview mode is off.
+    var activeTriggerIDs: Set<UInt32> = [] {
+        didSet { rebuildOverlayBuffer() }
+    }
+    private static let activeTriggerColor = SIMD3<Float>(1.0, 0.25, 0.15)
     private var overlayLineBuffer: MTLBuffer?
     private var overlayLineVertexCount = 0
     /// "Chunk-Based Architecture" (Part 2): the translucent fill for every
@@ -1553,6 +1560,31 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         return []
     }
 
+    /// "Scene Preview Mode" (roadmap 7.1) — real oriented-box containment:
+    /// `point` transformed into the trigger's own local space (undo its
+    /// real decoded rotation, then its real decoded position), tested
+    /// against its real decoded half-extents. The same oriented box
+    /// `appendBox` already draws as this trigger's wireframe — this just
+    /// asks "is this point inside the box actually being drawn," nothing
+    /// about trigger *semantics* (this format has no decoded "on enter"
+    /// callback this build could hook into either way).
+    static func triggerContains(_ trigger: TriggerVolume, point: SIMD3<Float>) -> Bool {
+        let position = SIMD3(trigger.position.x, trigger.position.y, trigger.position.z)
+        let rotation = simd_quatf(vector: trigger.rotationQuaternion)
+        let localPoint = rotation.inverse.act(point - position)
+        let halfExtents = SIMD3(max(trigger.size.x, 0.1), max(trigger.size.y, 0.1), max(trigger.size.z, 0.1)) / 2
+        return abs(localPoint.x) <= halfExtents.x && abs(localPoint.y) <= halfExtents.y && abs(localPoint.z) <= halfExtents.z
+    }
+
+    /// Recomputes `activeTriggerIDs` from `cameraEyeWorldPosition` against
+    /// every real trigger — call this periodically while "Scene Preview
+    /// Mode" is on (`LevelViewerWindow` drives this from a timer, the same
+    /// pattern the Animation Sandbox's own playback timer already uses).
+    func updateActiveTriggers() {
+        let eye = cameraEyeWorldPosition
+        activeTriggerIDs = Set(triggers.compactMap { Self.triggerContains($0.trigger, point: eye) ? $0.trigger.id : nil })
+    }
+
     /// Rebuilds the line-primitive vertex buffer for trigger/camera
     /// wireframe boxes plus camera spline paths — everything in
     /// `overlayLineBuffer`, drawn through the same `collisionLineColoredPipelineState`
@@ -1605,7 +1637,13 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             for (_, trigger) in triggers {
                 let position = SIMD3(trigger.position.x, trigger.position.y, trigger.position.z)
                 let size = SIMD3(max(trigger.size.x, 0.1), max(trigger.size.y, 0.1), max(trigger.size.z, 0.1))
-                appendBox(position: position, size: size, rotation: simd_quatf(vector: trigger.rotationQuaternion), color: triggerColor)
+                // "Scene Preview Mode" (roadmap 7.1): a real, live geometric
+                // containment test — see `cameraEyeWorldPosition`'s doc
+                // comment for the "orbit camera as proxy" honesty note —
+                // against this trigger's real decoded oriented box, not a
+                // fabricated "the player touched this" event.
+                let color = activeTriggerIDs.contains(trigger.id) ? Self.activeTriggerColor : triggerColor
+                appendBox(position: position, size: size, rotation: simd_quatf(vector: trigger.rotationQuaternion), color: color)
             }
         }
         if layerVisibility.contains(.cameras) {
@@ -2217,15 +2255,26 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     private func currentViewProjection(viewSize: CGSize) -> simd_float4x4 {
         let aspect = Float(viewSize.width / max(viewSize.height, 1))
         let projection = ModelViewerRenderer.perspectiveMatrix(fovYRadians: .pi / 4, aspect: aspect, near: 0.05, far: boundsRadius * 20 + 50)
+        let view4x4 = ModelViewerRenderer.lookAtMatrix(eye: cameraEyeWorldPosition, center: orbitTarget, up: SIMD3<Float>(0, 1, 0))
+        return projection * view4x4
+    }
+
+    /// "Active Chunk & Asset Preview Engine" (roadmap 7.1) — the orbit
+    /// camera's real world-space eye position, same formula
+    /// `currentViewProjection` itself uses to build the view matrix.
+    /// Exposed so "Scene Preview Mode" can test it against real decoded
+    /// Trigger volumes as a free-look "where is the camera standing"
+    /// proxy — an honest simplification (this is the orbit camera, not a
+    /// first-person player controller/physics body) stated as such in the
+    /// Level Viewer's own UI, not dressed up as gameplay.
+    var cameraEyeWorldPosition: SIMD3<Float> {
         let distance = boundsRadius * distanceMultiplier
         let target = orbitTarget
-        let eye = SIMD3<Float>(
+        return SIMD3<Float>(
             target.x + distance * cos(pitch) * sin(yaw),
             target.y + distance * sin(pitch),
             target.z + distance * cos(pitch) * cos(yaw)
         )
-        let view4x4 = ModelViewerRenderer.lookAtMatrix(eye: eye, center: target, up: SIMD3<Float>(0, 1, 0))
-        return projection * view4x4
     }
 
     /// "F to Focus/Frame" — resets angle/distance to a sensible default;
