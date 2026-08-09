@@ -152,7 +152,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Cancel scanning — whatever's already been parsed stays loaded.")
-                } else if workspace.isLoading || workspace.isScanning || workspace.isLoadingSoundBank {
+                } else if workspace.isLoading || workspace.isScanning || workspace.isLoadingSoundBank || workspace.isSaving {
                     ProgressView().controlSize(.small)
                 }
             }

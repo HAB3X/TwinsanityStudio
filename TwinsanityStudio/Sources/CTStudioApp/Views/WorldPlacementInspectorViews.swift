@@ -63,8 +63,10 @@ struct PositionInspectorView: View {
         }
         .sheet(isPresented: $isCrateSheetPresented) {
             if let patchedBytes = patchedBytesForCrate() {
-                CrateExportSheet(node: node, patchedBytes: patchedBytes)
-                    .environmentObject(workspace)
+                CrateExportSheet(suggestedName: "\(node.displayName) Edit") { metadata, url in
+                    let originalName = workspace.originalFileName(for: node) ?? node.displayName
+                    workspace.exportAsCrate(patchedBytes: patchedBytes, originalFileName: originalName, metadata: metadata, to: url)
+                }
             }
         }
     }
@@ -98,11 +100,13 @@ struct PositionInspectorView: View {
         let encoded = WorldPlacementWriter.writePosition(edited)
         guard let patchedBytes = workspace.patchedFileBytes(replacing: node, with: encoded) else { return }
         guard let url = ExportPanel.chooseSaveLocation(suggestedName: "\(node.displayName)_edited.rm2", message: "Save the edited copy of this file. The original file on disk is not modified.") else { return }
-        do {
-            try patchedBytes.write(to: url)
-            workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent). The original file was not modified."
-        } catch {
-            workspace.lastError = "Save failed: \(error)"
+        Task {
+            do {
+                try await workspace.writeDataAsync(patchedBytes, to: url)
+                workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent). The original file was not modified."
+            } catch {
+                workspace.lastError = "Save failed: \(error)"
+            }
         }
     }
 }
@@ -223,11 +227,13 @@ struct InstanceInspectorView: View {
         let encoded = WorldPlacementWriter.writeInstanceTransform(position: edited.position, rotationRaw: edited.rotationRaw, comRotationRaw: instance.comRotationRaw)
         guard let patchedBytes = workspace.patchedFileBytes(replacingPrefixOf: node, with: encoded) else { return }
         guard let url = ExportPanel.chooseSaveLocation(suggestedName: "\(node.displayName)_edited.rm2", message: "Save the edited copy of this file. The original file on disk is not modified.") else { return }
-        do {
-            try patchedBytes.write(to: url)
-            workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent). The original file was not modified."
-        } catch {
-            workspace.lastError = "Save failed: \(error)"
+        Task {
+            do {
+                try await workspace.writeDataAsync(patchedBytes, to: url)
+                workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent). The original file was not modified."
+            } catch {
+                workspace.lastError = "Save failed: \(error)"
+            }
         }
     }
 }
@@ -340,11 +346,13 @@ struct TriggerInspectorView: View {
         guard let encoded = editedPrefix else { return }
         guard let patchedBytes = workspace.patchedFileBytes(replacingPrefixOf: node, with: encoded) else { return }
         guard let url = ExportPanel.chooseSaveLocation(suggestedName: "\(node.displayName)_edited.rm2", message: "Save the edited copy of this file. The original file on disk is not modified.") else { return }
-        do {
-            try patchedBytes.write(to: url)
-            workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent). The original file was not modified."
-        } catch {
-            workspace.lastError = "Save failed: \(error)"
+        Task {
+            do {
+                try await workspace.writeDataAsync(patchedBytes, to: url)
+                workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent). The original file was not modified."
+            } catch {
+                workspace.lastError = "Save failed: \(error)"
+            }
         }
     }
 }
@@ -462,11 +470,13 @@ struct CameraInspectorView: View {
         guard let encoded = editedPrefix else { return }
         guard let patchedBytes = workspace.patchedFileBytes(replacingPrefixOf: node, with: encoded) else { return }
         guard let url = ExportPanel.chooseSaveLocation(suggestedName: "\(node.displayName)_edited.rm2", message: "Save the edited copy of this file. The original file on disk is not modified.") else { return }
-        do {
-            try patchedBytes.write(to: url)
-            workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent). The original file was not modified."
-        } catch {
-            workspace.lastError = "Save failed: \(error)"
+        Task {
+            do {
+                try await workspace.writeDataAsync(patchedBytes, to: url)
+                workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent). The original file was not modified."
+            } catch {
+                workspace.lastError = "Save failed: \(error)"
+            }
         }
     }
 }

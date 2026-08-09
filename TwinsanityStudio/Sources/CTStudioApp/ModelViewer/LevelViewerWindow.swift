@@ -1010,18 +1010,20 @@ struct LevelViewerWindow: View {
             suggestedName: "\(workspace.originalFileName(for: referenceNode) ?? "chunk")_edited.rm2",
             message: "Save the edited copy of this file, with every Instance/AI Waypoint/Camera control point's current position applied and every newly placed object/waypoint added. The original file on disk is not modified."
         ) else { return }
-        do {
-            try patchedBytes.write(to: url)
-            var summary = "Saved edited copy to \(url.lastPathComponent)"
-            var parts: [String] = []
-            if !edits.isEmpty { parts.append("\(edits.count) transform override(s)") }
-            if !controlPointEdits.isEmpty { parts.append("\(controlPointEdits.count) camera control point(s)") }
-            if !newInstances.isEmpty { parts.append("\(newInstances.count) newly placed object(s)") }
-            if !newAIPositions.isEmpty { parts.append("\(newAIPositions.count) newly placed waypoint(s)") }
-            summary += " with " + parts.joined(separator: " and ") + ". The original file was not modified."
-            workspace.statusMessage = summary
-        } catch {
-            workspace.lastError = "Save failed: \(error)"
+        Task {
+            do {
+                try await workspace.writeDataAsync(patchedBytes, to: url)
+                var summary = "Saved edited copy to \(url.lastPathComponent)"
+                var parts: [String] = []
+                if !edits.isEmpty { parts.append("\(edits.count) transform override(s)") }
+                if !controlPointEdits.isEmpty { parts.append("\(controlPointEdits.count) camera control point(s)") }
+                if !newInstances.isEmpty { parts.append("\(newInstances.count) newly placed object(s)") }
+                if !newAIPositions.isEmpty { parts.append("\(newAIPositions.count) newly placed waypoint(s)") }
+                summary += " with " + parts.joined(separator: " and ") + ". The original file was not modified."
+                workspace.statusMessage = summary
+            } catch {
+                workspace.lastError = "Save failed: \(error)"
+            }
         }
     }
 

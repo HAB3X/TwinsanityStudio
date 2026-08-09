@@ -88,7 +88,7 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
     /// `testChunkLinkPathsResolveToRealArchiveEntries`; this test exercises
     /// the actual `WorkspaceViewModel` method the UI button calls, not just
     /// the path-matching logic underneath it.
-    func testOpenChunkLinkAddsTargetAsRealRootNode() throws {
+    func testOpenChunkLinkAddsTargetAsRealRootNode() async throws {
         let bhURL = URL(fileURLWithPath: "/Volumes/CRASH/CRASH6/CRASH.BH")
         guard FileManager.default.fileExists(atPath: bhURL.path) else {
             throw XCTSkip("Disc image not mounted")
@@ -101,7 +101,7 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
         else {
             return XCTFail("couldn't find nitrocav.sm2 in the archive index")
         }
-        workspace.expandArchiveEntry(fileEntry, rootID: archiveRoot.id)
+        await workspace.expandArchiveEntry(fileEntry, rootID: archiveRoot.id)
         guard let expanded = workspace.rootNodes.first?.children.first(where: { $0.displayName == "Levels/Earth/Cavern/nitrocav.sm2" }) else {
             return XCTFail("expandArchiveEntry should have replaced the entry with its parsed contents")
         }

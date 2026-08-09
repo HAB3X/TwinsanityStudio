@@ -94,6 +94,13 @@ public final class WorkspaceViewModel: ObservableObject {
     }
     @Published public var isLoading = false
     @Published public var isScanning = false
+    /// "Visual Loading Feedback": every save path (`saveHexEdit`,
+    /// `saveLevelOverrides`, the Position/Instance/Trigger/Camera inspector
+    /// "Save Edited Copy…" buttons) writes a full patched copy of the
+    /// source file, which can be a genuinely large level file even for a
+    /// tiny edit — real work, not a formality, so it gets the same
+    /// real spinner treatment as loading. See `writeDataAsync`.
+    @Published public var isSaving = false
     /// "Visual Loading Feedback" (performance mandate, Part 4): real
     /// per-file progress during `scanAllArchives()` — `nil` when no scan
     /// is running. Updated in throttled batches (not on every single file)
@@ -503,6 +510,37 @@ public final class WorkspaceViewModel: ObservableObject {
     /// a broad folder rather than a curated one) fails on its own and
     /// reports through `lastError` alongside whatever else did load;
     /// it never aborts the rest of the batch.
+    /// Single-file counterpart to `loadLooseLevelFilesAsync` — same real
+    /// off-main-actor read+parse, same `LooseLevelFileResult`/
+    /// `applyLooseLevelFileResults` application, just for the one file a
+    /// direct `open(url:)` (not a folder scan) hands `load(_:)`. Before
+    /// this, a directly-opened `.RM2`/`.SM2` was the one `.levelResource`/
+    /// `.sceneryResource` path never routed through the async fix — see
+    /// `load(_:)`'s own doc comment at its call site.
+    private func loadSingleLevelFileAsync(_ file: DetectedFile) {
+        isLoading = true
+        statusMessage = "Loading \(file.url.lastPathComponent)…"
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result: LooseLevelFileResult
+            do {
+                let data = try Data(contentsOf: file.url, options: .mappedIfSafe)
+                let node = try Self.mainTreeDriver(forExtension: file.url.pathExtension).parseChunkFile(data: data, fileKind: Self.fileKind(for: file), fileName: file.url.lastPathComponent)
+                let label = file.url.lastPathComponent
+                result = LooseLevelFileResult(
+                    file: file, node: node, data: data,
+                    models: Self.resolveModels(inFileRoot: node, sourceLabel: label),
+                    orphans: AssetResolver.scanForOrphans(fileRoot: node, sourceLabel: label),
+                    textures: Self.collectTextures(inFileRoot: node, sourceLabel: label),
+                    levels: Self.collectLevels(inFileRoot: node, sourceLabel: label),
+                    error: nil
+                )
+            } catch {
+                result = LooseLevelFileResult(file: file, node: nil, data: nil, models: [], orphans: [], textures: [], levels: [], error: "\(error)")
+            }
+            await self?.applyLooseLevelFileResults([result])
+        }
+    }
+
     private func loadLooseLevelFilesAsync(_ files: [DetectedFile]) {
         isLoading = true
         statusMessage = "Parsing \(files.count) level file(s)…"
@@ -605,6 +643,19 @@ public final class WorkspaceViewModel: ObservableObject {
     }
 
     private func load(_ file: DetectedFile) {
+        // "Visual Loading Feedback": a single directly-opened .RM2/.SM2 can
+        // be a full level's worth of chunk data, same as one entry out of
+        // a folder scan — that path was already fixed to parse off the
+        // main actor (see `loadLooseLevelFilesAsync`'s own doc comment for
+        // exactly why blocking here reads as "the app crashed," not just
+        // "looks busy"). Single-file open never went through that fix
+        // since it calls `load(_:)` directly instead of the folder path,
+        // so route these two kinds through the same real async machinery
+        // here too, before the synchronous branch below even starts.
+        if file.kind == .levelResource || file.kind == .sceneryResource {
+            loadSingleLevelFileAsync(file)
+            return
+        }
         isLoading = true
         defer { isLoading = false }
         do {
@@ -639,27 +690,11 @@ public final class WorkspaceViewModel: ObservableObject {
                 addRecentFile(file.url)
 
             case .levelResource, .sceneryResource:
-                // "Memory-Mapped Hex Engine" (blueprint 5.2): `.mappedIfSafe`
-                // asks Foundation to `mmap` the file instead of reading it
-                // fully into the heap up front — a real, meaningful choice
-                // for a full level file (potentially many MB) whose bytes
-                // are about to be walked into a `ChunkNode` tree, most of
-                // which the user will never look at. Mutating this `Data`
-                // later (`patchedFileBytes`'s `replaceSubrange`) still works
-                // correctly — Foundation copy-on-writes a mapped buffer into
-                // a private heap copy the moment it's actually mutated, so
-                // the on-disk file is never touched by editing this in-memory
-                // copy.
-                let data = try Data(contentsOf: file.url, options: .mappedIfSafe)
-                let node = try Self.mainTreeDriver(forExtension: file.url.pathExtension).parseChunkFile(data: data, fileKind: Self.fileKind(for: file), fileName: file.url.lastPathComponent)
-                rawFileBytesByRootID[node.id] = data
-                rootNodes.append(node)
-                statusMessage = "Loaded \(file.url.lastPathComponent) — \(node.children.count) top-level chunks."
-                modelsHub.append(contentsOf: Self.resolveModels(inFileRoot: node, sourceLabel: file.url.lastPathComponent))
-                orphanedContent.append(contentsOf: AssetResolver.scanForOrphans(fileRoot: node, sourceLabel: file.url.lastPathComponent))
-                texturesHub.append(contentsOf: Self.collectTextures(inFileRoot: node, sourceLabel: file.url.lastPathComponent))
-                levelsHub.append(contentsOf: Self.collectLevels(inFileRoot: node, sourceLabel: file.url.lastPathComponent))
-                addRecentFile(file.url)
+                // Unreachable — handled by the early `loadSingleLevelFileAsync`
+                // return above, kept as an explicit case (not `default:`)
+                // so a future new `DetectedFile.Kind` case fails to compile
+                // here until it's deliberately handled one way or the other.
+                break
 
             case .archiveData:
                 statusMessage = "Drop the matching .BH file to browse \(file.url.lastPathComponent) (a .BD alone has no index)."
@@ -1065,20 +1100,23 @@ public final class WorkspaceViewModel: ObservableObject {
             self.selectedNode = node
             guard let node, self.isExpandableArchiveEntry(node) else { return }
             guard let rootID = self.owningArchiveRootID(of: node) else { return }
-            self.expandArchiveEntry(node, rootID: rootID)
-            // "Frictionless Chunk Loading": a chunk file selected straight
-            // from the sidebar goes to the same place clicking its Chunk
-            // Hub card does — no separate hub lookup required. Only fires
-            // right after *this* expand (the node this file's root just
-            // became), not on every later re-select of an already-parsed
-            // file, so re-clicking a node inside an open chunk to inspect
-            // one record doesn't keep yanking focus back into the 3D
-            // viewer window.
-            guard let expanded = self.selectedNode, expanded !== node,
-                  let sceneryNode = Self.firstSceneryNode(in: expanded),
-                  case .scenery(let asset) = sceneryNode.payload
-            else { return }
-            Task { await self.openLevelViewer(for: asset, node: sceneryNode) }
+            Task { [weak self] in
+                guard let self else { return }
+                await self.expandArchiveEntry(node, rootID: rootID)
+                // "Frictionless Chunk Loading": a chunk file selected straight
+                // from the sidebar goes to the same place clicking its Chunk
+                // Hub card does — no separate hub lookup required. Only fires
+                // right after *this* expand (the node this file's root just
+                // became), not on every later re-select of an already-parsed
+                // file, so re-clicking a node inside an open chunk to inspect
+                // one record doesn't keep yanking focus back into the 3D
+                // viewer window.
+                guard let expanded = self.selectedNode, expanded !== node,
+                      let sceneryNode = Self.firstSceneryNode(in: expanded),
+                      case .scenery(let asset) = sceneryNode.payload
+                else { return }
+                await self.openLevelViewer(for: asset, node: sceneryNode)
+            }
         }
     }
 
@@ -1121,16 +1159,35 @@ public final class WorkspaceViewModel: ObservableObject {
     /// property on a plain class changed). Giving the replacement a new
     /// identity makes the change unambiguous to SwiftUI's diffing instead of
     /// relying on it noticing an in-place mutation.
-    public func expandArchiveEntry(_ node: ChunkNode, rootID: UUID) {
+    /// "Visual Loading Feedback": the read+parse used to run fully
+    /// synchronously on the main actor — `isLoading` flipped true then
+    /// false again within one blocked run-loop turn, so SwiftUI never
+    /// actually got a chance to paint the spinner it gates on that flag.
+    /// The heavy work now runs in a detached task (same shape as
+    /// `openChunkLink`/`loadSingleLevelFileAsync`), with only the tree
+    /// mutation itself back on the main actor — a real suspension point in
+    /// between, so the spinner genuinely shows for however long parsing an
+    /// archived file actually takes.
+    public func expandArchiveEntry(_ node: ChunkNode, rootID: UUID) async {
         guard let index = archiveIndexByRootID[rootID] else { return }
         guard let entry = index.entries.first(where: { $0.name == node.displayName }) else { return }
         let kind = Self.fileKind(forEntryNamed: entry.name)
 
         isLoading = true
         defer { isLoading = false }
-        do {
-            let data = try BDArchiveParser.readEntryData(entry, index: index)
-            let parsed = try Self.mainTreeDriver(forExtension: (entry.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: kind, fileName: entry.name)
+
+        let outcome: Result<ChunkNode, Error> = await Task.detached(priority: .userInitiated) {
+            do {
+                let data = try BDArchiveParser.readEntryData(entry, index: index)
+                let parsed = try Self.mainTreeDriver(forExtension: (entry.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: kind, fileName: entry.name)
+                return .success(parsed)
+            } catch {
+                return .failure(error)
+            }
+        }.value
+
+        switch outcome {
+        case .success(let parsed):
             let replacement = ChunkNode(
                 recordID: node.recordID,
                 sectionType: parsed.sectionType,
@@ -1144,7 +1201,7 @@ public final class WorkspaceViewModel: ObservableObject {
             if selectedNode === node {
                 selectedNode = replacement
             }
-        } catch {
+        case .failure(let error):
             lastError = "\(entry.name): \(error)"
         }
     }
@@ -1220,14 +1277,29 @@ public final class WorkspaceViewModel: ObservableObject {
     /// enforces this by construction (it edits a fixed-size buffer, no
     /// insert/delete), matching `patchedFileBytes`'s own same-size
     /// requirement.
-    public func saveHexEdit(node: ChunkNode, editedBytes: Data, to url: URL) {
+    public func saveHexEdit(node: ChunkNode, editedBytes: Data, to url: URL) async {
         guard let patched = patchedFileBytes(replacing: node, with: editedBytes) else { return }
         do {
-            try patched.write(to: url)
+            try await writeDataAsync(patched, to: url)
             statusMessage = "Saved edited copy to \(url.lastPathComponent). The original file was not modified."
         } catch {
             lastError = "Save failed: \(error)"
         }
+    }
+
+    /// "Visual Loading Feedback": every save path writes a full patched
+    /// copy of the source file — genuinely large for a full level file
+    /// even when the edit itself is tiny. Runs the actual `Data.write` off
+    /// the main actor, bracketed by `isSaving`, so the toolbar spinner
+    /// (same real-feedback pattern as loading) has an actual suspension
+    /// point to paint across instead of a main-actor call that returns
+    /// before SwiftUI gets a chance to render anything.
+    public func writeDataAsync(_ data: Data, to url: URL) async throws {
+        isSaving = true
+        defer { isSaving = false }
+        try await Task.detached(priority: .userInitiated) {
+            try data.write(to: url)
+        }.value
     }
 
     /// Patches `encoded` into a *copy* of the owning file's original bytes
@@ -1854,52 +1926,97 @@ public final class WorkspaceViewModel: ObservableObject {
         let baseName = Self.sanitizedFileName(asset.displayName)
         let assetFolder = directory.appendingPathComponent(baseName)
         do {
+            let built = try Self.completeAssetFiles(for: asset, baseName: baseName)
             try FileManager.default.createDirectory(at: assetFolder, withIntermediateDirectories: true)
-
-            var exportedTextureNames: [UInt32: String] = [:]
-            for material in asset.submeshMaterials {
-                guard let textureID = material.textureID, let texture = material.texture, exportedTextureNames[textureID] == nil else { continue }
-                let texName = "texture_\(textureID)"
-                try TextureExporter.exportPNG(texture, to: assetFolder.appendingPathComponent(texName).appendingPathExtension("png"))
-                exportedTextureNames[textureID] = texName
+            for file in built.files {
+                let destination = assetFolder.appendingPathComponent(file.relativePath)
+                try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try file.data.write(to: destination)
             }
-
-            let mtlFileName = "\(baseName).mtl"
-            var seenMaterials: Set<UInt32> = []
-            var mtlLines = ["# Generated by TwinsanityStudio"]
-            for material in asset.submeshMaterials {
-                guard let materialID = material.materialID, !seenMaterials.contains(materialID) else { continue }
-                seenMaterials.insert(materialID)
-                mtlLines.append("")
-                mtlLines.append("newmtl material_\(materialID)")
-                mtlLines.append("Kd 1.000 1.000 1.000")
-                if let textureID = material.textureID, let texName = exportedTextureNames[textureID] {
-                    mtlLines.append("map_Kd \(texName).png")
-                }
-            }
-            try (mtlLines.joined(separator: "\n") + "\n").write(to: assetFolder.appendingPathComponent(mtlFileName), atomically: true, encoding: .utf8)
-
-            let submeshMaterialIDs = asset.submeshMaterials.map(\.materialID)
-            try OBJExporter.export(
-                asset.mesh,
-                submeshMaterialIDs: submeshMaterialIDs,
-                mtlFileName: mtlFileName,
-                to: assetFolder.appendingPathComponent("\(baseName).obj")
-            )
-
-            if !asset.availableAnimations.isEmpty {
-                let animationsFolder = assetFolder.appendingPathComponent("animations")
-                try FileManager.default.createDirectory(at: animationsFolder, withIntermediateDirectories: true)
-                for animation in asset.availableAnimations {
-                    let json = Self.animationJSON(animation)
-                    try json.write(to: animationsFolder.appendingPathComponent("animation_\(animation.id).json"), atomically: true, encoding: .utf8)
-                }
-            }
-
-            statusMessage = "Exported complete asset (\(seenMaterials.count) material(s), \(exportedTextureNames.count) texture(s), \(asset.availableAnimations.count) animation(s)) to \(assetFolder.path)."
+            statusMessage = "Exported complete asset (\(built.materialCount) material(s), \(built.textureCount) texture(s), \(built.animationCount) animation(s)) to \(assetFolder.path)."
         } catch {
             lastError = "Export failed: \(error)"
         }
+    }
+
+    /// "Cross-Object Dependency Packaging" (blueprint 3.2) — "Export with
+    /// Dependencies": the same mesh/textures/materials/animations
+    /// `exportCompleteAsset` writes as loose files gets bundled instead
+    /// into one portable `.crate`, reusing `CrateExporter.export`'s
+    /// existing multi-file `layer0/` packaging (already built for blueprint
+    /// 3.3, just never called with more than one file). Built from the same
+    /// `resolveComposite` linked-asset graph as the folder export — nothing
+    /// here invents a new notion of "dependency," it's the real mesh ->
+    /// material -> texture / mesh -> animation links this codebase already
+    /// resolves and trusts elsewhere.
+    public func exportCompleteAssetAsCrate(_ asset: ResolvedModelAsset, metadata: CrateMetadata, to crateURL: URL) {
+        let baseName = Self.sanitizedFileName(asset.displayName)
+        do {
+            let built = try Self.completeAssetFiles(for: asset, baseName: baseName)
+            let files = built.files.map { (relativePath: "\(baseName)/\($0.relativePath)", data: $0.data) }
+            try CrateExporter.export(files: files, metadata: metadata, to: crateURL)
+            statusMessage = "Exported mod crate with \(built.materialCount) material(s), \(built.textureCount) texture(s), \(built.animationCount) animation(s) to \(crateURL.lastPathComponent)."
+        } catch {
+            lastError = "Crate export failed: \(error)"
+        }
+    }
+
+    private struct CompleteAssetFiles {
+        var files: [(relativePath: String, data: Data)]
+        var materialCount: Int
+        var textureCount: Int
+        var animationCount: Int
+    }
+
+    /// Builds every file `exportCompleteAsset`/`exportCompleteAssetAsCrate`
+    /// need, purely in memory — paths are relative to the asset's own
+    /// folder (e.g. `"\(baseName).obj"`, `"animations/animation_1.json"`),
+    /// so callers decide whether that folder lands loose on disk or inside
+    /// a zipped crate's `layer0/`.
+    private nonisolated static func completeAssetFiles(for asset: ResolvedModelAsset, baseName: String) throws -> CompleteAssetFiles {
+        var files: [(relativePath: String, data: Data)] = []
+
+        var exportedTextureNames: [UInt32: String] = [:]
+        for material in asset.submeshMaterials {
+            guard let textureID = material.textureID, let texture = material.texture, exportedTextureNames[textureID] == nil else { continue }
+            let texName = "texture_\(textureID)"
+            let pngData = try TextureExporter.pngData(texture)
+            files.append((relativePath: "\(texName).png", data: pngData))
+            exportedTextureNames[textureID] = texName
+        }
+
+        let mtlFileName = "\(baseName).mtl"
+        var seenMaterials: Set<UInt32> = []
+        var mtlLines = ["# Generated by TwinsanityStudio"]
+        for material in asset.submeshMaterials {
+            guard let materialID = material.materialID, !seenMaterials.contains(materialID) else { continue }
+            seenMaterials.insert(materialID)
+            mtlLines.append("")
+            mtlLines.append("newmtl material_\(materialID)")
+            mtlLines.append("Kd 1.000 1.000 1.000")
+            if let textureID = material.textureID, let texName = exportedTextureNames[textureID] {
+                mtlLines.append("map_Kd \(texName).png")
+            }
+        }
+        guard let mtlData = (mtlLines.joined(separator: "\n") + "\n").data(using: .utf8) else {
+            throw CocoaError(.fileWriteInapplicableStringEncoding)
+        }
+        files.append((relativePath: mtlFileName, data: mtlData))
+
+        let submeshMaterialIDs = asset.submeshMaterials.map(\.materialID)
+        let objContents = try OBJExporter.contents(asset.mesh, submeshMaterialIDs: submeshMaterialIDs, mtlFileName: mtlFileName)
+        guard let objData = objContents.data(using: .utf8) else {
+            throw CocoaError(.fileWriteInapplicableStringEncoding)
+        }
+        files.append((relativePath: "\(baseName).obj", data: objData))
+
+        for animation in asset.availableAnimations {
+            let json = Self.animationJSON(animation)
+            guard let jsonData = json.data(using: .utf8) else { continue }
+            files.append((relativePath: "animations/animation_\(animation.id).json", data: jsonData))
+        }
+
+        return CompleteAssetFiles(files: files, materialCount: seenMaterials.count, textureCount: exportedTextureNames.count, animationCount: asset.availableAnimations.count)
     }
 
     private nonisolated static func animationJSON(_ animation: AnimationAsset) -> String {

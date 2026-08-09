@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import CTCore
 @testable import CTModels
 @testable import CTParsers
@@ -66,7 +67,20 @@ final class LevelInsertionIntegrationTests: XCTestCase {
 
         let workspace = WorkspaceViewModel()
         workspace.open(url: tempURL)
-        XCTAssertEqual(workspace.rootNodes.count, 1, "a standalone .rm2 open should be synchronous — no scan/wait needed")
+
+        // "Visual Loading Feedback": a standalone .rm2 open now parses off
+        // the main actor (same real fix as folder-scanned loose level
+        // files) so the loading spinner has an actual suspension point to
+        // paint across — wait for that real async load to finish instead
+        // of assuming it already has by the time `open(url:)` returns.
+        let loadExpectation = expectation(description: "single-file load completes")
+        let observation = workspace.$isLoading.dropFirst().sink { loading in
+            if !loading { loadExpectation.fulfill() }
+        }
+        wait(for: [loadExpectation], timeout: 10)
+        observation.cancel()
+
+        XCTAssertEqual(workspace.rootNodes.count, 1, "the file should have finished loading asynchronously")
 
         let fileRoot = try XCTUnwrap(workspace.rootNodes.first)
         let instanceLeaf = try XCTUnwrap(findFirst(fileRoot, sectionType: .objectInstance)?.children.first)

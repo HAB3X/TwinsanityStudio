@@ -267,7 +267,7 @@ private struct SidebarRow: View {
             Spacer()
             if workspace.isExpandableArchiveEntry(node) {
                 Button("Parse") {
-                    workspace.expandArchiveEntry(node, rootID: rootID)
+                    Task { await workspace.expandArchiveEntry(node, rootID: rootID) }
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)

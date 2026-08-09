@@ -179,7 +179,8 @@ struct HexViewerWindow: View {
             suggestedName: "\(node.displayName)_edited.bin",
             message: "Save the edited copy of this file. The original file on disk is not modified."
         ) else { return }
-        workspace.saveHexEdit(node: node, editedBytes: editedBytes, to: url)
+        let editedBytesSnapshot = editedBytes
+        Task { await workspace.saveHexEdit(node: node, editedBytes: editedBytesSnapshot, to: url) }
         dismiss()
     }
 }
