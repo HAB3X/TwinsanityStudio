@@ -396,4 +396,36 @@ extension RealDiscDiagnosticTests {
         print("DIAG: \(customAgentSectionCount) CustomAgent section(s), \(leafCount) real agent records in hubd.rm2")
         XCTAssertGreaterThan(leafCount, 0, "expected at least one real CustomAgent record in this level")
     }
+
+    /// "AI Pathfinding/Navmesh Editor" (roadmap 5.1) sanity check — real
+    /// `AIPosition`/`AIPath` records exist in real level files with sane
+    /// decoded values, so the waypoint viewer has real data to show.
+    func testAINavigationRecordsExistInRealLevelFile() throws {
+        let bhPath = "/Volumes/CRASH/CRASH6/CRASH.BH"
+        guard FileManager.default.fileExists(atPath: bhPath) else {
+            throw XCTSkip("Disc image not mounted")
+        }
+        let index = try BDArchiveParser.readIndex(bhURL: URL(fileURLWithPath: bhPath))
+        let entry = try XCTUnwrap(index.entries.first { $0.name == "Levels/Earth/Hub/hubd.rm2" })
+        let data = try BDArchiveParser.readEntryData(entry, index: index)
+        let root = try RM2Parser.parse(data: data, fileKind: .rm2, fileName: entry.name)
+
+        var positions: [AIPositionMarker] = []
+        var paths: [AIPathRecord] = []
+        func walk(_ node: ChunkNode) {
+            if case .aiPosition(let marker) = node.payload { positions.append(marker) }
+            if case .aiPath(let path) = node.payload { paths.append(path) }
+            for child in node.children { walk(child) }
+        }
+        walk(root)
+        print("DIAG: \(positions.count) AIPosition, \(paths.count) AIPath records in hubd.rm2")
+        var unrecognizedNodeTypes = 0
+        for marker in positions {
+            XCTAssertTrue(marker.position.x.isFinite && marker.position.y.isFinite && marker.position.z.isFinite)
+            XCTAssertLessThan(simd_length(SIMD3(marker.position.x, marker.position.y, marker.position.z)), 10000)
+            if marker.nodeType == nil { unrecognizedNodeTypes += 1 }
+        }
+        print("DIAG: \(unrecognizedNodeTypes)/\(positions.count) AIPosition records have a NodeType value outside the reference tool's known enum")
+        for path in paths { XCTAssertEqual(path.args.count, 5) }
+    }
 }

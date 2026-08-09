@@ -318,6 +318,10 @@ public enum RM2Parser {
                 return .camera(try WorldPlacementParser.parseCamera(&cursor, recordID: recordID, isDemo: false))
             case .cameraDemo:
                 return .camera(try WorldPlacementParser.parseCamera(&cursor, recordID: recordID, isDemo: true))
+            case .aiPosition:
+                return .aiPosition(try AINavigationParser.parseAIPosition(&cursor, recordID: recordID))
+            case .aiPath:
+                return .aiPath(try AINavigationParser.parseAIPath(&cursor, recordID: recordID))
             default:
                 return .raw(byteCount: size)
             }

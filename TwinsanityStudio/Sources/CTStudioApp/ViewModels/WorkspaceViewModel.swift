@@ -773,6 +773,26 @@ public final class WorkspaceViewModel: ObservableObject {
         }.flatMap { entry in entry.value.links.map { (node: entry.node, link: $0) } }
     }
 
+    /// "AI Pathfinding/Navmesh Editor" (roadmap 5.1): every real
+    /// `AIPosition` waypoint in the same file — feeds the Level Viewer's
+    /// "AI Waypoints" scene layer.
+    public func aiPositionRecords(inSameFileAs levelNode: ChunkNode) -> [(node: ChunkNode, marker: AIPositionMarker)] {
+        recordsInSameFile(as: levelNode) { payload in
+            if case .aiPosition(let marker) = payload { return marker }
+            return nil
+        }.map { (node: $0.node, marker: $0.value) }
+    }
+
+    /// Every real `AIPath` record in the same file — no spatial position of
+    /// its own (see `AIPathRecord`'s doc comment), so this feeds a factual
+    /// list panel only, not a scene layer.
+    public func aiPathRecords(inSameFileAs levelNode: ChunkNode) -> [(node: ChunkNode, path: AIPathRecord)] {
+        recordsInSameFile(as: levelNode) { payload in
+            if case .aiPath(let path) = payload { return path }
+            return nil
+        }.map { (node: $0.node, path: $0.value) }
+    }
+
     /// Shared tree walk behind `instanceRecords`/`triggerRecords`/
     /// `cameraRecords`/`soundEffectRecords`: every node in the same file as
     /// `levelNode` whose payload `extract` recognizes, paired with that
@@ -1218,7 +1238,9 @@ public final class WorkspaceViewModel: ObservableObject {
             triggers: triggerRecords(inSameFileAs: node),
             cameras: cameraRecords(inSameFileAs: node),
             sounds: soundEffectRecords(inSameFileAs: node),
-            chunkLinks: chunkLinkRecords(inSameFileAs: node)
+            chunkLinks: chunkLinkRecords(inSameFileAs: node),
+            aiPositions: aiPositionRecords(inSameFileAs: node),
+            aiPaths: aiPathRecords(inSameFileAs: node)
         )
     }
 

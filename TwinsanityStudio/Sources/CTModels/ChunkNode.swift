@@ -23,6 +23,13 @@ public enum ChunkPayload: Sendable {
     /// streams in, plus the boundary geometry that triggers it. See
     /// `ChunkLinksAsset`'s doc comment.
     case chunkLinks(ChunkLinksAsset)
+    /// "AI Pathfinding/Navmesh Editor" (roadmap 5.1): a real `AIPosition`
+    /// waypoint. See `AIPositionMarker`'s doc comment.
+    case aiPosition(AIPositionMarker)
+    /// A real `AIPath` record — 5 raw arguments, no position of its own
+    /// and no confirmed linkage to any `AIPosition`. See `AIPathRecord`'s
+    /// doc comment for why this build doesn't guess at a connection graph.
+    case aiPath(AIPathRecord)
     /// A `GameObject` record — see `GameObjectInfo`'s own doc comment.
     /// Plumbing (`Instance.objectID` -> this -> a `GraphicsInfo`/mesh),
     /// same reasoning as `.material` below, not a filterable kind of its
@@ -49,6 +56,7 @@ public enum ChunkPayload: Sendable {
         case collision = "Collision"
         case soundEffect = "Audio"
         case chunkLinks = "Chunk Links"
+        case aiWaypoint = "AI Waypoints"
         public var id: String { rawValue }
     }
 
@@ -64,6 +72,7 @@ public enum ChunkPayload: Sendable {
         case .collision: return .collision
         case .soundEffect: return .soundEffect
         case .chunkLinks: return .chunkLinks
+        case .aiPosition, .aiPath: return .aiWaypoint
         case .material, .position, .scenery, .dynamicScenery, .gameObject, .raw: return nil
         }
     }

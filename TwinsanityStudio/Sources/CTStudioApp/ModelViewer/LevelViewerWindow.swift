@@ -51,6 +51,12 @@ public struct LevelViewerContext: Identifiable {
     /// stream in, plus (when present) the boundary wall geometry that
     /// triggers it. See `ChunkLinksAsset`'s doc comment.
     public var chunkLinks: [(node: ChunkNode, link: ChunkLink)]
+    /// "AI Pathfinding/Navmesh Editor" (roadmap 5.1): real `AIPosition`
+    /// waypoints (spatial, feed the "AI Waypoints" scene layer) and
+    /// `AIPath` records (no position of their own — see `AIPathRecord`'s
+    /// doc comment — factual list panel only).
+    public var aiPositions: [(node: ChunkNode, marker: AIPositionMarker)]
+    public var aiPaths: [(node: ChunkNode, path: AIPathRecord)]
 
     public init(
         scenery: SceneryAsset,
@@ -62,7 +68,9 @@ public struct LevelViewerContext: Identifiable {
         triggers: [(node: ChunkNode, trigger: TriggerVolume)] = [],
         cameras: [(node: ChunkNode, camera: PlacedCamera)] = [],
         sounds: [(node: ChunkNode, sound: SoundEffectAsset)] = [],
-        chunkLinks: [(node: ChunkNode, link: ChunkLink)] = []
+        chunkLinks: [(node: ChunkNode, link: ChunkLink)] = [],
+        aiPositions: [(node: ChunkNode, marker: AIPositionMarker)] = [],
+        aiPaths: [(node: ChunkNode, path: AIPathRecord)] = []
     ) {
         self.scenery = scenery
         self.placements = placements
@@ -74,6 +82,8 @@ public struct LevelViewerContext: Identifiable {
         self.cameras = cameras
         self.sounds = sounds
         self.chunkLinks = chunkLinks
+        self.aiPositions = aiPositions
+        self.aiPaths = aiPaths
     }
 }
 
@@ -176,7 +186,8 @@ struct LevelViewerWindow: View {
                 defaultAssetIndex: context.defaultAssetIndex,
                 triggers: context.triggers,
                 cameras: context.cameras,
-                chunkLinks: context.chunkLinks
+                chunkLinks: context.chunkLinks,
+                aiPositions: context.aiPositions
             )
             renderer?.snapToGrid = snapToGrid
             renderer?.gridSize = Float(gridSize)
@@ -344,6 +355,11 @@ struct LevelViewerWindow: View {
                     Divider()
                     chunkLinksPanel
                 }
+
+                if !context.aiPaths.isEmpty {
+                    Divider()
+                    aiPathsPanel
+                }
             }
             .padding(16)
         }
@@ -400,6 +416,8 @@ struct LevelViewerWindow: View {
                 TriggerInspectorView(node: node, trigger: trigger)
             case .camera(let camera):
                 CameraInspectorView(node: node, camera: camera)
+            case .aiPosition(let marker):
+                AIPositionInspectorView(marker: marker)
             default:
                 Text("No inspector available for this record type.")
                     .font(.caption2)
@@ -593,6 +611,25 @@ struct LevelViewerWindow: View {
             .textFieldStyle(.roundedBorder)
             .frame(width: 90)
             .onSubmit(apply)
+    }
+
+    /// "AI Pathfinding/Navmesh Editor" (roadmap 5.1): the real `AIPath`
+    /// records in this file — no position of their own (see
+    /// `AIPathRecord`'s doc comment), so a factual list rather than a
+    /// scene-layer overlay. `AIPosition` waypoints render in the viewport
+    /// instead (the "AI Waypoints" scene layer).
+    private var aiPathsPanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("AI Paths").font(.headline)
+            Text("Real AIPath records — 5 raw arguments each, no confirmed link to any AI Waypoint (the reference tool's own editor doesn't interpret these either).")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            ForEach(context.aiPaths, id: \.node.id) { entry in
+                Text("Path #\(entry.path.id): \(entry.path.args.map(String.init).joined(separator: ", "))")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     @ViewBuilder

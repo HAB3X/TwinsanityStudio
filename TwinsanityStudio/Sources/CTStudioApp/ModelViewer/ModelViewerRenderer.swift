@@ -1101,7 +1101,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
 /// four groups an object belongs to — drives both draw-time visibility
 /// filtering and the "Geometry Only"/"Fully Populated" mode preset.
 enum SceneLayer: CaseIterable, Hashable {
-    case scenery, actors, triggers, cameras, chunkBoundaries, linkedChunks
+    case scenery, actors, triggers, cameras, chunkBoundaries, linkedChunks, aiWaypoints
 
     var displayName: String {
         switch self {
@@ -1111,6 +1111,7 @@ enum SceneLayer: CaseIterable, Hashable {
         case .cameras: return "Camera Splines"
         case .chunkBoundaries: return "Chunk Boundaries"
         case .linkedChunks: return "Loaded Neighboring Chunks"
+        case .aiWaypoints: return "AI Waypoints"
         }
     }
 }
@@ -1327,7 +1328,8 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         defaultAssetIndex: GraphicsAssetIndex = GraphicsAssetIndex(),
         triggers: [(node: ChunkNode, trigger: TriggerVolume)] = [],
         cameras: [(node: ChunkNode, camera: PlacedCamera)] = [],
-        chunkLinks: [(node: ChunkNode, link: ChunkLink)] = []
+        chunkLinks: [(node: ChunkNode, link: ChunkLink)] = [],
+        aiPositions: [(node: ChunkNode, marker: AIPositionMarker)] = []
     ) {
         guard let context = ModelViewerGPUContext.shared else { return nil }
         self.context = context
@@ -1335,7 +1337,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         self.defaultAssetIndex = defaultAssetIndex
         super.init()
         nextSyntheticInstanceID = (instanceMarkers.map(\.instance.id).max() ?? 0) + 1
-        upload(placements: placements, instanceMarkers: instanceMarkers, resolvedInstanceAssets: resolvedInstanceAssets, triggers: triggers, cameras: cameras, chunkLinks: chunkLinks)
+        upload(placements: placements, instanceMarkers: instanceMarkers, resolvedInstanceAssets: resolvedInstanceAssets, triggers: triggers, cameras: cameras, chunkLinks: chunkLinks, aiPositions: aiPositions)
     }
 
     private func upload(
@@ -1344,7 +1346,8 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         resolvedInstanceAssets: [UUID: ResolvedModelAsset],
         triggers: [(node: ChunkNode, trigger: TriggerVolume)],
         cameras: [(node: ChunkNode, camera: PlacedCamera)],
-        chunkLinks: [(node: ChunkNode, link: ChunkLink)]
+        chunkLinks: [(node: ChunkNode, link: ChunkLink)],
+        aiPositions: [(node: ChunkNode, marker: AIPositionMarker)]
     ) {
         var minBound = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
         var maxBound = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
@@ -1445,10 +1448,31 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             expandBounds(centroid)
         }
 
+        // "AI Pathfinding/Navmesh Editor" (roadmap 5.1): a selectable,
+        // draggable marker per real `AIPosition` waypoint — same treatment
+        // as trigger/camera markers (empty submeshes, drawn as a small
+        // wireframe box by `rebuildOverlayBuffer`). Draggable via the same
+        // generic gizmo every other object uses, but session-only: this
+        // layer is deliberately excluded from `pendingLevelOverrides`
+        // (`.actors`-only guard), since this build has no verified
+        // byte-exact `AIPosition` encoder to write a moved waypoint back.
+        for (node, marker) in aiPositions {
+            let worldPosition = SIMD3(marker.position.x, marker.position.y, marker.position.z)
+            levelObjects.append(GPULevelObject(
+                worldPosition: worldPosition,
+                displayName: "AI Waypoint #\(marker.id) (\(marker.nodeType?.displayName ?? "type \(marker.rawNodeType)"))",
+                submeshes: [],
+                layer: .aiWaypoints,
+                sourceNode: node
+            ))
+            expandBounds(worldPosition)
+        }
+
         objects = levelObjects
         self.triggers = triggers
         self.cameras = cameras
         self.chunkLinks = chunkLinks
+        self.aiPositions = aiPositions
         if minBound.x <= maxBound.x {
             boundsCenter = (minBound + maxBound) / 2
             let extent = maxBound - minBound
@@ -1469,6 +1493,10 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// `triggers`/`cameras` are — `rebuildOverlayBuffer` needs the raw
     /// source data to redraw wall wireframes/fills when the layer toggles.
     private(set) var chunkLinks: [(node: ChunkNode, link: ChunkLink)] = []
+    /// "AI Pathfinding/Navmesh Editor" (roadmap 5.1): every real
+    /// `AIPosition` waypoint in the currently loaded chunk — same
+    /// `rebuildOverlayBuffer` reasoning as `triggers`/`cameras` above.
+    private(set) var aiPositions: [(node: ChunkNode, marker: AIPositionMarker)] = []
 
     /// Control points for whichever of a camera's two sub-payload slots
     /// actually has spline/path data — `nil`-safe: most cameras have
@@ -1551,6 +1579,19 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                     appendVertex(controlPoints[i], splineColor)
                     appendVertex(controlPoints[i + 1], splineColor)
                 }
+            }
+        }
+
+        // "AI Pathfinding/Navmesh Editor" (roadmap 5.1): a small fixed-size
+        // wireframe box per real `AIPosition` waypoint — `AIPosition` has
+        // no size/rotation of its own (just a point + the `Num`/node-type
+        // field), so unlike trigger/camera boxes this one's a fixed visual
+        // marker, not decoded extent.
+        let aiWaypointColor = SIMD3<Float>(0.4, 0.9, 0.65)
+        if layerVisibility.contains(.aiWaypoints) {
+            for (_, marker) in aiPositions {
+                let position = SIMD3(marker.position.x, marker.position.y, marker.position.z)
+                appendBox(position: position, size: SIMD3(repeating: 0.35), rotation: simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), color: aiWaypointColor)
             }
         }
 
