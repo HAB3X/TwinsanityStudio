@@ -8,6 +8,12 @@ public enum DetectedFileKind: String, Sendable {
     case archiveData    // .BD
     case levelResource  // .RM2 / .RMX (Demo variants share the .RM2 extension; disambiguated by magic)
     case sceneryResource // .SM2 / .SMX
+    /// "Audio Bank Extractor & Player" (roadmap 2.4): a standalone `.MH`
+    /// sound bank index (`MUSIC.MH`, `ENGLISH.MH`, ...) — a real, global
+    /// audio system separate from the `.RM2`/`.SM2` chunk archive, not
+    /// nested inside it. Requires a sibling `.MB` in the same directory to
+    /// actually load (see `WorkspaceViewModel`'s sound-bank load path).
+    case soundBank
     case folder
     case unknown
 }
@@ -29,7 +35,7 @@ public struct DetectedFile: Sendable, Identifiable {
 /// which platform it targets, so the workspace can populate itself without
 /// the user picking a file type or endianness from a menu.
 public enum WorkspaceAutoDetector {
-    private static let knownExtensions: Set<String> = ["BH", "BD", "RM2", "SM2", "RMX", "SMX"]
+    private static let knownExtensions: Set<String> = ["BH", "BD", "RM2", "SM2", "RMX", "SMX", "MH"]
 
     /// Detects a single file. Folders should be expanded with
     /// `scanFolder(_:)` first and each result passed through this.
@@ -42,6 +48,7 @@ public enum WorkspaceAutoDetector {
         case "RMX": return DetectedFile(url: url, kind: .levelResource, platform: .xbox)
         case "SM2": return DetectedFile(url: url, kind: .sceneryResource, platform: .ps2)
         case "SMX": return DetectedFile(url: url, kind: .sceneryResource, platform: .xbox)
+        case "MH": return DetectedFile(url: url, kind: .soundBank, platform: .ps2)
         default: return DetectedFile(url: url, kind: .unknown, platform: .unknown)
         }
     }

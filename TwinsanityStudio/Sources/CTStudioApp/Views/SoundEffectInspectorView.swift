@@ -51,7 +51,12 @@ private extension Data {
 /// play/stop, and WAV export.
 struct SoundEffectInspectorView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
-    let node: ChunkNode
+    /// Just a label for diagnostics/export filenames — this view has no
+    /// other use for a `ChunkNode`, so a plain display name lets it show
+    /// a sound bank entry (no `ChunkNode` at all, see `SoundBanksHubView`)
+    /// through the exact same waveform/playback/export UI as a per-level
+    /// `SoundEffect` record.
+    let displayName: String
     let sound: SoundEffectAsset
 
     @State private var player: AVAudioPlayer?
@@ -141,7 +146,7 @@ struct SoundEffectInspectorView: View {
             return
         }
         let wav = WAVEncoder.encode(pcm: sound.pcmSamples, sampleRateHz: sound.sampleRateHz)
-        print("DIAG: Audio selected \"\(node.displayName)\" — \(sound.pcmSamples.count) samples @ \(sound.sampleRateHz) Hz, \(wav.count) byte WAV container")
+        print("DIAG: Audio selected \"\(displayName)\" — \(sound.pcmSamples.count) samples @ \(sound.sampleRateHz) Hz, \(wav.count) byte WAV container")
         let newPlayer: AVAudioPlayer
         do {
             // `try?` here used to swallow the real reason construction
@@ -170,7 +175,7 @@ struct SoundEffectInspectorView: View {
     private func exportWAV() {
         guard let directory = ExportPanel.chooseFolder(message: "Choose a folder to export this sound as a .wav file into.") else { return }
         let wav = WAVEncoder.encode(pcm: sound.pcmSamples, sampleRateHz: sound.sampleRateHz)
-        let name = node.displayName.replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "#", with: "")
+        let name = displayName.replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "#", with: "")
         let url = directory.appendingPathComponent(name).appendingPathExtension("wav")
         do {
             try wav.write(to: url)

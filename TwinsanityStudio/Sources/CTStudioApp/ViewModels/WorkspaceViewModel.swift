@@ -149,6 +149,14 @@ public final class WorkspaceViewModel: ObservableObject {
     /// `LevelHubEntry`'s doc comment for why this one isn't cache-backed.
     @Published public var levelsHub: [LevelHubEntry] = []
     @Published public var isLevelsHubPresented = false
+    /// "Audio Bank Extractor & Player" (roadmap 2.4) — every standalone
+    /// `.MH`/`.MB` sound bank opened this session (`MUSIC`, `ENGLISH`,
+    /// ...). Loaded asynchronously (`loadSoundBankAsync`) since the real
+    /// `.MB` payload can be well over 200MB — never blocks the main actor
+    /// like every other heavy parse in this view model.
+    @Published public var soundBanks: [SoundBankAsset] = []
+    @Published public var isSoundBanksHubPresented = false
+    @Published public var isLoadingSoundBank = false
     /// Every dangling reference / unreferenced record flagged by the
     /// "Scrapped Content Scanner" across every scanned file — populated
     /// alongside `modelsHub` so cut content surfaces automatically as
@@ -416,6 +424,50 @@ public final class WorkspaceViewModel: ObservableObject {
             : "Parsed \(loadedCount) level file(s), \(failedNames.count) failed (see errors above)."
     }
 
+    /// "Audio Bank Extractor & Player" (roadmap 2.4): resolves `mhURL`'s
+    /// sibling `.MB` file (same directory, same base name, case-
+    /// insensitive extension — real discs use `.MH`/`.MB` uppercase),
+    /// reads and decodes the whole bank off the main actor, then applies
+    /// the result. `mbData` is read with `.mappedIfSafe` for the same
+    /// reason `.levelResource`/`.sceneryResource` already do — `MUSIC.MB`
+    /// alone is over 200MB on the real disc.
+    private func loadSoundBankAsync(mhURL: URL) {
+        let directory = mhURL.deletingLastPathComponent()
+        let baseName = mhURL.deletingPathExtension().lastPathComponent
+        guard let mbURL = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil))?
+            .first(where: { $0.deletingPathExtension().lastPathComponent == baseName && $0.pathExtension.caseInsensitiveCompare("MB") == .orderedSame })
+        else {
+            lastError = "\(mhURL.lastPathComponent): no matching .MB file found in the same folder."
+            return
+        }
+
+        isLoadingSoundBank = true
+        statusMessage = "Parsing sound bank \(baseName)…"
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result: Result<SoundBankAsset, Error>
+            do {
+                let mhData = try Data(contentsOf: mhURL)
+                let mbData = try Data(contentsOf: mbURL, options: .mappedIfSafe)
+                let bank = try SoundBankParser.parse(mhData: mhData, mbData: mbData, sourceLabel: baseName)
+                result = .success(bank)
+            } catch {
+                result = .failure(error)
+            }
+            await self?.applySoundBankResult(result, baseName: baseName)
+        }
+    }
+
+    private func applySoundBankResult(_ result: Result<SoundBankAsset, Error>, baseName: String) {
+        isLoadingSoundBank = false
+        switch result {
+        case .success(let bank):
+            soundBanks.append(bank)
+            statusMessage = "Loaded sound bank \(baseName) — \(bank.entries.count) entries, \(bank.decodedCount) decoded."
+        case .failure(let error):
+            lastError = "\(baseName): \(error)"
+        }
+    }
+
     private func load(_ file: DetectedFile) {
         isLoading = true
         defer { isLoading = false }
@@ -475,6 +527,14 @@ public final class WorkspaceViewModel: ObservableObject {
 
             case .archiveData:
                 statusMessage = "Drop the matching .BH file to browse \(file.url.lastPathComponent) (a .BD alone has no index)."
+
+            case .soundBank:
+                // Real `.MB` payloads run well over 200MB (`MUSIC.MB`) —
+                // `load(_:)` itself stays synchronous/non-blocking by just
+                // scheduling the actual read+decode, matching this view
+                // model's standing rule against blocking the main actor on
+                // a heavy parse.
+                loadSoundBankAsync(mhURL: file.url)
 
             case .folder, .unknown:
                 break

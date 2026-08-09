@@ -428,4 +428,35 @@ extension RealDiscDiagnosticTests {
         print("DIAG: \(unrecognizedNodeTypes)/\(positions.count) AIPosition records have a NodeType value outside the reference tool's known enum")
         for path in paths { XCTAssertEqual(path.args.count, 5) }
     }
+
+    /// "Audio Bank Extractor & Player" (roadmap 2.4) — the standalone,
+    /// top-level `.MH`/`.MB` sound banks (`MUSIC`, `ENGLISH`, `FRENCH`,
+    /// `GERMAN`, `ITALIAN`, `SPANISH`) sitting next to the archive, never
+    /// opened by this build before now. Verifies every real bank decodes
+    /// to the real structure a manual byte inspection found (143 entries
+    /// each) and that real mono dialogue decodes to non-empty, sane PCM.
+    func testSoundBanksDecodeAcrossRealFiles() throws {
+        let root = "/Volumes/CRASH/CRASH6"
+        guard FileManager.default.fileExists(atPath: "\(root)/ENGLISH.MH") else {
+            throw XCTSkip("Disc image not mounted")
+        }
+        for name in ["MUSIC", "ENGLISH", "FRENCH", "GERMAN", "ITALIAN", "SPANISH"] {
+            let mhData = try Data(contentsOf: URL(fileURLWithPath: "\(root)/\(name).MH"))
+            let mbData = try Data(contentsOf: URL(fileURLWithPath: "\(root)/\(name).MB"), options: .mappedIfSafe)
+            let bank = try SoundBankParser.parse(mhData: mhData, mbData: mbData, sourceLabel: name)
+
+            XCTAssertEqual(bank.entries.count, 143, "\(name): expected 143 real sound bank entries")
+            let monoCount = bank.entries.filter { $0.kind == .mono }.count
+            let decodedNonEmpty = bank.entries.filter { ($0.sound?.pcmSamples.count ?? 0) > 0 }.count
+            print("DIAG: \(name) — \(monoCount) mono, \(decodedNonEmpty) decoded to non-empty PCM, interleave=\(bank.interleave)")
+
+            if name != "MUSIC" {
+                // The 5 language banks are confirmed 100% mono real dialogue.
+                XCTAssertEqual(monoCount, 143, "\(name): expected every entry to be mono")
+                XCTAssertGreaterThan(decodedNonEmpty, 100, "\(name): expected most real dialogue lines to decode to non-empty PCM")
+                let namedEntries = bank.entries.compactMap(\.name).filter { $0 != "undefined" }
+                XCTAssertGreaterThan(namedEntries.count, 0, "\(name): expected at least one real, non-placeholder dialogue name")
+            }
+        }
+    }
 }

@@ -89,6 +89,12 @@ struct ContentView: View {
                         Label("Levels Hub", systemImage: "map")
                     }
                     .disabled(workspace.levelsHub.isEmpty && !workspace.isScanning)
+                    Button {
+                        workspace.isSoundBanksHubPresented = true
+                    } label: {
+                        Label("Sound Banks", systemImage: "waveform")
+                    }
+                    .disabled(workspace.soundBanks.isEmpty && !workspace.isLoadingSoundBank)
                     Divider()
                     Button {
                         workspace.isScrappedContentScannerPresented = true
@@ -120,7 +126,7 @@ struct ContentView: View {
                 }
                 .help("Toggle the Engine Console.")
 
-                if workspace.isLoading || workspace.isScanning {
+                if workspace.isLoading || workspace.isScanning || workspace.isLoadingSoundBank {
                     ProgressView().controlSize(.small)
                 }
             }
@@ -177,6 +183,10 @@ struct ContentView: View {
         }
         .sheet(isPresented: $workspace.isLevelsHubPresented) {
             LevelsHubView()
+                .environmentObject(workspace)
+        }
+        .sheet(isPresented: $workspace.isSoundBanksHubPresented) {
+            SoundBanksHubView()
                 .environmentObject(workspace)
         }
         .sheet(isPresented: $workspace.isScrappedContentScannerPresented) {
