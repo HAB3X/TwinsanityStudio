@@ -758,6 +758,60 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         )
     }
 
+    // MARK: - Frustum culling ("Seamless Full-Map Rendering", Part 1)
+
+    /// The 6 view-frustum planes, extracted straight from a view-projection
+    /// matrix via the standard Gribb/Hartmann trick: each plane is one row
+    /// of `M` (combined with the clip-space condition it encodes), and a
+    /// point's signed distance to it falls out of `plane . (x, y, z, 1)`
+    /// divided by the plane normal's length. Built specifically for this
+    /// codebase's own `perspectiveMatrix`/`currentViewProjection` convention
+    /// — column-vector (`clip = M * v`) and Metal's `[0, 1]` NDC z range
+    /// (verified against `perspectiveMatrix`'s own construction: `vz =
+    /// -near` maps to `clip.z/w = 0`, `vz = -far` maps to `clip.z/w = 1`) —
+    /// not a generic OpenGL `[-1, 1]`-z formula, which would put the near
+    /// plane in the wrong place under Metal's convention.
+    struct Frustum {
+        /// Each plane as `(A, B, C, D)` with the *outward normal already
+        /// normalized* — a point is on the inside (visible) half-space when
+        /// `A*x + B*y + C*z + D >= 0`, and that dot product is directly a
+        /// true signed distance once the normal is unit length, which is
+        /// what makes the sphere test below just a `>= -radius` compare.
+        private let planes: [SIMD4<Float>]
+
+        init(viewProjection m: simd_float4x4) {
+            func row(_ i: Int) -> SIMD4<Float> {
+                SIMD4(m.columns.0[i], m.columns.1[i], m.columns.2[i], m.columns.3[i])
+            }
+            let r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3)
+            // Left/right/bottom/top: standard `r3 ± r0`/`r3 ± r1`, unaffected
+            // by the NDC z-range convention. Near/far are Metal-specific:
+            // `clip.z >= 0` *is* the near plane directly (not `r3 + r2`,
+            // which is the OpenGL `[-1,1]`-z formula), and `clip.w - clip.z
+            // >= 0` is the far plane, same as OpenGL.
+            let raw = [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2]
+            planes = raw.map { plane in
+                let normalLength = simd_length(SIMD3(plane.x, plane.y, plane.z))
+                return normalLength > 0.0001 ? plane / normalLength : plane
+            }
+        }
+
+        /// Conservative sphere-vs-frustum test: `false` only when the sphere
+        /// is provably entirely outside at least one plane. May return
+        /// `true` for some spheres that are actually just outside a corner
+        /// (the classic false-positive every plane-based frustum test
+        /// shares) — acceptable here since the failure mode of a
+        /// false-positive is "draw one extra object," not the "object
+        /// visibly pops in" a false *negative* would cause.
+        func intersects(center: SIMD3<Float>, radius: Float) -> Bool {
+            for plane in planes {
+                let distance = plane.x * center.x + plane.y * center.y + plane.z * center.z + plane.w
+                if distance < -radius { return false }
+            }
+            return true
+        }
+    }
+
     // MARK: - Shader source
 
     fileprivate static let shaderSource = """
@@ -892,6 +946,13 @@ private struct GPULevelObject {
     /// identically across every layer.
     let submeshes: [GPUSubmesh]
     let layer: SceneLayer
+    /// Local-space bounding-sphere radius (distance from this object's own
+    /// origin to its farthest vertex) — rotation-invariant by construction,
+    /// so `LevelViewerRenderer.draw(in:)`'s frustum cull can test it
+    /// directly against `worldPosition` without needing the object's
+    /// current rotation, only its (interactively editable) `scale`.
+    /// "Seamless Full-Map Rendering" (Part 1).
+    var boundingRadius: Float = 1
     /// "Direct .RM2 Write-Back": non-nil only for placeholder `Instance`
     /// markers (see `LevelViewerContext.instanceMarkers`) — the on-disk
     /// record this object's transform patches back into on save. `nil` for
@@ -1072,7 +1133,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         for (worldPosition, asset) in placements {
             let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: asset.mesh, submeshMaterials: asset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
             guard !built.submeshes.isEmpty else { continue }
-            levelObjects.append(GPULevelObject(worldPosition: worldPosition, displayName: asset.displayName, submeshes: built.submeshes, layer: .scenery))
+            levelObjects.append(GPULevelObject(worldPosition: worldPosition, displayName: asset.displayName, submeshes: built.submeshes, layer: .scenery, boundingRadius: Self.boundingRadius(of: asset.mesh)))
             // Bounds are tracked from placement position, not local mesh
             // extent — for a whole-level view, "where objects are" matters
             // far more than any one object's own size.
@@ -1081,6 +1142,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
 
         let markerMesh = Self.makeMarkerCubeAsset()
         let markerBuilt = ModelViewerRenderer.buildGPUSubmeshes(mesh: markerMesh.mesh, submeshMaterials: [markerMesh.material], device: device, fallbackTexture: context.fallbackTexture)
+        let markerRadius = Self.boundingRadius(of: markerMesh.mesh)
         for (node, instance) in instanceMarkers {
             guard !markerBuilt.submeshes.isEmpty else { break }
             let worldPosition = SIMD3(instance.position.x, instance.position.y, instance.position.z)
@@ -1090,6 +1152,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                 displayName: "Instance #\(instance.id) (Object \(instance.objectID))",
                 submeshes: markerBuilt.submeshes,
                 layer: .actors,
+                boundingRadius: markerRadius,
                 sourceNode: node,
                 originalPositionW: instance.position.w,
                 comRotationRaw: instance.comRotationRaw
@@ -1428,6 +1491,22 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         return SIMD3(x * toDegrees, y * toDegrees, z * toDegrees)
     }
 
+    /// The radius of the smallest sphere centered on the object's own local
+    /// origin that contains every vertex — rotation-invariant (distance
+    /// from origin doesn't change under rotation), so this is computed once
+    /// at upload time and reused as-is at every orientation. "Seamless
+    /// Full-Map Rendering" (Part 1): feeds the frustum cull's per-object
+    /// sphere test.
+    private static func boundingRadius(of mesh: MeshAsset) -> Float {
+        var maxDistanceSquared: Float = 0
+        for submesh in mesh.submeshes {
+            for vertex in submesh.vertices {
+                maxDistanceSquared = max(maxDistanceSquared, simd_length_squared(vertex.position))
+            }
+        }
+        return max(sqrt(maxDistanceSquared), 0.01)
+    }
+
     private static func quaternion(fromEulerDegrees degrees: SIMD3<Float>) -> simd_quatf {
         let toRadians: Float = .pi / 180
         let r = degrees * toRadians
@@ -1449,7 +1528,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     func addObject(asset: ResolvedModelAsset) -> Int? {
         let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: asset.mesh, submeshMaterials: asset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
         guard !built.submeshes.isEmpty else { return nil }
-        objects.append(GPULevelObject(worldPosition: boundsCenter, displayName: asset.displayName, submeshes: built.submeshes, layer: .actors))
+        objects.append(GPULevelObject(worldPosition: boundsCenter, displayName: asset.displayName, submeshes: built.submeshes, layer: .actors, boundingRadius: Self.boundingRadius(of: asset.mesh)))
         let newIndex = objects.count - 1
         select(index: newIndex)
         return newIndex
@@ -1510,7 +1589,17 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         encoder.setDepthStencilState(context.depthState)
         encoder.setFragmentSamplerState(context.samplerState, index: 0)
 
+        // "Seamless Full-Map Rendering" (Part 1): one frustum per frame,
+        // reused for every object's cull test below — a massive level can
+        // have hundreds of scenery/actor placements, and skipping the
+        // uniform upload + draw call entirely for whatever's behind the
+        // camera or well outside the view cone is the direct lever for
+        // flying a free-cam around it without dropping frames.
+        let frustum = ModelViewerRenderer.Frustum(viewProjection: viewProjection)
+
         for object in objects where layerVisibility.contains(object.layer) {
+            let maxScale = max(object.scale.x, max(object.scale.y, object.scale.z))
+            guard frustum.intersects(center: object.worldPosition, radius: object.boundingRadius * maxScale) else { continue }
             // T * R * S: scale and rotate the local mesh first, then place
             // the result at the object's world position — the standard
             // TRS composition order (reversed relative to how it reads

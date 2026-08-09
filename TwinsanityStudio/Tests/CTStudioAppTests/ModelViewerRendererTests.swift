@@ -1,5 +1,6 @@
 import XCTest
 import Metal
+import simd
 import ImageIO
 import UniformTypeIdentifiers
 @testable import CTCore
@@ -139,6 +140,44 @@ final class ModelViewerRendererTests: XCTestCase {
             CGImageDestinationFinalize(destination)
             print("DIAG: wrote snapshot to \(outputURL.path)")
         }
+    }
+
+    /// Same formula as `ModelViewerRenderer.perspectiveMatrix` (`fileprivate`,
+    /// so not directly callable from this test target) — duplicated here
+    /// deliberately rather than widening that access, since what's under
+    /// test is `Frustum`'s own plane-extraction math, not this helper.
+    private func testPerspectiveMatrix(fovYRadians: Float, aspect: Float, near: Float, far: Float) -> simd_float4x4 {
+        let y = 1 / tan(fovYRadians * 0.5)
+        let x = y / aspect
+        let z = far / (near - far)
+        return simd_float4x4(
+            SIMD4<Float>(x, 0, 0, 0),
+            SIMD4<Float>(0, y, 0, 0),
+            SIMD4<Float>(0, 0, z, -1),
+            SIMD4<Float>(0, 0, z * near, 0)
+        )
+    }
+
+    /// `Frustum` (Part 1, "Seamless Full-Map Rendering") is the new lever
+    /// for skipping draw calls on a massive level — a wrong plane (e.g. an
+    /// OpenGL-convention near plane under Metal's `[0,1]` NDC z, which
+    /// would put it in the wrong place entirely) wouldn't crash, it'd just
+    /// silently pop objects in/out of view, exactly the "dropped frames /
+    /// broken rendering" failure this feature exists to prevent. A
+    /// symmetric 90°-vertical-FOV, aspect-1, near=1/far=100 projection with
+    /// an identity view (camera at the world origin looking down -Z) makes
+    /// the frustum's shape easy to reason about by hand: at view-space
+    /// depth 10, the half-extent in both X and Y is `10 * tan(45°) == 10`.
+    func testFrustumCullsPointsOutsideEachPlane() {
+        let viewProjection = testPerspectiveMatrix(fovYRadians: .pi / 2, aspect: 1, near: 1, far: 100)
+        let frustum = ModelViewerRenderer.Frustum(viewProjection: viewProjection)
+
+        XCTAssertTrue(frustum.intersects(center: SIMD3(0, 0, -10), radius: 1), "center of the view cone must be visible")
+        XCTAssertFalse(frustum.intersects(center: SIMD3(50, 0, -10), radius: 1), "far outside the left/right planes must be culled")
+        XCTAssertFalse(frustum.intersects(center: SIMD3(0, 50, -10), radius: 1), "far outside the top/bottom planes must be culled")
+        XCTAssertFalse(frustum.intersects(center: SIMD3(0, 0, 10), radius: 1), "behind the camera (past the near plane) must be culled")
+        XCTAssertFalse(frustum.intersects(center: SIMD3(0, 0, -150), radius: 1), "past the far plane must be culled")
+        XCTAssertTrue(frustum.intersects(center: SIMD3(50, 0, -10), radius: 100), "a sphere large enough to bridge back into view must not be culled")
     }
 
     /// Samples a grid of pixels and counts roughly-distinct colors — cheap
