@@ -226,10 +226,112 @@ public final class WorkspaceViewModel: ObservableObject {
         if isDir.boolValue {
             let detected = WorkspaceAutoDetector.scanFolder(url)
             statusMessage = "Found \(detected.count) recognizable file(s) in \(url.lastPathComponent)."
-            for file in detected { load(file) }
+            // "Fatal Crash on File Selection": `.archiveIndex`/`.archiveData`
+            // are cheap (a header + entry-name list, not a full parse) and
+            // stay on `load(_:)`'s existing synchronous path, matching
+            // single-file open. `.levelResource`/`.sceneryResource` loose
+            // files are each a *full* parse — potentially many of them for
+            // a folder pick (an extracted mod folder, a whole disc root),
+            // and running that in a plain `for` loop on the main actor
+            // blocked the UI for however long all of them took combined,
+            // with zero opportunity for AppKit to service events in
+            // between. On this machine that's easily long enough to look
+            // and feel exactly like "the app instantly crashed" even
+            // though every individual parse was already safely wrapped in
+            // `load(_:)`'s own `do`/`catch` — the freeze was real, not a
+            // Swift-level crash, but indistinguishable from one to a user
+            // watching a spinning beachball. Routed through the same
+            // off-main-actor `TaskGroup` shape `scanAllArchives()` already
+            // uses for exactly this reason.
+            let looseLevelFiles = detected.filter { $0.kind == .levelResource || $0.kind == .sceneryResource }
+            let remaining = detected.filter { $0.kind != .levelResource && $0.kind != .sceneryResource }
+            for file in remaining { load(file) }
+            if !looseLevelFiles.isEmpty { loadLooseLevelFilesAsync(looseLevelFiles) }
             return
         }
         load(WorkspaceAutoDetector.detect(url: url))
+    }
+
+    /// One parsed loose `.RM2`/`.SM2` file's full result — everything
+    /// `load(_:)`'s `.levelResource`/`.sceneryResource` case already
+    /// computes for a single such file, bundled so a `TaskGroup` child task
+    /// can hand it back in one `Sendable` value. `nil` `node`/`data` means
+    /// this file failed to parse (see `error`) — still reported, never
+    /// silently dropped.
+    private struct LooseLevelFileResult: Sendable {
+        let file: DetectedFile
+        let node: ChunkNode?
+        let data: Data?
+        let models: [ResolvedModelAsset]
+        let orphans: [OrphanedAsset]
+        let textures: [TextureHubEntry]
+        let levels: [LevelHubEntry]
+        let error: String?
+    }
+
+    /// Parses every loose level/scenery file found by a folder scan off the
+    /// main actor, fanned out across cores (same shape as
+    /// `scanAllArchives`'s `TaskGroup`), then applies every result — parsed
+    /// or failed — back on the main actor in one batch. A single
+    /// malformed/truncated/unrelated file (a real risk when the user picks
+    /// a broad folder rather than a curated one) fails on its own and
+    /// reports through `lastError` alongside whatever else did load;
+    /// it never aborts the rest of the batch.
+    private func loadLooseLevelFilesAsync(_ files: [DetectedFile]) {
+        isLoading = true
+        statusMessage = "Parsing \(files.count) level file(s)…"
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let results = await withTaskGroup(of: LooseLevelFileResult.self) { group in
+                for file in files {
+                    group.addTask {
+                        do {
+                            let data = try Data(contentsOf: file.url, options: .mappedIfSafe)
+                            let node = try RM2Parser.parse(data: data, fileKind: Self.fileKind(for: file), fileName: file.url.lastPathComponent)
+                            let label = file.url.lastPathComponent
+                            return LooseLevelFileResult(
+                                file: file, node: node, data: data,
+                                models: Self.resolveModels(inFileRoot: node, sourceLabel: label),
+                                orphans: AssetResolver.scanForOrphans(fileRoot: node, sourceLabel: label),
+                                textures: Self.collectTextures(inFileRoot: node, sourceLabel: label),
+                                levels: Self.collectLevels(inFileRoot: node, sourceLabel: label),
+                                error: nil
+                            )
+                        } catch {
+                            return LooseLevelFileResult(file: file, node: nil, data: nil, models: [], orphans: [], textures: [], levels: [], error: "\(error)")
+                        }
+                    }
+                }
+                var collected: [LooseLevelFileResult] = []
+                collected.reserveCapacity(files.count)
+                for await result in group { collected.append(result) }
+                return collected
+            }
+            await self?.applyLooseLevelFileResults(results)
+        }
+    }
+
+    private func applyLooseLevelFileResults(_ results: [LooseLevelFileResult]) {
+        defer { isLoading = false }
+        var loadedCount = 0
+        var failedNames: [String] = []
+        for result in results {
+            guard let node = result.node, let data = result.data else {
+                failedNames.append(result.file.url.lastPathComponent)
+                lastError = "\(result.file.url.lastPathComponent): \(result.error ?? "unknown error")"
+                continue
+            }
+            rawFileBytesByRootID[node.id] = data
+            rootNodes.append(node)
+            modelsHub.append(contentsOf: result.models)
+            orphanedContent.append(contentsOf: result.orphans)
+            texturesHub.append(contentsOf: result.textures)
+            levelsHub.append(contentsOf: result.levels)
+            addRecentFile(result.file.url)
+            loadedCount += 1
+        }
+        statusMessage = failedNames.isEmpty
+            ? "Parsed \(loadedCount) level file(s)."
+            : "Parsed \(loadedCount) level file(s), \(failedNames.count) failed (see errors above)."
     }
 
     private func load(_ file: DetectedFile) {
@@ -279,7 +381,7 @@ public final class WorkspaceViewModel: ObservableObject {
                 // the on-disk file is never touched by editing this in-memory
                 // copy.
                 let data = try Data(contentsOf: file.url, options: .mappedIfSafe)
-                let node = try RM2Parser.parse(data: data, fileKind: fileKind(for: file), fileName: file.url.lastPathComponent)
+                let node = try RM2Parser.parse(data: data, fileKind: Self.fileKind(for: file), fileName: file.url.lastPathComponent)
                 rawFileBytesByRootID[node.id] = data
                 rootNodes.append(node)
                 statusMessage = "Loaded \(file.url.lastPathComponent) — \(node.children.count) top-level chunks."
@@ -300,7 +402,7 @@ public final class WorkspaceViewModel: ObservableObject {
         }
     }
 
-    private func fileKind(for file: DetectedFile) -> TwinsFileKind {
+    private nonisolated static func fileKind(for file: DetectedFile) -> TwinsFileKind {
         switch (file.kind, file.platform) {
         case (.levelResource, .xbox): return .rmx
         case (.levelResource, _): return .rm2

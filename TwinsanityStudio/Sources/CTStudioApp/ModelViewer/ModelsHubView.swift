@@ -28,6 +28,12 @@ struct ModelsHubView: View {
     /// lifetime, so scrolling back to an already-seen card is instant
     /// instead of re-running a full offscreen Metal render.
     @State private var thumbnailCache: [ResolvedModelAsset.ID: NSImage] = [:]
+    /// Tracked separately from `thumbnailCache` (not folded into it as a
+    /// generic placeholder image) so `GalleryCard` can tell "still loading"
+    /// apart from "genuinely failed to render" and draw the latter as a
+    /// real, per-model labeled box instead of one indistinguishable stock
+    /// icon for every failure.
+    @State private var failedThumbnailIDs: Set<ResolvedModelAsset.ID> = []
 
     private enum DisplayMode {
         case list, gallery
@@ -167,6 +173,7 @@ struct ModelsHubView: View {
                     GalleryCard(
                         model: model,
                         thumbnail: thumbnailCache[model.id],
+                        thumbnailFailed: failedThumbnailIDs.contains(model.id),
                         isBatchSelectionMode: isBatchSelectionMode,
                         isSelected: selectedIDs.contains(model.id),
                         onTap: { galleryCardTapped(model) }
@@ -204,11 +211,15 @@ struct ModelsHubView: View {
     /// concurrently from multiple threads) so scrolling through a large
     /// gallery doesn't stall on GPU work — only skipped if already cached.
     private func loadThumbnailIfNeeded(for model: ResolvedModelAsset) {
-        guard thumbnailCache[model.id] == nil else { return }
+        guard thumbnailCache[model.id] == nil, !failedThumbnailIDs.contains(model.id) else { return }
         Task.detached(priority: .userInitiated) {
             let image = ModelThumbnailRenderer.render(model, size: 256)
             await MainActor.run {
-                thumbnailCache[model.id] = image ?? ModelThumbnailRenderer.placeholder
+                if let image {
+                    thumbnailCache[model.id] = image
+                } else {
+                    failedThumbnailIDs.insert(model.id)
+                }
             }
         }
     }
@@ -288,6 +299,7 @@ private struct ModelsHubRow: View {
 private struct GalleryCard: View {
     let model: ResolvedModelAsset
     let thumbnail: NSImage?
+    let thumbnailFailed: Bool
     let isBatchSelectionMode: Bool
     let isSelected: Bool
     let onTap: () -> Void
@@ -341,9 +353,43 @@ private struct GalleryCard: View {
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .padding(6)
+        } else if thumbnailFailed {
+            NamedPlaceholderBox(
+                name: model.displayName,
+                systemImage: model.skeleton != nil ? "figure.stand" : "cube.fill",
+                color: model.skeleton != nil ? .orange : .teal
+            )
         } else {
             ProgressView()
                 .controlSize(.small)
+        }
+    }
+}
+
+/// "Redesigned Asset Hubs": the fallback state when a real thumbnail
+/// couldn't be generated — not a bare stock icon with no context, but the
+/// asset's own name laid directly over a color-coded box (color keyed to
+/// the same type distinction the list-view icons already use), so a card
+/// with a failed render is still immediately identifiable at a glance.
+private struct NamedPlaceholderBox: View {
+    let name: String
+    let systemImage: String
+    let color: Color
+
+    var body: some View {
+        ZStack {
+            color.opacity(0.22)
+            VStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 22))
+                    .foregroundStyle(color)
+                Text(name)
+                    .font(.caption2.bold())
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 6)
+            }
         }
     }
 }
@@ -359,15 +405,5 @@ enum ModelThumbnailRenderer {
               let cgImage = renderer.renderOffscreen(width: size, height: size)
         else { return nil }
         return NSImage(cgImage: cgImage, size: NSSize(width: size, height: size))
-    }
-
-    /// Shown (once, then cached like any other result) for a resolved
-    /// composite whose renderer failed to build or produced no drawable
-    /// geometry — a real, if rare, case (see `ModelViewerWindow`'s own
-    /// "No Drawable Geometry" state for the same situation) that a card
-    /// should say something about rather than spin forever.
-    static var placeholder: NSImage {
-        NSImage(systemSymbolName: "cube.transparent", accessibilityDescription: "No preview available")
-            ?? NSImage(size: NSSize(width: 1, height: 1))
     }
 }

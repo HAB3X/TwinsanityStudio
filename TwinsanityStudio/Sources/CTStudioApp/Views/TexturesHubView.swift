@@ -105,6 +105,12 @@ private struct TextureThumbnailCell: View {
     /// elsewhere in this app: decode once into `@State`, keyed off the
     /// entry's own identity.
     @State private var cachedImage: NSImage?
+    /// Distinct from "hasn't decoded yet" (`cachedImage == nil` before the
+    /// `.task` below runs) — this is only set once decode has genuinely
+    /// failed, so the cell can show a real labeled placeholder instead of
+    /// leaving the user staring at a spinner forever or an unlabeled
+    /// warning triangle.
+    @State private var decodeFailed = false
 
     var body: some View {
         VStack(spacing: 4) {
@@ -113,9 +119,21 @@ private struct TextureThumbnailCell: View {
                     Image(nsImage: cachedImage)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
+                } else if decodeFailed {
+                    ZStack {
+                        Color.red.opacity(0.18)
+                        VStack(spacing: 4) {
+                            Image(systemName: "photo.badge.exclamationmark")
+                                .foregroundStyle(.red)
+                            Text("#\(entry.texture.id)")
+                                .font(.caption2.bold())
+                                .lineLimit(1)
+                                .foregroundStyle(.primary)
+                        }
+                        .padding(.horizontal, 4)
+                    }
                 } else {
-                    Image(systemName: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
+                    ProgressView().controlSize(.small)
                 }
             }
             .frame(width: 96, height: 96)
@@ -126,12 +144,16 @@ private struct TextureThumbnailCell: View {
             Text("#\(entry.texture.id)")
                 .font(.caption2.monospacedDigit())
                 .lineLimit(1)
-            Text("\(entry.texture.width)×\(entry.texture.height)")
+            Text("\(entry.texture.width)×\(entry.texture.height) · \(entry.texture.pixelFormat.rawValue)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
         .task(id: entry.id) {
-            guard let cgImage = try? TextureExporter.cgImage(from: entry.texture) else { return }
+            guard let cgImage = try? TextureExporter.cgImage(from: entry.texture) else {
+                decodeFailed = true
+                return
+            }
             cachedImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
         }
     }
