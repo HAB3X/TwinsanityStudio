@@ -140,6 +140,24 @@ public enum WorldPlacementWriter {
         return writer.data
     }
 
+    /// Encodes one Camera Path/Spline control point (`CameraPath.unkVectors`/
+    /// `CameraSpline.unkVectors`) back to its on-disk 16-byte form — the
+    /// exact inverse of `BinaryCursor.readVector4` at the offset captured
+    /// in `controlPointFileOffsets` during parse. A dragged control point
+    /// never changes the record's total size (same value in, same value
+    /// out, just different bits), so — like `writePosition` — this patches
+    /// straight into a copy of the file at the point's exact absolute
+    /// offset (`ChunkNode.fileOffset + controlPointFileOffsets[i]`) with
+    /// nothing else in the file needing to move.
+    public static func writeCameraControlPoint(_ vector: SIMD4<Float>) -> Data {
+        var writer = BinaryWriter()
+        writer.writeFloat32(vector.x)
+        writer.writeFloat32(vector.y)
+        writer.writeFloat32(vector.z)
+        writer.writeFloat32(vector.w)
+        return writer.data
+    }
+
     public static func writeTriggerOrCameraPrefix(header: UInt32, enabledMask: UInt32, someFloat: Float, rotationQuaternion: SIMD4<Float>, position: SIMD4<Float>, size: SIMD4<Float>) -> Data {
         var writer = BinaryWriter()
         writer.writeUInt32(header)

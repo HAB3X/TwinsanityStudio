@@ -308,6 +308,80 @@ final class WorldPlacementParserTests: XCTestCase {
         XCTAssertEqual(cursor.position, w.count)
     }
 
+    /// "Spline & Camera Path Persistence" (roadmap 6.3) — the real
+    /// correctness guarantee the write path depends on: each control
+    /// point's `controlPointFileOffsets[i]` must point at the exact byte
+    /// offset `WorldPlacementParser` itself read that vector from, so that
+    /// patching `WorldPlacementWriter.writeCameraControlPoint`'s 16 bytes
+    /// in at that offset — and nothing else — round-trips a moved control
+    /// point while leaving every other byte in the record (including the
+    /// *other* control point and the trailing data) untouched.
+    func testCameraPathControlPointOffsetsRoundTripAWriteBack() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(0); w.writeUInt32(1); w.writeFloat32(0.3)
+        for _ in 0..<3 { w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1) }
+        w.writeInt32(0); w.writeInt32(0); w.writeUInt32(10)
+        w.writeUInt32(0)
+        w.writeUInt16(0)
+        w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0)
+        w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0)
+        w.writeInt32(0); w.writeInt32(0)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0)
+        w.writeUInt32(0); w.writeInt32(0); w.writeUInt32(0); w.writeFloat32(0)
+        w.writeUInt32(0x1C04) // CameraType1 = path
+        w.writeUInt32(3)      // CameraType2 = none
+        w.writeUInt8(0)
+        // Path payload: unkInt, f1, f2, vectorCount=2, 2 control points, unkInt2=0 (no trailing data).
+        w.writeUInt32(7)
+        w.writeFloat32(1.25)
+        w.writeFloat32(2.5)
+        w.writeUInt32(2)
+        w.writeFloat32(10); w.writeFloat32(20); w.writeFloat32(30); w.writeFloat32(1) // point 0
+        w.writeFloat32(40); w.writeFloat32(50); w.writeFloat32(60); w.writeFloat32(1) // point 1
+        w.writeInt32(0)
+
+        let originalBytes = w.data
+        var cursor = BinaryCursor(data: originalBytes)
+        let camera = try WorldPlacementParser.parseCamera(&cursor, recordID: 9, isDemo: false)
+
+        guard case .path(let path) = camera.subtype1 else {
+            return XCTFail("Expected a .path subtype")
+        }
+        XCTAssertEqual(path.unkVectors, [SIMD4<Float>(10, 20, 30, 1), SIMD4<Float>(40, 50, 60, 1)])
+        XCTAssertEqual(path.controlPointFileOffsets.count, 2)
+
+        // The recorded offset for point 0 must land exactly on point 0's
+        // real bytes — reading a fresh Vector4 straight from the original
+        // buffer at that offset must reproduce the parsed value exactly.
+        for (index, offset) in path.controlPointFileOffsets.enumerated() {
+            var probe = BinaryCursor(data: originalBytes)
+            _ = try probe.seek(to: offset)
+            XCTAssertEqual(try probe.readVector4(), path.unkVectors[index], "control point \(index) offset didn't point at its own bytes")
+        }
+
+        // Move point 0 and patch just its 16 bytes into a copy of the file.
+        let movedPoint0 = SIMD4<Float>(111, 222, 333, 1)
+        var patched = originalBytes
+        let offset0 = path.controlPointFileOffsets[0]
+        patched.replaceSubrange(offset0..<(offset0 + 16), with: WorldPlacementWriter.writeCameraControlPoint(movedPoint0))
+
+        var reparseCursor = BinaryCursor(data: patched)
+        let reparsedCamera = try WorldPlacementParser.parseCamera(&reparseCursor, recordID: 9, isDemo: false)
+        guard case .path(let reparsedPath) = reparsedCamera.subtype1 else {
+            return XCTFail("Expected a .path subtype after patch")
+        }
+        XCTAssertEqual(reparsedPath.unkVectors[0], movedPoint0)
+        // Everything else — the other control point, unkInt/f1/f2 — must be
+        // completely untouched by a patch scoped to just one point's bytes.
+        XCTAssertEqual(reparsedPath.unkVectors[1], SIMD4<Float>(40, 50, 60, 1))
+        XCTAssertEqual(reparsedPath.unkInt, 7)
+        XCTAssertEqual(reparsedPath.unkFloat1, 1.25, accuracy: 0.0001)
+        XCTAssertEqual(patched.count, originalBytes.count)
+    }
+
     func testParseCameraUnknownSubtypeThrows() throws {
         var w = BinaryWriter()
         w.writeUInt32(0); w.writeUInt32(1); w.writeFloat32(0.3)

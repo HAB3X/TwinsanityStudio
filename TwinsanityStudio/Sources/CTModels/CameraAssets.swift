@@ -116,13 +116,25 @@ public struct CameraPath: Sendable {
     public var unkFloat2: Float
     public var unkVectors: [SIMD4<Float>]
     public var trailingData: Data
+    /// Byte offset of each `unkVectors[i]`'s first byte, relative to this
+    /// `Camera` record's own start (i.e. directly addable to the owning
+    /// `ChunkNode.fileOffset` for an absolute file offset) — captured
+    /// during parse (`WorldPlacementParser.parseCameraSubtype`) since a
+    /// control point's position within the record depends on which
+    /// sub-camera slot it's in and everything variable-length before it.
+    /// Lets a dragged control point be patched straight into the file at
+    /// its exact offset without re-encoding the rest of this
+    /// variable-length record (see `WorldPlacementWriter.
+    /// writeCameraControlPoint`).
+    public var controlPointFileOffsets: [Int]
 
-    public init(unkInt: UInt32, unkFloat1: Float, unkFloat2: Float, unkVectors: [SIMD4<Float>], trailingData: Data) {
+    public init(unkInt: UInt32, unkFloat1: Float, unkFloat2: Float, unkVectors: [SIMD4<Float>], trailingData: Data, controlPointFileOffsets: [Int] = []) {
         self.unkInt = unkInt
         self.unkFloat1 = unkFloat1
         self.unkFloat2 = unkFloat2
         self.unkVectors = unkVectors
         self.trailingData = trailingData
+        self.controlPointFileOffsets = controlPointFileOffsets
     }
 }
 
@@ -137,8 +149,11 @@ public struct CameraSpline: Sendable {
     public var unkVectors: [SIMD4<Float>]
     public var trailingData: Data
     public var unkShort: UInt16
+    /// Same role as `CameraPath.controlPointFileOffsets` — one absolute-
+    /// within-record byte offset per `unkVectors[i]`.
+    public var controlPointFileOffsets: [Int]
 
-    public init(unkInt: Int32, unkFloat1: Float, unkFloat2: Float, segmentCount: UInt32, unkFloat3: Float, unkVectors: [SIMD4<Float>], trailingData: Data, unkShort: UInt16) {
+    public init(unkInt: Int32, unkFloat1: Float, unkFloat2: Float, segmentCount: UInt32, unkFloat3: Float, unkVectors: [SIMD4<Float>], trailingData: Data, unkShort: UInt16, controlPointFileOffsets: [Int] = []) {
         self.unkInt = unkInt
         self.unkFloat1 = unkFloat1
         self.unkFloat2 = unkFloat2
@@ -147,6 +162,7 @@ public struct CameraSpline: Sendable {
         self.unkVectors = unkVectors
         self.trailingData = trailingData
         self.unkShort = unkShort
+        self.controlPointFileOffsets = controlPointFileOffsets
     }
 }
 

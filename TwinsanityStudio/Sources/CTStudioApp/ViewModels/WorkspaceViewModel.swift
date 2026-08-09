@@ -1164,6 +1164,55 @@ public final class WorkspaceViewModel: ObservableObject {
         return bytes
     }
 
+    /// "Spline & Camera Path Persistence" (roadmap 6.3): patches one or
+    /// more fixed-size edits in at *arbitrary* absolute byte offsets
+    /// within a file, rather than at an edited node's own
+    /// `node.fileOffset` — needed because a Camera Path/Spline control
+    /// point isn't a record of its own; it's a `Vector4` nested somewhere
+    /// inside its owning Camera record's variable-length body. `node` is
+    /// still required per edit (not just a raw offset) so this can verify
+    /// the target offset actually falls inside that record's own real
+    /// byte range before writing — a stale/wrong offset silently patching
+    /// bytes in an unrelated part of the file is exactly the failure mode
+    /// worth refusing outright rather than risking.
+    public func patchedFileBytes(applyingAbsoluteByteRangePatches edits: [(node: ChunkNode, absoluteOffset: Int, encoded: Data)]) -> Data? {
+        guard let first = edits.first,
+              let fileRoot = findFileRoot(containing: first.node, in: rootNodes),
+              let bytes = rawFileBytesByRootID[fileRoot.id]
+        else {
+            lastError = "Can't save edits here — this level's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return nil
+        }
+        return applyingAbsoluteByteRangePatches(edits, into: bytes, fileRootID: fileRoot.id)
+    }
+
+    /// Shared validate-and-overwrite loop behind
+    /// `patchedFileBytes(applyingAbsoluteByteRangePatches:)` and the
+    /// combined Level Viewer save path — factored out so the combined path
+    /// can fold these patches into the *same* already-in-progress buffer
+    /// as the ordinary transform-prefix edits, instead of each patch
+    /// function re-reading fresh bytes from `rawFileBytesByRootID` and one
+    /// silently discarding the other's edits.
+    private func applyingAbsoluteByteRangePatches(_ edits: [(node: ChunkNode, absoluteOffset: Int, encoded: Data)], into bytes: Data, fileRootID: UUID) -> Data? {
+        var bytes = bytes
+        for (node, absoluteOffset, encoded) in edits {
+            guard findFileRoot(containing: node, in: rootNodes)?.id == fileRootID else {
+                lastError = "Internal error: edits spanned more than one file — refusing to save a partial result."
+                return nil
+            }
+            guard absoluteOffset >= node.fileOffset, absoluteOffset + encoded.count <= node.fileOffset + node.byteSize else {
+                lastError = "Internal error: an edited control point's offset fell outside its own record — refusing to save."
+                return nil
+            }
+            guard absoluteOffset >= 0, absoluteOffset + encoded.count <= bytes.count else {
+                lastError = "Internal error: an edited control point's offset was outside its file's bounds."
+                return nil
+            }
+            bytes.replaceSubrange(absoluteOffset..<(absoluteOffset + encoded.count), with: encoded)
+        }
+        return bytes
+    }
+
     /// The `.objectInstance` (or, for a Demo file, `.objectInstanceDemo`)
     /// Tier 2 collection in the same file as `levelNode` — "The Forge
     /// Palette"'s (Part 4C/4D) new-Instance insertion target. Distinct from
@@ -1221,27 +1270,38 @@ public final class WorkspaceViewModel: ObservableObject {
     /// shrink operation.
     public func patchedFileBytes(
         applyingPrefixPatches transformEdits: [(node: ChunkNode, encoded: Data)],
+        applyingAbsoluteByteRangePatches controlPointEdits: [(node: ChunkNode, absoluteOffset: Int, encoded: Data)] = [],
         insertingNewInstances newInstances: [(id: UInt32, encoded: Data)],
         insertingNewAIPositions newAIPositions: [(id: UInt32, encoded: Data)],
         levelNode: ChunkNode
     ) -> Data? {
-        let afterTransformEdits: Data?
-        if transformEdits.isEmpty {
-            guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes) else {
-                lastError = "Can't save edits here — this chunk's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
-                return nil
-            }
-            afterTransformEdits = rawFileBytesByRootID[fileRoot.id]
-        } else {
-            afterTransformEdits = patchedFileBytes(applyingPrefixPatches: transformEdits)
-        }
-        guard let currentBytes = afterTransformEdits else { return nil }
-        guard !newInstances.isEmpty || !newAIPositions.isEmpty else { return currentBytes }
-
         guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes) else {
             lastError = "Can't save edits here — this chunk's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
             return nil
         }
+        let afterTransformEdits: Data?
+        if transformEdits.isEmpty {
+            afterTransformEdits = rawFileBytesByRootID[fileRoot.id]
+        } else {
+            afterTransformEdits = patchedFileBytes(applyingPrefixPatches: transformEdits)
+        }
+        guard var currentBytes = afterTransformEdits else { return nil }
+
+        // Control-point patches are, like `transformEdits`, pure fixed-size
+        // overwrites — folded into the *same* pre-insertion buffer for the
+        // same reason `ChunkSectionInserter`'s own doc comment gives for
+        // never chaining two single-target insert passes: `insertingRecords`
+        // below rebuilds sections using the *original* tree's node offsets
+        // against whatever buffer it's handed, so any patch must land
+        // before that rebuild runs, not after (an insertion changes total
+        // file length and shifts everything downstream of it; an overwrite
+        // never does, so overwrites are always safe to apply first).
+        if !controlPointEdits.isEmpty {
+            guard let afterControlPointEdits = applyingAbsoluteByteRangePatches(controlPointEdits, into: currentBytes, fileRootID: fileRoot.id) else { return nil }
+            currentBytes = afterControlPointEdits
+        }
+
+        guard !newInstances.isEmpty || !newAIPositions.isEmpty else { return currentBytes }
 
         // Both insertions go through the *one* multi-target rebuild
         // (`insertingRecords(intoSections:...)`), never two sequential

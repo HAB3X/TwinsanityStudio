@@ -324,7 +324,7 @@ struct LevelViewerWindow: View {
                 }
                 .formStyle(.grouped)
 
-                Text("Scenery objects are drawn at their correct world position, but not yet rotated or scaled to match the chunk data — only translation is currently applied, and scenery has no write path yet (in-session sandbox only). The amber cubes are Instance records (crate/enemy/platform placements) — their position/rotation is real, live-editable with the gizmo, and \"Save Chunk Overrides…\" below writes it back to a copy of the file. Green/cyan wireframe boxes are Triggers/Cameras — click to select and inspect; no 3D gizmo yet, but their inspector panel below has real, writable position/size/rotation fields with their own \"Save Edited Copy…\" button. The small magenta boxes along a camera's path are its real spline control points — click and drag one with the gizmo like any other object, but this build has no encoder for a Camera record's full variable-length body yet, so a moved control point is a live visual/measuring tool, not a saved edit.")
+                Text("Scenery objects are drawn at their correct world position, but not yet rotated or scaled to match the chunk data — only translation is currently applied, and scenery has no write path yet (in-session sandbox only). The amber cubes are Instance records (crate/enemy/platform placements) — their position/rotation is real, live-editable with the gizmo, and \"Save Chunk Overrides…\" below writes it back to a copy of the file. Green/cyan wireframe boxes are Triggers/Cameras — click to select and inspect; no 3D gizmo yet, but their inspector panel below has real, writable position/size/rotation fields with their own \"Save Edited Copy…\" button. The small magenta boxes along a camera's path are its real spline/path control points — click and drag one with the gizmo like any other object; \"Save Chunk Overrides…\" patches each moved point's own 16 bytes straight into the file, without needing to re-encode the rest of that Camera record. Inserting or removing a control point isn't supported yet — only moving an existing one.")
                     .font(.caption2)
                     .foregroundStyle(.orange)
 
@@ -909,9 +909,10 @@ struct LevelViewerWindow: View {
     private func saveLevelOverrides() {
         guard let renderer, let referenceNode = referenceNodeForFileOps else { return }
         let edits = renderer.pendingLevelOverrides + renderer.pendingAIWaypointOverrides
+        let controlPointEdits = renderer.pendingCameraControlPointOverrides
         let newInstances = renderer.pendingNewInstances
         let newAIPositions = renderer.pendingNewAIPositions
-        guard !edits.isEmpty || !newInstances.isEmpty || !newAIPositions.isEmpty else { return }
+        guard !edits.isEmpty || !controlPointEdits.isEmpty || !newInstances.isEmpty || !newAIPositions.isEmpty else { return }
 
         let encodedNewInstances = newInstances.map { entry in
             (id: entry.syntheticID, encoded: WorldPlacementWriter.writeNewInstance(
@@ -922,6 +923,7 @@ struct LevelViewerWindow: View {
         }
         guard let patchedBytes = workspace.patchedFileBytes(
             applyingPrefixPatches: edits,
+            applyingAbsoluteByteRangePatches: controlPointEdits,
             insertingNewInstances: encodedNewInstances,
             insertingNewAIPositions: newAIPositions,
             levelNode: referenceNode
@@ -929,13 +931,14 @@ struct LevelViewerWindow: View {
 
         guard let url = ExportPanel.chooseSaveLocation(
             suggestedName: "\(workspace.originalFileName(for: referenceNode) ?? "chunk")_edited.rm2",
-            message: "Save the edited copy of this file, with every Instance/AI Waypoint's current position applied and every newly placed object/waypoint added. The original file on disk is not modified."
+            message: "Save the edited copy of this file, with every Instance/AI Waypoint/Camera control point's current position applied and every newly placed object/waypoint added. The original file on disk is not modified."
         ) else { return }
         do {
             try patchedBytes.write(to: url)
             var summary = "Saved edited copy to \(url.lastPathComponent)"
             var parts: [String] = []
             if !edits.isEmpty { parts.append("\(edits.count) transform override(s)") }
+            if !controlPointEdits.isEmpty { parts.append("\(controlPointEdits.count) camera control point(s)") }
             if !newInstances.isEmpty { parts.append("\(newInstances.count) newly placed object(s)") }
             if !newAIPositions.isEmpty { parts.append("\(newAIPositions.count) newly placed waypoint(s)") }
             summary += " with " + parts.joined(separator: " and ") + ". The original file was not modified."

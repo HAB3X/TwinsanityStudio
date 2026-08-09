@@ -219,10 +219,14 @@ public enum WorldPlacementParser {
             let f2 = try cursor.readFloat32()
             let vectorCount = try cursor.readUInt32()
             var vectors: [SIMD4<Float>] = []
-            for _ in 0..<vectorCount { vectors.append(try cursor.readVector4()) }
+            var offsets: [Int] = []
+            for _ in 0..<vectorCount {
+                offsets.append(cursor.position)
+                vectors.append(try cursor.readVector4())
+            }
             let unkInt2 = try cursor.readInt32()
             let trailing = try cursor.readBytes(max(0, Int(unkInt2)) * 8)
-            return .path(CameraPath(unkInt: unkInt, unkFloat1: f1, unkFloat2: f2, unkVectors: vectors, trailingData: trailing))
+            return .path(CameraPath(unkInt: unkInt, unkFloat1: f1, unkFloat2: f2, unkVectors: vectors, trailingData: trailing, controlPointFileOffsets: offsets))
 
         case 0x1C05:
             return .null1C05
@@ -234,10 +238,14 @@ public enum WorldPlacementParser {
             let segCount = try cursor.readUInt32()
             let f3 = try cursor.readFloat32()
             var vectors: [SIMD4<Float>] = []
-            for _ in 0..<((segCount + 1) * 2) { vectors.append(try cursor.readVector4()) }
+            var offsets: [Int] = []
+            for _ in 0..<((segCount + 1) * 2) {
+                offsets.append(cursor.position)
+                vectors.append(try cursor.readVector4())
+            }
             let trailing = try cursor.readBytes(Int(segCount) * 8)
             let unkShort = try cursor.readUInt16()
-            return .spline(CameraSpline(unkInt: unkInt, unkFloat1: f1, unkFloat2: f2, segmentCount: segCount, unkFloat3: f3, unkVectors: vectors, trailingData: trailing, unkShort: unkShort))
+            return .spline(CameraSpline(unkInt: unkInt, unkFloat1: f1, unkFloat2: f2, segmentCount: segCount, unkFloat3: f3, unkVectors: vectors, trailingData: trailing, unkShort: unkShort, controlPointFileOffsets: offsets))
 
         case 0x1C09:
             let unkInt = try cursor.readUInt32()

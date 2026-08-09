@@ -1170,6 +1170,16 @@ private struct GPULevelObject {
     /// waypoint's real node type instead of clobbering it with a default.
     /// `nil` for anything that isn't a real, loaded waypoint.
     var originalAIWaypointRawNodeType: UInt16?
+    /// "Spline & Camera Path Persistence" (roadmap 6.3): non-nil only for a
+    /// Camera Path/Spline control-point marker (not the camera's own box
+    /// marker, which shares the `.cameras` layer but leaves this `nil`) —
+    /// the control point's byte offset relative to the owning Camera
+    /// record (`sourceNode`), captured at parse time
+    /// (`CameraPath`/`CameraSpline.controlPointFileOffsets`). Lets
+    /// `pendingCameraControlPointOverrides` patch a dragged point straight
+    /// into the file at `sourceNode.fileOffset + this` without touching
+    /// anything else in the variable-length Camera record.
+    var cameraControlPointFileOffset: Int?
 }
 
 /// Which transform the gizmo currently edits — the W/E/R hotkeys switch
@@ -1455,23 +1465,27 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                 sourceNode: node
             ))
             expandBounds(worldPosition)
-            // "Interactive Spline & Camera Path Visualizer" (roadmap 6.3):
-            // each real control point gets its own selectable, draggable
-            // marker — not just a static polyline. Session-only: there's
-            // no `sourceNode` (a control point is one `Pos` inside the
-            // camera's own variable-length record, not a record of its
-            // own), and no save path — this build has no encoder for a
-            // `Camera` record's full variable-length body yet (only the
-            // fixed 60-byte prefix `writeTriggerOrCameraPrefix` patches),
-            // so a dragged control point is a real, live visual/measuring
-            // tool, not yet a persisted edit.
-            for (pointIndex, vector) in Self.splineControlPoints(for: camera).enumerated() {
-                let pointPosition = SIMD3(vector.x, vector.y, vector.z)
+            // "Spline & Camera Path Persistence" (roadmap 6.3): each real
+            // control point gets its own selectable, draggable marker, and
+            // — where its exact on-disk offset was captured at parse time
+            // (`cameraControlPointFileOffset`) — a real save path: dragging
+            // it and saving patches just that point's 16 bytes at
+            // `node.fileOffset + cameraControlPointFileOffset`, leaving the
+            // rest of this variable-length Camera record untouched (see
+            // `pendingCameraControlPointOverrides`). `sourceNode` is the
+            // *camera's* node (a control point isn't a record of its own),
+            // matching how `originalAIWaypointRawNodeType` etc. key off
+            // their owning record.
+            for (pointIndex, point) in Self.splineControlPoints(for: camera).enumerated() {
+                let pointPosition = SIMD3(point.vector.x, point.vector.y, point.vector.z)
                 levelObjects.append(GPULevelObject(
                     worldPosition: pointPosition,
                     displayName: "Camera #\(camera.id) control point \(pointIndex)",
                     submeshes: [],
-                    layer: .cameras
+                    layer: .cameras,
+                    sourceNode: point.fileOffset != nil ? node : nil,
+                    originalPositionW: point.vector.w,
+                    cameraControlPointFileOffset: point.fileOffset
                 ))
                 expandBounds(pointPosition)
             }
@@ -1549,12 +1563,18 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// Control points for whichever of a camera's two sub-payload slots
     /// actually has spline/path data — `nil`-safe: most cameras have
     /// neither, in which case this returns an empty path and only the
-    /// camera's own box marker draws.
-    private static func splineControlPoints(for camera: PlacedCamera) -> [SIMD4<Float>] {
+    /// camera's own box marker draws. Paired with each point's real
+    /// record-relative file offset (`nil` only if `controlPointFileOffsets`
+    /// somehow came up short of `unkVectors`, which parsing never actually
+    /// produces — defensive, not expected) so a dragged point can be
+    /// patched back to its exact byte offset on save.
+    private static func splineControlPoints(for camera: PlacedCamera) -> [(vector: SIMD4<Float>, fileOffset: Int?)] {
         for subtype in [camera.subtype1, camera.subtype2] {
             switch subtype {
-            case .spline(let spline): return spline.unkVectors
-            case .path(let path): return path.unkVectors
+            case .spline(let spline):
+                return spline.unkVectors.enumerated().map { index, v in (v, spline.controlPointFileOffsets.indices.contains(index) ? spline.controlPointFileOffsets[index] : nil) }
+            case .path(let path):
+                return path.unkVectors.enumerated().map { index, v in (v, path.controlPointFileOffsets.indices.contains(index) ? path.controlPointFileOffsets[index] : nil) }
             default: continue
             }
         }
@@ -1652,7 +1672,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                 let position = SIMD3(camera.position.x, camera.position.y, camera.position.z)
                 let size = SIMD3(max(camera.size.x, 0.1), max(camera.size.y, 0.1), max(camera.size.z, 0.1))
                 appendBox(position: position, size: size, rotation: simd_quatf(vector: camera.rotationQuaternion), color: cameraColor)
-                let controlPoints = Self.splineControlPoints(for: camera).map { SIMD3($0.x, $0.y, $0.z) }
+                let controlPoints = Self.splineControlPoints(for: camera).map { SIMD3($0.vector.x, $0.vector.y, $0.vector.z) }
                 // "Interactive Spline & Camera Path Visualizer" (roadmap
                 // 6.3): a small marker box at every real control point,
                 // not just the connecting polyline — this is what actually
@@ -2174,6 +2194,25 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             let position = SIMD4(object.worldPosition.x, object.worldPosition.y, object.worldPosition.z, object.originalPositionW)
             let encoded = WorldPlacementWriter.writeAIPosition(position: position, rawNodeType: rawNodeType)
             return (node, encoded)
+        }
+    }
+
+    /// "Spline & Camera Path Persistence" (roadmap 6.3): the current
+    /// position of every real, on-disk Camera Path/Spline control point,
+    /// paired with the owning Camera `ChunkNode` and the exact absolute
+    /// file offset (`node.fileOffset + cameraControlPointFileOffset`) this
+    /// one point's 16 bytes patch into — deliberately not keyed by
+    /// `.cameras`-layer alone (that also matches each camera's own box
+    /// marker, which has no `cameraControlPointFileOffset` and would
+    /// otherwise get misencoded as a control point).
+    var pendingCameraControlPointOverrides: [(node: ChunkNode, absoluteOffset: Int, encoded: Data)] {
+        objects.compactMap { object in
+            guard object.layer == .cameras, let node = object.sourceNode,
+                  let relativeOffset = object.cameraControlPointFileOffset
+            else { return nil }
+            let vector = SIMD4(object.worldPosition.x, object.worldPosition.y, object.worldPosition.z, object.originalPositionW)
+            let encoded = WorldPlacementWriter.writeCameraControlPoint(vector)
+            return (node, node.fileOffset + relativeOffset, encoded)
         }
     }
 
