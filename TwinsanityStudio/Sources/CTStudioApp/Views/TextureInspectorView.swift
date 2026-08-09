@@ -8,10 +8,15 @@ struct TextureInspectorView: View {
     let node: ChunkNode
     let texture: TextureAsset
     @State private var selectedMip: Int = -1 // -1 = base level
+    @State private var upscaledTexture: TextureAsset?
+    @State private var isUpscaling = false
+    @State private var upscaleError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if let nsImage {
+            if let upscaledTexture {
+                upscaledPreview(upscaledTexture)
+            } else if let nsImage {
                 Image(nsImage: nsImage)
                     .resizable()
                     .interpolation(.none)
@@ -51,9 +56,76 @@ struct TextureInspectorView: View {
                     Label("Export PNG…", systemImage: "square.and.arrow.up")
                 }
                 .disabled(!texture.pixelFormat.isFullyDecoded)
+                Button {
+                    presentUpscaleModelPanel()
+                } label: {
+                    Label(isUpscaling ? "Upscaling…" : "Upscale with CoreML Model…", systemImage: "sparkles")
+                }
+                .disabled(!texture.pixelFormat.isFullyDecoded || isUpscaling)
+                if upscaledTexture != nil {
+                    Button("Revert to Original") { upscaledTexture = nil }
+                        .buttonStyle(.borderless)
+                }
                 Spacer()
+                if isUpscaling { ProgressView().controlSize(.small) }
+            }
+            if let upscaleError {
+                Label(upscaleError, systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
             }
         }
+    }
+
+    /// "Neural Texture Upscaling" (roadmap 5.4): real result of a real
+    /// user-supplied model, shown alongside — never in place of, until the
+    /// user explicitly reverts — the real decoded original, so it's never
+    /// ambiguous which one is actually on disk versus model output.
+    private func upscaledPreview(_ upscaled: TextureAsset) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let cgImage = try? TextureExporter.cgImage(from: upscaled, mipLevel: nil) {
+                Image(nsImage: NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height)))
+                    .resizable()
+                    .interpolation(.none)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxHeight: 320)
+                    .background(checkerboard)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
+            }
+            Text("Upscaled: \(upscaled.width) × \(upscaled.height) (from \(texture.width) × \(texture.height)) — real output from the model you selected, not decoded game data.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Button {
+                exportUpscaledPNG(upscaled)
+            } label: {
+                Label("Export Upscaled PNG…", systemImage: "square.and.arrow.up")
+            }
+        }
+    }
+
+    private func presentUpscaleModelPanel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.message = "Choose a real CoreML model (.mlmodel/.mlmodelc) trained for image super-resolution. No model ships with this build."
+        guard panel.runModal() == .OK, let modelURL = panel.urls.first else { return }
+        upscaleError = nil
+        isUpscaling = true
+        Task {
+            do {
+                let result = try await TextureUpscaler.upscale(texture, usingModelAt: modelURL)
+                upscaledTexture = result
+            } catch {
+                upscaleError = error.localizedDescription
+            }
+            isUpscaling = false
+        }
+    }
+
+    private func exportUpscaledPNG(_ upscaled: TextureAsset) {
+        guard let directory = ExportPanel.chooseFolder(message: "Choose a folder to export the upscaled texture into.") else { return }
+        workspace.exportTexturePNG(upscaled, suggestedName: node.displayName.replacingOccurrences(of: " ", with: "_") + "_upscaled", to: directory)
     }
 
     private var nsImage: NSImage? {
