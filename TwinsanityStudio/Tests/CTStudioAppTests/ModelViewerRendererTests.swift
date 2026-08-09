@@ -180,6 +180,31 @@ final class ModelViewerRendererTests: XCTestCase {
         XCTAssertTrue(frustum.intersects(center: SIMD3(50, 0, -10), radius: 100), "a sphere large enough to bridge back into view must not be culled")
     }
 
+    // MARK: - Collision Mask Alignment
+
+    /// `collisionBoxEdges` must span the real axis-aligned extent of the
+    /// input points regardless of their order — 12 edges, min/max on every
+    /// axis actually reached.
+    func testCollisionBoxEdgesSpansRealExtent() {
+        let corners: [SIMD4<Float>] = [
+            SIMD4(-1, -2, -3, 1), SIMD4(1, -2, -3, 1), SIMD4(1, 2, -3, 1), SIMD4(-1, 2, -3, 1),
+            SIMD4(-1, -2, 3, 1), SIMD4(1, -2, 3, 1), SIMD4(1, 2, 3, 1), SIMD4(-1, 2, 3, 1)
+        ]
+        let edges = ModelViewerRenderer.collisionBoxEdges(corners: corners)
+        XCTAssertEqual(edges.count, 12)
+        let allPoints = edges.flatMap { [$0.0, $0.1] }
+        XCTAssertEqual(allPoints.map(\.x).min(), -1)
+        XCTAssertEqual(allPoints.map(\.x).max(), 1)
+        XCTAssertEqual(allPoints.map(\.y).min(), -2)
+        XCTAssertEqual(allPoints.map(\.y).max(), 2)
+        XCTAssertEqual(allPoints.map(\.z).min(), -3)
+        XCTAssertEqual(allPoints.map(\.z).max(), 3)
+    }
+
+    func testCollisionBoxEdgesEmptyForNoCorners() {
+        XCTAssertTrue(ModelViewerRenderer.collisionBoxEdges(corners: []).isEmpty)
+    }
+
     // MARK: - The Forge Palette (Part 4C)
 
     /// `spawnInstance` is the backend half of "select an entity, click into

@@ -14,6 +14,7 @@ struct ModelViewerWindow: View {
 
     @State private var renderer: ModelViewerRenderer?
     @State private var showSkeletonOverlay = false
+    @State private var showCollisionVolume = false
     @State private var animationSearch = ""
     @State private var selectedAnimation: AnimationAsset?
     @State private var currentFrame: Double = 0
@@ -29,11 +30,28 @@ struct ModelViewerWindow: View {
                 .frame(width: 320)
         }
         .frame(minWidth: 900, minHeight: 600)
-        .onAppear { renderer = ModelViewerRenderer(asset: asset) }
+        .onAppear {
+            renderer = ModelViewerRenderer(asset: asset)
+            updateCollisionVolumeOverlay()
+        }
         .onDisappear { stopPlayback() }
         .onChange(of: showSkeletonOverlay) { _, _ in updateAnimationPose() }
         .onChange(of: selectedAnimation?.id) { _, _ in updateAnimationPose() }
         .onChange(of: currentFrame) { _, _ in updateAnimationPose() }
+        .onChange(of: showCollisionVolume) { _, _ in updateCollisionVolumeOverlay() }
+    }
+
+    /// "Collision Mask Alignment": real per-object `GI_CollisionData` boxes
+    /// (see `GraphicsInfoCollisionData`'s doc comment), drawn independently
+    /// of animation/skeleton-overlay state — a static prop with collision
+    /// data but no skeleton joints to animate should still be able to show
+    /// its collision volume.
+    private func updateCollisionVolumeOverlay() {
+        guard showCollisionVolume, let collisionData = asset.skeleton?.collisionData, !collisionData.isEmpty else {
+            renderer?.collisionVolumeWorldPositions = []
+            return
+        }
+        renderer?.collisionVolumeWorldPositions = collisionData.flatMap { ModelViewerRenderer.collisionBoxEdges(corners: $0.positions) }
     }
 
     /// Drives both the actual mesh deformation (`applySkeletalPose`/
@@ -194,6 +212,14 @@ struct ModelViewerWindow: View {
             Text("Bind-pose joint positions are a best-effort visualization — the exact matrix layout isn't fully confirmed. Select an animation below to see an experimental (illustrative, not verified-accurate) animated pose instead.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+
+            if let collisionData = asset.skeleton?.collisionData, !collisionData.isEmpty {
+                Toggle("Show Collision Volume (\(collisionData.count))", isOn: $showCollisionVolume)
+                    .toggleStyle(.checkbox)
+                Text("Real per-object collision data (GI_CollisionData), decoded and drawn in orange — box extent only; whether the on-disk points are meant as an oriented hull or a plain axis-aligned box isn't confirmed, so this always draws their axis-aligned bounds.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

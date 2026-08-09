@@ -57,6 +57,35 @@ public struct ModelLink: Sendable, Codable {
     }
 }
 
+/// "Collision Mask Alignment" — one `GI_CollisionData` entry
+/// (`GraphicsInfo.cs`'s `GI_CollisionData`): a per-object collision blob,
+/// keyed to this specific model/skeleton, not the level-wide `ColData`
+/// mesh (`CollisionMesh`) — see that type's own doc comment for why those
+/// two are unrelated. Ported only as far as the reference tool's *own*
+/// code actually decodes it: the header's first count field selects a
+/// block of raw `Vector4`s (`positions` here) from the blob; the
+/// reference itself never further interprets the remaining 6 header-
+/// addressed blocks, so this doesn't invent a meaning for them either —
+/// `rawBlob` keeps the untouched bytes around (currently unused beyond
+/// that first block) for anything built on this later.
+public struct GraphicsInfoCollisionData: Sendable, Codable {
+    /// The 11 `UInt16` header fields exactly as stored — element counts
+    /// and byte offsets into `rawBlob` for 7 sub-blocks, only the first of
+    /// which (`positions`) the reference tool's own code ever reads.
+    public var header: [UInt16]
+    /// Raw `Vector4`s from the blob's first sub-block (`header[0]` many) —
+    /// real, decoded per-object coordinates; not confirmed to be
+    /// positions-only vs. a mixed position/radius encoding, so no further
+    /// semantic (e.g. "hull vertex") is claimed beyond "this many real
+    /// vectors, in this order."
+    public var positions: [SIMD4<Float>]
+
+    public init(header: [UInt16], positions: [SIMD4<Float>]) {
+        self.header = header
+        self.positions = positions
+    }
+}
+
 /// A fully decoded `GraphicsInfo` (OGI) record: bind-pose skeleton plus links to
 /// the skin/blend-skin/model records it drives.
 public struct SkeletonAsset: Sendable, Identifiable, Codable {
@@ -67,8 +96,12 @@ public struct SkeletonAsset: Sendable, Identifiable, Codable {
     public var skinID: UInt32
     public var blendSkinID: UInt32
     public var modelLinks: [ModelLink]
+    /// "Collision Mask Alignment" — every per-object `GI_CollisionData`
+    /// entry this `GraphicsInfo` carries. Empty for the many objects that
+    /// have none (`collisionDataCount == 0` on disk).
+    public var collisionData: [GraphicsInfoCollisionData]
 
-    public init(id: UInt32, joints: [Joint], exitPoints: [ExitPoint], skinTransforms: [SkinTransform], skinID: UInt32, blendSkinID: UInt32, modelLinks: [ModelLink]) {
+    public init(id: UInt32, joints: [Joint], exitPoints: [ExitPoint], skinTransforms: [SkinTransform], skinID: UInt32, blendSkinID: UInt32, modelLinks: [ModelLink], collisionData: [GraphicsInfoCollisionData] = []) {
         self.id = id
         self.joints = joints
         self.exitPoints = exitPoints
@@ -76,6 +109,7 @@ public struct SkeletonAsset: Sendable, Identifiable, Codable {
         self.skinID = skinID
         self.blendSkinID = blendSkinID
         self.modelLinks = modelLinks
+        self.collisionData = collisionData
     }
 
     /// Builds the parent/child joint tree, replicating

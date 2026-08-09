@@ -222,3 +222,49 @@ final class RealDiscDiagnosticTests: XCTestCase {
         return differing
     }
 }
+
+extension RealDiscDiagnosticTests {
+    /// "Collision Mask Alignment" — real evidence this data exists and
+    /// decodes to genuine, non-degenerate geometry, not just bytes that
+    /// happen not to throw. A first hand-inspected sample looked like
+    /// clean 8-corner axis-aligned boxes, but the full set found here
+    /// includes other corner counts and some genuinely non-axis-aligned
+    /// spreads too (probably oriented boxes, or a different shape this
+    /// build doesn't have a confirmed interpretation for) — so this only
+    /// asserts what's actually true of every sample: real, decoded,
+    /// non-empty, non-degenerate coordinates, and that `collisionBoxEdges`
+    /// (which just takes the overall min/max — a safe, honest
+    /// "encompasses every point" box regardless of the source shape)
+    /// produces a valid box for each one.
+    func testGraphicsInfoCollisionDataDecodesToRealGeometry() throws {
+        let bhPath = "/Volumes/CRASH/CRASH6/CRASH.BH"
+        guard FileManager.default.fileExists(atPath: bhPath) else {
+            throw XCTSkip("Disc image not mounted")
+        }
+        let index = try BDArchiveParser.readIndex(bhURL: URL(fileURLWithPath: bhPath))
+        let entry = try XCTUnwrap(index.entries.first { $0.name == "Levels/Earth/Cavern/antfight.rm2" })
+        let data = try BDArchiveParser.readEntryData(entry, index: index)
+        let root = try RM2Parser.parse(data: data, fileKind: .rm2, fileName: entry.name)
+        let assetIndex = AssetResolver.buildIndex(fileRoot: root)
+
+        let withCollisionData = assetIndex.skeletons.values.filter { !$0.collisionData.isEmpty }
+        print("DIAG: \(assetIndex.skeletons.count) skeletons, \(withCollisionData.count) with non-empty collisionData")
+        XCTAssertGreaterThan(withCollisionData.count, 0, "expected at least one real GraphicsInfo in this level to carry collision data")
+
+        for skeleton in withCollisionData {
+            for collisionEntry in skeleton.collisionData {
+                XCTAssertGreaterThan(collisionEntry.positions.count, 0)
+                let edges = ModelViewerRenderer.collisionBoxEdges(corners: collisionEntry.positions)
+                XCTAssertEqual(edges.count, 12)
+                // Every real value seen so far is small and finite (world-
+                // scale local-space coordinates) — catches a byte-offset
+                // parsing error reading garbage as huge/NaN floats, without
+                // over-claiming a specific shape.
+                for position in collisionEntry.positions {
+                    XCTAssertTrue(position.x.isFinite && position.y.isFinite && position.z.isFinite)
+                    XCTAssertLessThan(simd_length(SIMD3(position.x, position.y, position.z)), 1000)
+                }
+            }
+        }
+    }
+}

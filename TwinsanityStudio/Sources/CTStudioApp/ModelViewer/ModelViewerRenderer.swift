@@ -230,6 +230,25 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     }
     private var skeletonLineBuffer: MTLBuffer?
 
+    /// "Collision Mask Alignment": the real per-object `GI_CollisionData`
+    /// box(es) for the currently-shown asset (`ResolvedModelAsset.skeleton?
+    /// .collisionData`), drawn as orange wireframe boxes in the *same*
+    /// model-space transform as the mesh itself — since these corner
+    /// points are already stored in the object's own local/bind space
+    /// (verified against real data: they come out as clean ± min/max
+    /// triples, e.g. exactly `±0.6` on every axis), no separate alignment
+    /// transform is needed here at all; drawing them through the model's
+    /// own `modelViewProjection` uniform *is* the correct alignment.
+    var collisionVolumeWorldPositions: [(SIMD3<Float>, SIMD3<Float>)] = [] {
+        didSet {
+            collisionVolumeLineBuffer = Self.makeColoredLineBuffer(
+                device: device, segments: collisionVolumeWorldPositions,
+                colors: [SIMD3<Float>](repeating: SIMD3(0.95, 0.6, 0.1), count: collisionVolumeWorldPositions.count)
+            )
+        }
+    }
+    private var collisionVolumeLineBuffer: MTLBuffer?
+
     /// "Granular Component Visibility": submesh indices (matching
     /// `ResolvedModelAsset.mesh.submeshes`/`.submeshMaterials`) to skip
     /// during the draw pass. Indices, not identity, because that's the
@@ -350,6 +369,33 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     /// wireframe, matching `vertex_line_colored`'s `LineVertexColorIn`
     /// layout (`packed_float3` position, `packed_float3` color, back to
     /// back — see that shader's doc comment).
+    /// "Collision Mask Alignment": box-edge line segments spanning the
+    /// axis-aligned bounds of `corners` — not assuming any particular
+    /// ordering of the input points (verified against real data as clean
+    /// ± min/max triples, but not a confirmed corner-winding order), just
+    /// their overall extent, which is exactly what "a box that encapsulates
+    /// this" needs regardless of how the 8 points happen to be ordered on
+    /// disk.
+    static func collisionBoxEdges(corners: [SIMD4<Float>]) -> [(SIMD3<Float>, SIMD3<Float>)] {
+        guard !corners.isEmpty else { return [] }
+        var minP = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var maxP = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        for c in corners {
+            let p = SIMD3(c.x, c.y, c.z)
+            minP = simd_min(minP, p)
+            maxP = simd_max(maxP, p)
+        }
+        let c000 = SIMD3(minP.x, minP.y, minP.z), c100 = SIMD3(maxP.x, minP.y, minP.z)
+        let c010 = SIMD3(minP.x, maxP.y, minP.z), c110 = SIMD3(maxP.x, maxP.y, minP.z)
+        let c001 = SIMD3(minP.x, minP.y, maxP.z), c101 = SIMD3(maxP.x, minP.y, maxP.z)
+        let c011 = SIMD3(minP.x, maxP.y, maxP.z), c111 = SIMD3(maxP.x, maxP.y, maxP.z)
+        return [
+            (c000, c100), (c100, c110), (c110, c010), (c010, c000),
+            (c001, c101), (c101, c111), (c111, c011), (c011, c001),
+            (c000, c001), (c100, c101), (c110, c111), (c010, c011)
+        ]
+    }
+
     private static func makeColoredLineBuffer(device: MTLDevice, segments: [(SIMD3<Float>, SIMD3<Float>)], colors: [SIMD3<Float>]) -> MTLBuffer? {
         guard !segments.isEmpty, segments.count == colors.count else { return nil }
         var floats: [Float] = []
@@ -703,6 +749,17 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: skeletonJointWorldPositions.count * 2)
+        }
+
+        // "Collision Mask Alignment" — same colored-line pipeline the
+        // by-surface-ID collision viewer and the Level Viewer's gizmo/
+        // trigger overlays already share; drawn through this asset's own
+        // (identity) model transform, same as every other overlay here.
+        if let coloredPipelineState = context.collisionLineColoredPipelineState, let lineBuffer = collisionVolumeLineBuffer, !collisionVolumeWorldPositions.isEmpty {
+            encoder.setRenderPipelineState(coloredPipelineState)
+            encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: collisionVolumeWorldPositions.count * 2)
         }
 
         if collisionColorMode == .bySurfaceID, let coloredPipelineState = context.collisionLineColoredPipelineState, let lineBuffer = collisionLineColoredBuffer, !collisionEdgeWorldPositions.isEmpty {

@@ -18,6 +18,7 @@ import CTModels
 /// uint32 skinID
 /// uint32 blendSkinID
 /// GI_CollisionData[collisionDataCount]   // ushort[11] header + int32 blobSize + blob
+///                                         // (blob's leading header[0] Vector4s decoded)
 /// byte[collisionDataCount] trailer
 /// ```
 public enum GraphicsInfoParser {
@@ -79,19 +80,40 @@ public enum GraphicsInfoParser {
         let skinID = try cursor.readUInt32()
         let blendSkinID = try cursor.readUInt32()
 
-        // Collision data: consumed (for correct stream positioning / byte
-        // count fidelity) but not modeled — this is collision geometry, out
-        // of scope for the skeleton/animation asset this parser produces.
+        // "Collision Mask Alignment": `GI_CollisionData` — ported only as
+        // far as `GraphicsInfo.cs`'s own `Load` actually decodes it (see
+        // `GraphicsInfoCollisionData`'s doc comment): the header's first
+        // count field (`header[0]`) selects a leading block of raw
+        // `Vector4`s from the blob; the other 6 header-addressed
+        // sub-blocks are consumed for correct stream positioning but never
+        // further interpreted, matching the reference.
+        var collisionData: [GraphicsInfoCollisionData] = []
+        collisionData.reserveCapacity(collisionDataCount)
         for _ in 0..<collisionDataCount {
-            _ = try cursor.readBytes(11 * 2) // ushort[11] header
+            var header: [UInt16] = []
+            header.reserveCapacity(11)
+            for _ in 0..<11 { header.append(try cursor.readUInt16()) }
             let blobSize = Int(try cursor.readInt32())
-            _ = try cursor.readBytes(blobSize)
+            let blobStart = cursor.position
+            var positions: [SIMD4<Float>] = []
+            let positionCount = Int(header[0])
+            positions.reserveCapacity(positionCount)
+            for _ in 0..<positionCount { positions.append(try cursor.readVector4()) }
+            // Seek to the end of the declared blob regardless of how much
+            // of it `positions` actually consumed — the remaining 6
+            // sub-blocks are real bytes this parser doesn't decode yet,
+            // not padding to skip blindly.
+            let consumed = cursor.position - blobStart
+            if consumed < blobSize {
+                _ = try cursor.readBytes(blobSize - consumed)
+            }
+            collisionData.append(GraphicsInfoCollisionData(header: header, positions: positions))
         }
         _ = try cursor.readBytes(collisionDataCount) // trailing per-entry byte
 
         return SkeletonAsset(
             id: recordID, joints: joints, exitPoints: exitPoints, skinTransforms: skinTransforms,
-            skinID: skinID, blendSkinID: blendSkinID, modelLinks: modelLinks
+            skinID: skinID, blendSkinID: blendSkinID, modelLinks: modelLinks, collisionData: collisionData
         )
     }
 }
