@@ -54,13 +54,22 @@ public enum SoundEffectParser {
 
     /// Slices this record's ADPCM bytes out of the enclosing section's
     /// extra-data blob and decodes them.
-    public static func resolve(_ record: RawRecord, extraData: Data) -> SoundEffectAsset? {
+    ///
+    /// - Parameter extraDataAbsoluteFileOffset: `extraData`'s own absolute
+    ///   byte offset in the file it came from, when known — lets the
+    ///   result carry `sourceAudioByteRange` (absolute file offset +
+    ///   length of *this sound's own* slice within that blob) for
+    ///   "Replace with Audio…" write-back. `nil` for a caller that only
+    ///   has `extraData` in memory with no file position to relate it to
+    ///   (e.g. a synthetic/test blob).
+    public static func resolve(_ record: RawRecord, extraData: Data, extraDataAbsoluteFileOffset: Int? = nil) -> SoundEffectAsset? {
         guard let freq = sampleRate(forFreqFac: record.freqFac) else { return nil }
         let start = Int(record.soundOffset)
         let length = Int(record.soundSize)
         guard start >= 0, length >= 0, start + length <= extraData.count else { return nil }
         let soundBytes = extraData.subdata(in: (extraData.startIndex + start)..<(extraData.startIndex + start + length))
         let pcm = ADPCMDecoder.toPCMMono(soundBytes)
-        return SoundEffectAsset(id: record.recordID, sampleRateHz: freq, pcmSamples: pcm)
+        let byteRange = extraDataAbsoluteFileOffset.map { (offset: $0 + start, length: length) }
+        return SoundEffectAsset(id: record.recordID, sampleRateHz: freq, pcmSamples: pcm, sourceAudioByteRange: byteRange)
     }
 }

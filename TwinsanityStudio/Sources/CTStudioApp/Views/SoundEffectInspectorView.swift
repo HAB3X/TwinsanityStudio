@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import CTModels
+import CTParsers
 
 /// Wraps decoded mono 16-bit PCM into an in-memory WAV container — the
 /// simplest way to hand it to `AVAudioPlayer`, which wants a recognized
@@ -51,17 +52,21 @@ private extension Data {
 /// play/stop, and WAV export.
 struct SoundEffectInspectorView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
-    /// Just a label for diagnostics/export filenames — this view has no
-    /// other use for a `ChunkNode`, so a plain display name lets it show
-    /// a sound bank entry (no `ChunkNode` at all, see `SoundBanksHubView`)
-    /// through the exact same waveform/playback/export UI as a per-level
-    /// `SoundEffect` record.
+    /// `nil` for a standalone sound-bank entry (`SoundBanksHubView`) — that
+    /// path has no `ChunkNode`/enclosing chunk section at all, so "Replace
+    /// with Audio…" (which needs both) is unavailable there. Non-`nil` for
+    /// a per-level `SoundEffect` record, where it's also this view's only
+    /// use for a `ChunkNode` beyond the plain display name below.
+    let node: ChunkNode?
+    /// Just a label for diagnostics/export filenames.
     let displayName: String
     let sound: SoundEffectAsset
 
     @State private var player: AVAudioPlayer?
     @State private var playerDelegate: PlaybackEndDelegate?
     @State private var isPlaying = false
+    @State private var isImporting = false
+    @State private var importError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -99,6 +104,28 @@ struct SoundEffectInspectorView: View {
                 Label("Decoded to zero samples — either genuinely empty, or this record's FreqFac wasn't a recognized sample rate.", systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
+            }
+
+            if let node, sound.sourceAudioByteRange != nil {
+                Divider()
+                HStack {
+                    Button {
+                        presentReplaceAudioPanel(node: node)
+                    } label: {
+                        Label(isImporting ? "Importing…" : "Replace with Audio…", systemImage: "waveform.badge.plus")
+                    }
+                    .disabled(isImporting)
+                    Spacer()
+                    if isImporting { ProgressView().controlSize(.small) }
+                }
+                Text("\"Sound Import\": re-encodes an audio file you pick to this sound's own \(sound.sampleRateHz) Hz mono ADPCM and saves an edited copy — the original file on disk is not modified. The replacement must encode to no more bytes than the original slot had room for; a longer clip is refused rather than truncated.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if let importError {
+                    Label(importError, systemImage: "exclamationmark.triangle")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
         }
         .onDisappear { player?.stop() }
@@ -183,6 +210,91 @@ struct SoundEffectInspectorView: View {
         } catch {
             workspace.lastError = "Export failed: \(error)"
         }
+    }
+
+    /// "Sound Import" — the write-back half of Sound Playback: decode ->
+    /// edit (here, "edit" means "the user picked a whole replacement
+    /// clip") -> encode -> patch -> save-as-copy, the same loop every
+    /// other write path in this app uses. Resamples the picked file to
+    /// this sound's own sample rate (it can't change — that's the
+    /// record's own `FreqFac` field, a different byte range this write
+    /// path doesn't touch) via `AVAudioConverter`, same reasoning as
+    /// `TextureInspectorView`'s "Replace with Image…" resampling to the
+    /// original texture's exact dimensions.
+    private func presentReplaceAudioPanel(node: ChunkNode) {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.audio]
+        panel.message = "Choose a replacement audio file. It's resampled to this sound's exact \(sound.sampleRateHz) Hz mono — the on-disk record's sample rate can't change."
+        guard panel.runModal() == .OK, let url = panel.urls.first else { return }
+
+        importError = nil
+        isImporting = true
+        Task {
+            do {
+                let pcm = try Self.loadMonoPCM(from: url, targetSampleRateHz: Double(sound.sampleRateHz))
+                let encoded = ADPCMEncoder.fromPCMMono(pcm)
+                guard let patchedBytes = workspace.replaceSoundEffectAudio(node: node, encodedADPCM: encoded) else {
+                    isImporting = false
+                    return // workspace.lastError already set
+                }
+                guard let saveURL = ExportPanel.chooseSaveLocation(
+                    suggestedName: "\(node.displayName)_edited.rm2",
+                    message: "Save the edited copy of this file, with this sound replaced. The original file on disk is not modified."
+                ) else {
+                    isImporting = false
+                    return
+                }
+                try await workspace.writeDataAsync(patchedBytes, to: saveURL)
+                workspace.statusMessage = "Saved edited copy to \(saveURL.lastPathComponent) with this sound replaced. The original file was not modified."
+            } catch {
+                importError = error.localizedDescription
+            }
+            isImporting = false
+        }
+    }
+
+    private enum AudioImportError: LocalizedError {
+        case conversionFailed
+        var errorDescription: String? { "Couldn't decode or resample that file — check it's a real audio file." }
+    }
+
+    /// Reads `url` and converts it to 16-bit mono PCM at `targetSampleRateHz`,
+    /// via a one-shot `AVAudioConverter` pull (the whole source file is
+    /// already loaded into one buffer, so the pull callback supplies it
+    /// exactly once and reports no more data after).
+    private static func loadMonoPCM(from url: URL, targetSampleRateHz: Double) throws -> [Int16] {
+        let file = try AVAudioFile(forReading: url)
+        let sourceFormat = file.processingFormat
+        guard let targetFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: targetSampleRateHz, channels: 1, interleaved: true),
+              let converter = AVAudioConverter(from: sourceFormat, to: targetFormat),
+              let sourceBuffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: AVAudioFrameCount(file.length))
+        else {
+            throw AudioImportError.conversionFailed
+        }
+        try file.read(into: sourceBuffer)
+
+        let outputCapacity = AVAudioFrameCount(Double(sourceBuffer.frameLength) * (targetSampleRateHz / sourceFormat.sampleRate) + 1024)
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outputCapacity) else {
+            throw AudioImportError.conversionFailed
+        }
+
+        var suppliedInput = false
+        var conversionError: NSError?
+        converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
+            if suppliedInput {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            suppliedInput = true
+            outStatus.pointee = .haveData
+            return sourceBuffer
+        }
+        if let conversionError { throw conversionError }
+        guard let channelData = outputBuffer.int16ChannelData else { throw AudioImportError.conversionFailed }
+        return Array(UnsafeBufferPointer(start: channelData[0], count: Int(outputBuffer.frameLength)))
     }
 }
 

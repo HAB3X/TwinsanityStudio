@@ -31,7 +31,7 @@ struct ViewportPanel: View {
                 }
             case .soundEffect(let sound):
                 if let node {
-                    ScrollView { SoundEffectInspectorView(displayName: node.displayName, sound: sound).padding() }
+                    ScrollView { SoundEffectInspectorView(node: node, displayName: node.displayName, sound: sound).padding() }
                 }
             case .trigger(let trigger):
                 VolumeSceneView(

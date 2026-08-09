@@ -205,7 +205,7 @@ public enum RM2Parser {
         // the last indexed sub-item (ported from `TwinsSection.Load`'s own
         // `extra_begin`/`ExtraData` handling). Computed once per section,
         // not per record.
-        let soundExtraData: Data? = soundEffectSectionTypes.contains(sectionType)
+        let soundExtraData: (data: Data, absoluteStart: Int)? = soundEffectSectionTypes.contains(sectionType)
             ? extractSectionExtraData(data: data, header: header, absoluteOffset: absoluteOffset, size: size)
             : nil
 
@@ -223,7 +223,7 @@ public enum RM2Parser {
                 // keep it browsable as a raw leaf rather than dropping it.
                 node.children.append(ChunkNode(recordID: entry.id, sectionType: .unknown, displayName: "Unknown #\(entry.id)", byteSize: childSize, fileOffset: childAbsoluteOffset, payload: .raw(byteCount: childSize)))
             } else if let soundExtraData {
-                node.children.append(buildSoundEffectLeafNode(data: data, extraData: soundExtraData, sectionType: sectionType, absoluteOffset: childAbsoluteOffset, size: childSize, recordID: entry.id))
+                node.children.append(buildSoundEffectLeafNode(data: data, extraData: soundExtraData.data, extraDataAbsoluteFileOffset: soundExtraData.absoluteStart, sectionType: sectionType, absoluteOffset: childAbsoluteOffset, size: childSize, recordID: entry.id))
             } else {
                 // Tier 2 collection: every child is a leaf record of `sectionType`.
                 node.children.append(buildLeafNode(data: data, sectionType: sectionType, absoluteOffset: childAbsoluteOffset, size: childSize, recordID: entry.id))
@@ -241,15 +241,20 @@ public enum RM2Parser {
     /// Ported from `TwinsSection.Load`'s `extra_begin`/`ExtraData`
     /// computation: the section's bytes from just past the furthest
     /// (offset + size) of any indexed sub-item, to the section's own end.
-    private static func extractSectionExtraData(data: Data, header: ChunkHeader, absoluteOffset: Int, size: Int) -> Data? {
+    /// Returns the blob's own absolute file offset alongside its bytes —
+    /// `buildSoundEffectLeafNode` needs that to give each `SoundEffect`'s
+    /// resolved asset a real, absolute, patchable file location for its
+    /// audio bytes (see `SoundEffectAsset.sourceAudioByteRange`), not just
+    /// the in-memory `Data` this used to hand back alone.
+    private static func extractSectionExtraData(data: Data, header: ChunkHeader, absoluteOffset: Int, size: Int) -> (data: Data, absoluteStart: Int)? {
         let extraBeginLocal = max(12, header.entries.map { Int($0.offset) + max(0, Int($0.size)) }.max() ?? 12)
         let start = absoluteOffset + extraBeginLocal
         let length = size - extraBeginLocal
         guard length > 0, start >= 0, start + length <= data.count else { return nil }
-        return data.subdata(in: (data.startIndex + start)..<(data.startIndex + start + length))
+        return (data.subdata(in: (data.startIndex + start)..<(data.startIndex + start + length)), start)
     }
 
-    private static func buildSoundEffectLeafNode(data: Data, extraData: Data, sectionType: SectionType, absoluteOffset: Int, size: Int, recordID: UInt32) -> ChunkNode {
+    private static func buildSoundEffectLeafNode(data: Data, extraData: Data, extraDataAbsoluteFileOffset: Int, sectionType: SectionType, absoluteOffset: Int, size: Int, recordID: UInt32) -> ChunkNode {
         let displayName = "\(sectionType.rawValue) #\(recordID)"
         guard absoluteOffset >= 0, size >= 0, absoluteOffset + size <= data.count else {
             return ChunkNode(recordID: recordID, sectionType: sectionType, displayName: displayName, byteSize: max(0, size), fileOffset: absoluteOffset, payload: .raw(byteCount: max(0, size)))
@@ -257,7 +262,7 @@ public enum RM2Parser {
         let leafData = data.subdata(in: (data.startIndex + absoluteOffset)..<(data.startIndex + absoluteOffset + size))
         var cursor = BinaryCursor(data: leafData)
         guard let record = try? SoundEffectParser.parseHeader(&cursor, recordID: recordID),
-              let asset = SoundEffectParser.resolve(record, extraData: extraData)
+              let asset = SoundEffectParser.resolve(record, extraData: extraData, extraDataAbsoluteFileOffset: extraDataAbsoluteFileOffset)
         else {
             return ChunkNode(recordID: recordID, sectionType: sectionType, displayName: displayName, byteSize: size, fileOffset: absoluteOffset, payload: .raw(byteCount: size))
         }

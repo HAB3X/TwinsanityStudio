@@ -58,4 +58,33 @@ final class SoundEffectParserTests: XCTestCase {
         let record = SoundEffectParser.RawRecord(recordID: 1, freqFac: 0x99, soundSize: 0, soundOffset: 0)
         XCTAssertNil(SoundEffectParser.resolve(record, extraData: Data()))
     }
+
+    /// "Sound Import" write-back needs the audio's real *absolute file*
+    /// byte range, not just its offset within `extraData` — this pins the
+    /// arithmetic (`extraDataAbsoluteFileOffset + record.soundOffset`,
+    /// length == `record.soundSize`) callers rely on.
+    func testResolvePopulatesAbsoluteSourceByteRangeWhenGivenABaseOffset() throws {
+        var extra = Data(repeating: 0xAA, count: 100)
+        var line = [UInt8](repeating: 0, count: 16)
+        line[1] = 7
+        extra.append(contentsOf: line)
+
+        let record = SoundEffectParser.RawRecord(recordID: 1, freqFac: 0x7, soundSize: 16, soundOffset: 100)
+        let asset = try XCTUnwrap(SoundEffectParser.resolve(record, extraData: extra, extraDataAbsoluteFileOffset: 5000))
+
+        let range = try XCTUnwrap(asset.sourceAudioByteRange)
+        XCTAssertEqual(range.offset, 5100) // 5000 (section base) + 100 (soundOffset)
+        XCTAssertEqual(range.length, 16)
+    }
+
+    func testResolveLeavesSourceByteRangeNilWithoutABaseOffset() throws {
+        var extra = Data(repeating: 0xAA, count: 100)
+        var line = [UInt8](repeating: 0, count: 16)
+        line[1] = 7
+        extra.append(contentsOf: line)
+
+        let record = SoundEffectParser.RawRecord(recordID: 1, freqFac: 0x7, soundSize: 16, soundOffset: 100)
+        let asset = try XCTUnwrap(SoundEffectParser.resolve(record, extraData: extra))
+        XCTAssertNil(asset.sourceAudioByteRange)
+    }
 }

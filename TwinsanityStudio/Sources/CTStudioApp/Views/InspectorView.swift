@@ -66,7 +66,7 @@ struct InspectorView: View {
                             case .dynamicScenery(let dynamicScenery):
                                 DynamicSceneryInspectorView(scenery: dynamicScenery)
                             case .soundEffect(let sound):
-                                SoundEffectInspectorView(displayName: node.displayName, sound: sound)
+                                SoundEffectInspectorView(node: node, displayName: node.displayName, sound: sound)
                             case .gameObject(let gameObject):
                                 GameObjectInspectorView(gameObject: gameObject)
                             case .chunkLinks(let chunkLinks):

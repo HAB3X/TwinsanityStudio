@@ -1492,6 +1492,54 @@ public final class WorkspaceViewModel: ObservableObject {
         return bytes
     }
 
+    /// "Sound Import" — the write-back half of Sound Playback: replaces a
+    /// per-level `SoundEffect` record's real ADPCM audio bytes with
+    /// `encodedADPCM`, patched into the *enclosing section's* trailing
+    /// extra-data blob at this sound's own known byte range (see
+    /// `SoundEffectAsset.sourceAudioByteRange`'s doc comment for why
+    /// that's not within the record's own span — the record itself is
+    /// just a 22-byte header). `nil` (with `lastError` set) when `node`
+    /// has no `sourceAudioByteRange` (a standalone sound-bank entry, not a
+    /// per-level record — no chunk section to patch into), when the
+    /// enclosing section can't be found, or when `encodedADPCM` is longer
+    /// than the original slot: like every other write path in this app,
+    /// this never changes a file's total size, so a replacement that
+    /// needs *more* room than the original sound had isn't supported —
+    /// shortening is fine, the unused tail is zero-padded, which
+    /// `ADPCMDecoder.toPCMMono` already stops decoding at cleanly once it
+    /// reaches the real end-of-stream line the encoder always writes.
+    public func replaceSoundEffectAudio(node: ChunkNode, encodedADPCM: Data) -> Data? {
+        guard case .soundEffect(let asset) = node.payload, let range = asset.sourceAudioByteRange else {
+            lastError = "This sound has no known on-disk location to write back to — only per-level SoundEffect records support replacement, not standalone sound-bank entries."
+            return nil
+        }
+        guard encodedADPCM.count <= range.length else {
+            lastError = "This replacement audio encodes to \(encodedADPCM.count) byte(s), but the original only has room for \(range.length) — try a shorter clip."
+            return nil
+        }
+        guard let sectionNode = findParent(of: node, in: rootNodes) else {
+            lastError = "Couldn't find this sound's enclosing section in the current tree."
+            return nil
+        }
+        var padded = encodedADPCM
+        if padded.count < range.length {
+            padded.append(Data(repeating: 0, count: range.length - padded.count))
+        }
+        return patchedFileBytes(applyingAbsoluteByteRangePatches: [(node: sectionNode, absoluteOffset: range.offset, encoded: padded)])
+    }
+
+    /// The immediate parent of `target` in the tree — nodes don't carry a
+    /// parent pointer (see `findFileRoot`'s own doc comment for why:
+    /// replaced, not mutated, elsewhere in this view model), so this is a
+    /// plain search.
+    private func findParent(of target: ChunkNode, in nodes: [ChunkNode]) -> ChunkNode? {
+        for node in nodes {
+            if node.children.contains(where: { $0 === target }) { return node }
+            if let found = findParent(of: target, in: node.children) { return found }
+        }
+        return nil
+    }
+
     /// The `.objectInstance` (or, for a Demo file, `.objectInstanceDemo`)
     /// Tier 2 collection in the same file as `levelNode` — "The Forge
     /// Palette"'s (Part 4C/4D) new-Instance insertion target. Distinct from

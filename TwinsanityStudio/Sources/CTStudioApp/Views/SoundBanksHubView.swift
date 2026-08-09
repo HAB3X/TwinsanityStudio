@@ -135,7 +135,7 @@ struct SoundBanksHubView: View {
         if let bank = selectedBank, let index = selectedEntryID, let entry = bank.entries.first(where: { $0.index == index }) {
             if let sound = entry.sound {
                 ScrollView {
-                    SoundEffectInspectorView(displayName: "\(bank.sourceLabel)_\(entry.name ?? "sound\(entry.index)")", sound: sound)
+                    SoundEffectInspectorView(node: nil, displayName: "\(bank.sourceLabel)_\(entry.name ?? "sound\(entry.index)")", sound: sound)
                         .padding(20)
                 }
             } else {
