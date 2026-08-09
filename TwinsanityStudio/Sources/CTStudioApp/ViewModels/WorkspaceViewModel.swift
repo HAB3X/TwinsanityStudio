@@ -374,8 +374,9 @@ public final class WorkspaceViewModel: ObservableObject {
         // `.unknown`/`.folder` no-op for a file this build genuinely does
         // understand.
         let detected = WorkspaceAutoDetector.detect(url: url)
-        if detected.kind == .unknown, let driver = EngineDriverRegistry.driver(forExtension: url.pathExtension), driver.id != TwinsanityEngineDriver().id {
-            statusMessage = "\(url.lastPathComponent) is a real \(driver.displayName) file, but this build doesn't load it into the main workspace tree — open a Chunk Viewer and use its \"Cross-Engine Data\" panel's \"Load Wrath of Cortex File…\" button instead."
+        if detected.kind == .unknown, let driver = EngineDriverRegistry.driver(forExtension: url.pathExtension),
+           case .standaloneOnly(let loadHint) = driver.ingestionCapability {
+            statusMessage = "\(url.lastPathComponent) is a real \(driver.displayName) file, but this build doesn't load it into the main workspace tree — \(loadHint)"
             return
         }
         load(detected)

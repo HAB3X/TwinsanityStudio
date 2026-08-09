@@ -36,6 +36,36 @@ public protocol EngineDriver: Sendable {
     /// vertex/pixel-layout difference, not a byte-order one, but a future
     /// GameCube-era driver genuinely could differ here.
     var structuralEndianness: Endianness { get }
+    /// What actually happens when a file this driver recognizes gets
+    /// opened. "Pluggable Engine Driver System" (roadmap 5.3): the seam
+    /// this describes is real and used — `WorkspaceViewModel.open(url:)`
+    /// branches on this instead of hardcoding "is this the Twinsanity
+    /// driver specifically." It's still a small seam, deliberately: making
+    /// every parser/exporter/viewer route *through* a driver object rather
+    /// than calling `RM2Parser`/`BDArchiveParser`/etc. directly would touch
+    /// most of this package for no verified benefit today (there's exactly
+    /// one driver whose files load into the main tree at all), and would
+    /// risk silently breaking the one real, working ingestion path this
+    /// build has. This capability flag is the part of "pluggable" that's
+    /// both real and safe to land now; a deeper parser-level dispatch stays
+    /// future work, not something to fake by routing calls through an
+    /// object that still only ever forwards to the same one concrete
+    /// parser underneath.
+    var ingestionCapability: EngineDriverIngestionCapability { get }
+}
+
+/// What `WorkspaceViewModel.open(url:)` should do with a file a given
+/// `EngineDriver` recognizes.
+public enum EngineDriverIngestionCapability: Sendable {
+    /// This driver's files parse directly into the main sidebar/workspace
+    /// tree (`WorkspaceAutoDetector` + `RM2Parser`/`BDArchiveParser`).
+    case mainWorkspaceTree
+    /// This driver's files are real and loadable, but only through their
+    /// own dedicated panel — not because of an arbitrary restriction, but
+    /// because they aren't chunk-headered `ChunkNode` data at all (see
+    /// `WrathOfCortexEngineDriver`'s own doc comment), so there's no
+    /// sidebar tree shape for them to become part of.
+    case standaloneOnly(loadHint: String)
 }
 
 /// The one real driver this build has: everything under `CTParsers` today
@@ -51,6 +81,7 @@ public struct TwinsanityEngineDriver: EngineDriver {
     public let supportedPlatforms: [ConsolePlatform] = [.ps2, .xbox]
     public let recognizedExtensions: Set<String> = ["RM2", "SM2", "RMX", "SMX"]
     public let structuralEndianness: Endianness = .little
+    public let ingestionCapability: EngineDriverIngestionCapability = .mainWorkspaceTree
 
     public init() {}
 }
@@ -75,6 +106,9 @@ public struct WrathOfCortexEngineDriver: EngineDriver {
     public let supportedPlatforms: [ConsolePlatform] = [.ps2]
     public let recognizedExtensions: Set<String> = ["CRT", "WMP"]
     public let structuralEndianness: Endianness = .little
+    public let ingestionCapability: EngineDriverIngestionCapability = .standaloneOnly(
+        loadHint: "open a Chunk Viewer and use its \"Cross-Engine Data\" panel's \"Load Wrath of Cortex File…\" button instead."
+    )
 
     public init() {}
 }
