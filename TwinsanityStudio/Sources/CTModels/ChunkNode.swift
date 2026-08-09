@@ -30,6 +30,9 @@ public enum ChunkPayload: Sendable {
     /// and no confirmed linkage to any `AIPosition`. See `AIPathRecord`'s
     /// doc comment for why this build doesn't guess at a connection graph.
     case aiPath(AIPathRecord)
+    /// A `LodModel` record — see `LodModelInfo`'s doc comment for why this
+    /// was the real root cause of scenery objects silently vanishing.
+    case lodModel(LodModelInfo)
     /// A `GameObject` record — see `GameObjectInfo`'s own doc comment.
     /// Plumbing (`Instance.objectID` -> this -> a `GraphicsInfo`/mesh),
     /// same reasoning as `.material` below, not a filterable kind of its
@@ -73,7 +76,7 @@ public enum ChunkPayload: Sendable {
         case .soundEffect: return .soundEffect
         case .chunkLinks: return .chunkLinks
         case .aiPosition, .aiPath: return .aiWaypoint
-        case .material, .position, .scenery, .dynamicScenery, .gameObject, .raw: return nil
+        case .material, .position, .scenery, .dynamicScenery, .gameObject, .lodModel, .raw: return nil
         }
     }
 }

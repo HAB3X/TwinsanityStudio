@@ -17,6 +17,11 @@ public struct GraphicsAssetIndex: Sendable {
     /// Skinned geometry, keyed by its record ID in the `Skin` section.
     public var skins: [UInt32: MeshAsset] = [:]
     public var rigidModels: [UInt32: RigidModelInfo] = [:]
+    /// `LodModel` records, keyed by their own ID — a scenery placement's
+    /// `modelID` can point here instead of directly into `rigidModels`.
+    /// See `LodModelInfo`'s doc comment; use `AssetResolver.resolveModelID`
+    /// rather than indexing `rigidModels` directly so both cases resolve.
+    public var lodModels: [UInt32: LodModelInfo] = [:]
     public var skeletons: [UInt32: SkeletonAsset] = [:]
     public var animations: [UInt32: AnimationAsset] = [:]
     /// `GameObject` records, keyed by their own ID — `Instance.objectID`
@@ -107,6 +112,8 @@ public enum AssetResolver {
                         }
                     case .rigidModel(let rigidModel):
                         index.rigidModels[leaf.recordID] = rigidModel
+                    case .lodModel(let lodModel):
+                        index.lodModels[leaf.recordID] = lodModel
                     case .skeleton, .animation, .position, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .gameObject, .chunkLinks, .aiPosition, .aiPath, .raw:
                         break
                     }
@@ -161,6 +168,29 @@ public enum AssetResolver {
             materials.append(ResolvedSubmeshMaterial(materialID: materialID, textureID: textureID, texture: texture))
         }
         return ResolvedModelAsset(recordID: rigidModel.id, displayName: displayName, mesh: mesh, submeshMaterials: materials)
+    }
+
+    /// Resolves a `modelID` that may reference either a `RigidModel`
+    /// directly or a `LodModel` indirection (see `LodModelInfo`'s doc
+    /// comment for the real, verified evidence this indirection exists —
+    /// scenery placements otherwise silently vanish). Tries every
+    /// `lodModelIDs` entry in order (highest detail first) rather than
+    /// only the first, since real data has entries whose *first* LOD
+    /// doesn't resolve but a lower-detail one does; `depth` guards against
+    /// a malformed/cyclic chain (a `LodModel` pointing at another
+    /// `LodModel`) rather than assuming one level of indirection is
+    /// always enough.
+    public static func resolveModelID(_ modelID: UInt32, displayName: String, index: GraphicsAssetIndex, depth: Int = 0) -> ResolvedModelAsset? {
+        if let rigidModel = index.rigidModels[modelID] {
+            return resolveRigidModel(rigidModel, displayName: displayName, index: index)
+        }
+        guard depth < 4, let lodModel = index.lodModels[modelID] else { return nil }
+        for candidateID in lodModel.lodModelIDs {
+            if let resolved = resolveModelID(candidateID, displayName: displayName, index: index, depth: depth + 1) {
+                return resolved
+            }
+        }
+        return nil
     }
 
     /// Resolves a rigged character via its `GraphicsInfo` skeleton:

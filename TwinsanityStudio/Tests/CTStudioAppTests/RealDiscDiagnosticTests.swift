@@ -459,4 +459,48 @@ extension RealDiscDiagnosticTests {
             }
         }
     }
+
+    /// "Chunk Editor" bug audit — real, screenshot-reported "objects don't
+    /// render" traced to a genuine root cause: `LodModel` records (a
+    /// previously totally undecoded record type) are a real indirection
+    /// layer between a scenery placement's `modelID` and its actual
+    /// `RigidModel`. `Levels/Earth/Hub/hubd.sm2` has 428 real placements;
+    /// before decoding `LodModel`, only ~151 (35%) resolved. This pins the
+    /// fixed resolution rate so a future change can't silently regress it
+    /// back to "most of a level's scenery doesn't render."
+    func testLodModelFixesScenerySceneryResolutionRate() throws {
+        let bhPath = "/Volumes/CRASH/CRASH6/CRASH.BH"
+        guard FileManager.default.fileExists(atPath: bhPath) else {
+            throw XCTSkip("Disc image not mounted")
+        }
+        let index = try BDArchiveParser.readIndex(bhURL: URL(fileURLWithPath: bhPath))
+        let entry = try XCTUnwrap(index.entries.first { $0.name == "Levels/Earth/Hub/hubd.sm2" })
+        let data = try BDArchiveParser.readEntryData(entry, index: index)
+        let root = try RM2Parser.parse(data: data, fileKind: .sm2, fileName: entry.name)
+        let assetIndex = AssetResolver.buildIndex(fileRoot: root)
+
+        var scenery: SceneryAsset?
+        func walk(_ node: ChunkNode) {
+            if scenery == nil, case .scenery(let s) = node.payload, !s.placements.isEmpty { scenery = s }
+            for child in node.children { walk(child) }
+        }
+        walk(root)
+        let s = try XCTUnwrap(scenery)
+        XCTAssertEqual(s.placements.count, 428, "fixture placement count changed — re-verify the expectations below still apply")
+
+        var lodModelRecordCount = 0
+        func countLOD(_ node: ChunkNode) {
+            if case .lodModel = node.payload { lodModelRecordCount += 1 }
+            for child in node.children { countLOD(child) }
+        }
+        countLOD(root)
+        XCTAssertGreaterThan(lodModelRecordCount, 0, "expected real LodModel records in this file")
+        print("DIAG: \(lodModelRecordCount) real LodModel records in hubd.sm2")
+
+        let resolvedViaDirect = s.placements.filter { assetIndex.rigidModels[$0.modelID] != nil }.count
+        let resolvedViaLOD = s.placements.filter { AssetResolver.resolveModelID($0.modelID, displayName: "x", index: assetIndex) != nil }.count
+        print("DIAG: \(resolvedViaDirect)/\(s.placements.count) resolve directly, \(resolvedViaLOD)/\(s.placements.count) resolve with LodModel fallback")
+        XCTAssertGreaterThan(resolvedViaLOD, resolvedViaDirect, "LodModel resolution should recover real placements that don't resolve directly")
+        XCTAssertGreaterThan(resolvedViaLOD, s.placements.count * 9 / 10, "expected LodModel resolution to recover nearly all real placements")
+    }
 }

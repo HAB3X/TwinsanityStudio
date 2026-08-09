@@ -322,6 +322,8 @@ public enum RM2Parser {
                 return .aiPosition(try AINavigationParser.parseAIPosition(&cursor, recordID: recordID))
             case .aiPath:
                 return .aiPath(try AINavigationParser.parseAIPath(&cursor, recordID: recordID))
+            case .lodModel:
+                return .lodModel(try LodModelParser.parse(&cursor, recordID: recordID))
             default:
                 return .raw(byteCount: size)
             }

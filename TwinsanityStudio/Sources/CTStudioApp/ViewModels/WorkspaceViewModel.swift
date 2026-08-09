@@ -1266,8 +1266,7 @@ public final class WorkspaceViewModel: ObservableObject {
             var results: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)] = []
             for placement in scenery.placements {
                 guard let translation = placement.translation,
-                      let rigidModel = index.rigidModels[placement.modelID],
-                      let resolved = AssetResolver.resolveRigidModel(rigidModel, displayName: "Scenery Object #\(placement.modelID)", index: index)
+                      let resolved = AssetResolver.resolveModelID(placement.modelID, displayName: "Scenery Object #\(placement.modelID)", index: index)
                 else { continue }
                 results.append((translation, resolved))
             }
@@ -1401,8 +1400,7 @@ public final class WorkspaceViewModel: ObservableObject {
             var results: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)] = []
             for placement in scenery.placements {
                 guard let translation = placement.translation,
-                      let rigidModel = index.rigidModels[placement.modelID],
-                      let resolved = AssetResolver.resolveRigidModel(rigidModel, displayName: "Scenery Object #\(placement.modelID)", index: index)
+                      let resolved = AssetResolver.resolveModelID(placement.modelID, displayName: "Scenery Object #\(placement.modelID)", index: index)
                 else { continue }
                 results.append((translation, resolved))
             }
