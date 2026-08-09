@@ -52,52 +52,74 @@ struct ContentView: View {
         .tint(workspace.accentColorChoice.color)
         .navigationTitle("Twinsanity Studio")
         .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
+            // "Complete UI Overhaul" (Part 1): the toolbar used to be seven
+            // flat, always-visible buttons — Open, Open Memory Card, and
+            // five separate hub/tool launchers all fighting for the same
+            // row, several of them disabled most of the time. Grouping the
+            // asset browsers under one "Library" menu keeps every one of
+            // those actions reachable (same underlying `.sheet`/`Bool`
+            // bindings, same `.disabled` conditions — nothing about how
+            // they work changed) while cutting the toolbar's visual weight
+            // roughly in half.
+            ToolbarItemGroup(placement: .navigation) {
                 Button {
                     presentOpenPanel()
                 } label: {
                     Label("Open…", systemImage: "folder.badge.plus")
                 }
-                Button {
-                    presentMemoryCardOpenPanel()
+                .help("Open a .BH archive, .RM2/.SM2 file, or a folder to scan.")
+            }
+            ToolbarItemGroup(placement: .primaryAction) {
+                Menu {
+                    Button {
+                        workspace.isModelsHubPresented = true
+                    } label: {
+                        Label("Models Hub", systemImage: "square.grid.3x3.fill")
+                    }
+                    .disabled(workspace.modelsHub.isEmpty && !workspace.isScanning)
+                    Button {
+                        workspace.isTexturesHubPresented = true
+                    } label: {
+                        Label("Textures Hub", systemImage: "photo.stack")
+                    }
+                    .disabled(workspace.texturesHub.isEmpty && !workspace.isScanning)
+                    Button {
+                        workspace.isLevelsHubPresented = true
+                    } label: {
+                        Label("Levels Hub", systemImage: "map")
+                    }
+                    .disabled(workspace.levelsHub.isEmpty && !workspace.isScanning)
+                    Divider()
+                    Button {
+                        workspace.isScrappedContentScannerPresented = true
+                    } label: {
+                        Label("Scrapped Content", systemImage: "questionmark.folder")
+                    }
+                    .disabled(workspace.orphanedContent.isEmpty && !workspace.isScanning)
+                    Button {
+                        workspace.isAssetDiffPresented = true
+                    } label: {
+                        Label("Asset Diff", systemImage: "rectangle.on.rectangle")
+                    }
+                    .disabled(workspace.modelsHub.count < 2)
+                    Divider()
+                    Button {
+                        presentMemoryCardOpenPanel()
+                    } label: {
+                        Label("Open Memory Card…", systemImage: "externaldrive")
+                    }
                 } label: {
-                    Label("Open Memory Card…", systemImage: "externaldrive")
+                    Label("Library", systemImage: "books.vertical.fill")
                 }
-                Button {
-                    workspace.isModelsHubPresented = true
-                } label: {
-                    Label("Models Hub", systemImage: "square.grid.3x3.fill")
-                }
-                .disabled(workspace.modelsHub.isEmpty && !workspace.isScanning)
-                Button {
-                    workspace.isTexturesHubPresented = true
-                } label: {
-                    Label("Textures Hub", systemImage: "photo.stack")
-                }
-                .disabled(workspace.texturesHub.isEmpty && !workspace.isScanning)
-                Button {
-                    workspace.isLevelsHubPresented = true
-                } label: {
-                    Label("Levels Hub", systemImage: "map")
-                }
-                .disabled(workspace.levelsHub.isEmpty && !workspace.isScanning)
-                Button {
-                    workspace.isScrappedContentScannerPresented = true
-                } label: {
-                    Label("Scrapped Content", systemImage: "questionmark.folder")
-                }
-                .disabled(workspace.orphanedContent.isEmpty && !workspace.isScanning)
-                Button {
-                    workspace.isAssetDiffPresented = true
-                } label: {
-                    Label("Asset Diff", systemImage: "rectangle.on.rectangle")
-                }
-                .disabled(workspace.modelsHub.count < 2)
+                .help("Browse decoded assets across every open file, or open a memory card.")
+
                 Button {
                     withAnimation(.easeInOut(duration: 0.15)) { isConsoleExpanded.toggle() }
                 } label: {
                     Label("Console", systemImage: "terminal")
                 }
+                .help("Toggle the Engine Console.")
+
                 if workspace.isLoading || workspace.isScanning {
                     ProgressView().controlSize(.small)
                 }

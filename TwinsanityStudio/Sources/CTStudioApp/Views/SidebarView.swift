@@ -15,6 +15,8 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             if !workspace.rootNodes.isEmpty {
+                sidebarHeader
+                Divider()
                 filterBar
                 Divider()
                 if isBatchSelectionMode {
@@ -45,6 +47,25 @@ struct SidebarView: View {
             }
         }
         .searchable(text: $workspace.searchQuery, placement: .sidebar, prompt: "Filter chunks, assets, IDs…")
+    }
+
+    /// "Complete UI Overhaul" (Part 1): a lightweight orientation strip
+    /// above the filter bar — how many files are actually open, since
+    /// nothing else in the sidebar surfaces that at a glance once the tree
+    /// scrolls past one screen.
+    private var sidebarHeader: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "tray.full")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+            Text(workspace.rootNodes.count == 1 ? "1 file open" : "\(workspace.rootNodes.count) files open")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
     }
 
     /// Type filter + "Scan Archive" — the type filter can only find assets
