@@ -80,6 +80,63 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
         XCTAssertNotNil(workspace.modelViewerAsset, "openModelViewer should have resolved and set modelViewerAsset; lastError=\(workspace.lastError ?? "nil")")
     }
 
+    /// "Load Chunk" from the Chunk Links inspector: resolves a real
+    /// `ChunkLink` against the already-open archive and adds the target as
+    /// a real, first-class `rootNodes` entry — not just geometry stitched
+    /// into a 3D view. `nitrocav.sm2`'s own real `ChunkLinks` are already
+    /// pinned to fully resolve against real archive entries by
+    /// `testChunkLinkPathsResolveToRealArchiveEntries`; this test exercises
+    /// the actual `WorkspaceViewModel` method the UI button calls, not just
+    /// the path-matching logic underneath it.
+    func testOpenChunkLinkAddsTargetAsRealRootNode() throws {
+        let bhURL = URL(fileURLWithPath: "/Volumes/CRASH/CRASH6/CRASH.BH")
+        guard FileManager.default.fileExists(atPath: bhURL.path) else {
+            throw XCTSkip("Disc image not mounted")
+        }
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: bhURL)
+
+        guard let archiveRoot = workspace.rootNodes.first,
+              let fileEntry = archiveRoot.children.first(where: { $0.displayName == "Levels/Earth/Cavern/nitrocav.sm2" })
+        else {
+            return XCTFail("couldn't find nitrocav.sm2 in the archive index")
+        }
+        workspace.expandArchiveEntry(fileEntry, rootID: archiveRoot.id)
+        guard let expanded = workspace.rootNodes.first?.children.first(where: { $0.displayName == "Levels/Earth/Cavern/nitrocav.sm2" }) else {
+            return XCTFail("expandArchiveEntry should have replaced the entry with its parsed contents")
+        }
+
+        var link: ChunkLink?
+        func walk(_ node: ChunkNode) {
+            if link == nil, case .chunkLinks(let asset) = node.payload { link = asset.links.first }
+            for child in node.children { walk(child) }
+        }
+        walk(expanded)
+        let realLink = try XCTUnwrap(link, "nitrocav.sm2 should have at least one real ChunkLink")
+
+        let rootCountBefore = workspace.rootNodes.count
+        let firstLoadExpectation = expectation(description: "openChunkLink completes")
+        Task {
+            let succeeded = await workspace.openChunkLink(realLink)
+            XCTAssertTrue(succeeded, "openChunkLink should resolve a real link against the already-open archive; lastError=\(workspace.lastError ?? "nil")")
+            firstLoadExpectation.fulfill()
+        }
+        wait(for: [firstLoadExpectation], timeout: 60)
+
+        XCTAssertEqual(workspace.rootNodes.count, rootCountBefore + 1, "the linked chunk should be added as a new top-level sidebar entry")
+        XCTAssertNotNil(workspace.selectedNode, "the newly opened chunk should be selected so the user sees it immediately")
+
+        // Calling it again for the same link must not create a duplicate —
+        // it should just re-select the already-open entry.
+        let secondExpectation = expectation(description: "openChunkLink is idempotent")
+        Task {
+            _ = await workspace.openChunkLink(realLink)
+            secondExpectation.fulfill()
+        }
+        wait(for: [secondExpectation], timeout: 60)
+        XCTAssertEqual(workspace.rootNodes.count, rootCountBefore + 1, "opening the same chunk link twice should select the existing entry, not duplicate it")
+    }
+
     /// "Visual Loading Feedback" (performance mandate, Part 4): a real
     /// scan reports real, monotonically-increasing progress and clears it
     /// on completion — never left stuck showing a stale percentage.

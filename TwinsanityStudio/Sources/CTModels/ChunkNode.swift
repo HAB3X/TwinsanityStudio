@@ -60,6 +60,7 @@ public enum ChunkPayload: Sendable {
         case soundEffect = "Audio"
         case chunkLinks = "Chunk Links"
         case aiWaypoint = "AI Waypoints"
+        case scenery = "Scenery"
         public var id: String { rawValue }
     }
 
@@ -76,7 +77,8 @@ public enum ChunkPayload: Sendable {
         case .soundEffect: return .soundEffect
         case .chunkLinks: return .chunkLinks
         case .aiPosition, .aiPath: return .aiWaypoint
-        case .material, .position, .scenery, .dynamicScenery, .gameObject, .lodModel, .raw: return nil
+        case .scenery, .dynamicScenery: return .scenery
+        case .material, .position, .gameObject, .lodModel, .raw: return nil
         }
     }
 }

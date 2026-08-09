@@ -1675,6 +1675,55 @@ public final class WorkspaceViewModel: ObservableObject {
     /// isn't independently confirmed" simplification already documented on
     /// `LevelViewerRenderer`'s own placement-matrix doc comment, now
     /// applied to the chunk-to-chunk alignment transform too.
+    /// "Load Chunk" from the Chunk Links inspector — resolves `link.path`
+    /// against the archives already open in this workspace (same lookup
+    /// `loadChunkLinkPlacements` uses for the Level Viewer's 3D stitching),
+    /// parses the target file through the normal ingestion path, and adds
+    /// it as a real, first-class entry in `rootNodes` — so it shows up in
+    /// the sidebar tree exactly like any file the user opened directly,
+    /// not just as geometry merged into a 3D view. Returns `false` (and
+    /// sets `lastError`) when the target isn't in a currently open archive,
+    /// matching the existing "open the level or archive it belongs to
+    /// first" guidance already given elsewhere in this codebase for the
+    /// same lookup.
+    @discardableResult
+    public func openChunkLink(_ link: ChunkLink) async -> Bool {
+        let normalizedPath = link.path.replacingOccurrences(of: "\\", with: "/")
+        let targetName = normalizedPath.lowercased().hasSuffix(".sm2") ? normalizedPath : normalizedPath + ".sm2"
+
+        guard let match = archiveIndexByRootID.values.compactMap({ archiveIndex -> (ArchiveIndex, ArchiveEntry)? in
+            archiveIndex.entries.first { entry in
+                entry.name.replacingOccurrences(of: "\\", with: "/").caseInsensitiveCompare(targetName) == .orderedSame
+            }.map { (archiveIndex, $0) }
+        }).first else {
+            lastError = "Couldn't find \(targetName) in any currently open archive — open the level or archive it belongs to first."
+            return false
+        }
+
+        // Already open from an earlier "Load Chunk" click, or from being
+        // separately expanded in the archive tree — select it instead of
+        // adding a duplicate root.
+        if let existing = rootNodes.first(where: { $0.displayName.caseInsensitiveCompare(match.1.name) == .orderedSame }) {
+            select(existing)
+            return true
+        }
+
+        let entry = match.1
+        let index = match.0
+        guard let node = await Task.detached(priority: .userInitiated) { () -> ChunkNode? in
+            guard let data = try? BDArchiveParser.readEntryData(entry, index: index) else { return nil }
+            return try? Self.mainTreeDriver(forExtension: (entry.name as NSString).pathExtension)
+                .parseChunkFile(data: data, fileKind: .sm2, fileName: entry.name)
+        }.value else {
+            lastError = "Failed to parse \(entry.name)."
+            return false
+        }
+
+        rootNodes.append(node)
+        select(node)
+        return true
+    }
+
     public func loadChunkLinkPlacements(for link: ChunkLink) async -> (fileName: String, placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)])? {
         let normalizedPath = link.path.replacingOccurrences(of: "\\", with: "/")
         let targetName = normalizedPath.lowercased().hasSuffix(".sm2") ? normalizedPath : normalizedPath + ".sm2"
