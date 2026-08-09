@@ -160,6 +160,16 @@ public final class WorkspaceViewModel: ObservableObject {
     @Published public var isAssetDiffPresented = false
 
     private var archiveIndexByRootID: [UUID: ArchiveIndex] = [:]
+    /// "No More Placeholder Squares": the real game's shared object
+    /// resource (`Startup/Default.rm2` — confirmed against the actual
+    /// archive, see `AssetResolver.resolveInstanceObject`'s doc comment),
+    /// loaded once and reused for every subsequent Instance resolution in
+    /// this workspace rather than re-parsed per level. `nil` until the
+    /// first attempt; `didAttemptLoadingSharedDefaultAssetIndex` guards
+    /// against retrying that parse on every single level open when it's
+    /// genuinely unavailable (a loose-file workspace with no open archive).
+    private var sharedDefaultAssetIndex: GraphicsAssetIndex?
+    private var didAttemptLoadingSharedDefaultAssetIndex = false
     /// Raw file bytes for standalone-opened `.RM2`/`.SM2` files, keyed by
     /// their root `ChunkNode.id` — the "Editing GUI" write path's source
     /// material for patching an edited record back in at its known offset.
@@ -1176,12 +1186,14 @@ public final class WorkspaceViewModel: ObservableObject {
         let placements = await resolvedLevelPlacements(for: scenery, node: node)
         let instanceMarkers = instanceRecords(inSameFileAs: node)
         let (resolvedAssets, assetIndex) = await resolvedInstanceAssets(for: instanceMarkers, node: node)
+        let defaultAssetIndex = await loadSharedDefaultAssetIndexIfNeeded() ?? GraphicsAssetIndex()
         levelViewerContext = LevelViewerContext(
             scenery: scenery,
             placements: placements,
             instanceMarkers: instanceMarkers,
             resolvedInstanceAssets: resolvedAssets,
             assetIndex: assetIndex,
+            defaultAssetIndex: defaultAssetIndex,
             triggers: triggerRecords(inSameFileAs: node),
             cameras: cameraRecords(inSameFileAs: node),
             sounds: soundEffectRecords(inSameFileAs: node)
@@ -1202,16 +1214,42 @@ public final class WorkspaceViewModel: ObservableObject {
     /// through the exact same index without rebuilding it.
     private func resolvedInstanceAssets(for instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)], node: ChunkNode) async -> (assets: [UUID: ResolvedModelAsset], index: GraphicsAssetIndex) {
         guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return ([:], GraphicsAssetIndex()) }
+        let defaultIndex = await loadSharedDefaultAssetIndexIfNeeded()
         return await Task.detached(priority: .userInitiated) {
             let index = AssetResolver.buildIndex(fileRoot: fileRoot)
             var results: [UUID: ResolvedModelAsset] = [:]
             for (markerNode, instance) in instanceMarkers {
                 let selector = instance.unknownUInt32List2.first ?? 0
-                guard let resolved = AssetResolver.resolveInstanceObject(objectID: instance.objectID, instanceSelector: selector, index: index) else { continue }
+                guard let resolved = AssetResolver.resolveInstanceObject(objectID: instance.objectID, instanceSelector: selector, index: index, defaultIndex: defaultIndex) else { continue }
                 results[markerNode.id] = resolved
             }
             return (results, index)
         }.value
+    }
+
+    /// "No More Placeholder Squares": lazily loads and caches
+    /// `Startup/Default.rm2` — the real shared-object resource every open
+    /// `.BH` archive carries, confirmed against the actual disc (see
+    /// `AssetResolver.resolveInstanceObject`'s doc comment) — from
+    /// whichever currently-open archive actually has it. `nil` (cached as
+    /// such, not retried every call) when no open archive carries it, e.g.
+    /// a workspace with only loose `.RM2` files open and no `.BH`.
+    private func loadSharedDefaultAssetIndexIfNeeded() async -> GraphicsAssetIndex? {
+        if didAttemptLoadingSharedDefaultAssetIndex { return sharedDefaultAssetIndex }
+        didAttemptLoadingSharedDefaultAssetIndex = true
+
+        guard let match = archiveIndexByRootID.values.compactMap({ archiveIndex -> (ArchiveIndex, ArchiveEntry)? in
+            archiveIndex.entries.first { $0.name.caseInsensitiveCompare("Startup/Default.rm2") == .orderedSame }.map { (archiveIndex, $0) }
+        }).first else { return nil }
+
+        let built = await Task.detached(priority: .userInitiated) { () -> GraphicsAssetIndex? in
+            guard let data = try? BDArchiveParser.readEntryData(match.1, index: match.0),
+                  let fileRoot = try? RM2Parser.parse(data: data, fileKind: .rm2, fileName: match.1.name)
+            else { return nil }
+            return AssetResolver.buildIndex(fileRoot: fileRoot)
+        }.value
+        sharedDefaultAssetIndex = built
+        return built
     }
 
     /// "Deep Hierarchy & Linked Asset Resolution": the parent composite

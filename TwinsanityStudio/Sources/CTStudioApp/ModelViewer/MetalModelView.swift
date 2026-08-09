@@ -71,6 +71,20 @@ final class InteractiveMTKView: MTKView {
     /// `mouseDown` — while set, `mouseDragged` moves the selected object
     /// along that axis instead of orbiting the camera.
     private var draggingGizmoAxis: GizmoAxis?
+    /// "Broken Gizmos" fix: the cursor's own view-point location as of the
+    /// last gizmo-drag event. `NSEvent.deltaX`/`deltaY` (used directly
+    /// before this fix) are the *raw, unaccelerated hardware* mouse
+    /// deltas — under macOS's pointer-acceleration curve (or on a
+    /// trackpad) those numbers don't match how far the cursor actually
+    /// moved on screen, so a gizmo driven straight from them visibly
+    /// drifts out of alignment with the cursor mid-drag, exactly the
+    /// "not smooth, not perfectly aligned with the camera" symptom. This
+    /// tracks the real cursor position instead — `convert(event.
+    /// locationInWindow, from: nil)`, the same call `mouseDown` already
+    /// uses for its (already-correct) gizmo hit test — and diffs
+    /// consecutive events, so the gizmo tracks the cursor 1:1 regardless
+    /// of acceleration/input device.
+    private var lastGizmoDragLocation: CGPoint?
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -92,6 +106,7 @@ final class InteractiveMTKView: MTKView {
         guard let gizmoRenderer = renderer as? GizmoInteractiveRenderer else { return }
         draggingGizmoAxis = gizmoRenderer.gizmoAxis(at: point, viewSize: bounds.size)
         if draggingGizmoAxis != nil {
+            lastGizmoDragLocation = point
             onGizmoDragStarted?()
             return
         }
@@ -107,6 +122,7 @@ final class InteractiveMTKView: MTKView {
     override func mouseUp(with event: NSEvent) {
         let wasDragging = draggingGizmoAxis != nil
         draggingGizmoAxis = nil
+        lastGizmoDragLocation = nil
         if wasDragging { onGizmoDragEnded?() }
     }
 
@@ -137,7 +153,18 @@ final class InteractiveMTKView: MTKView {
     override func mouseDragged(with event: NSEvent) {
         guard let renderer else { return }
         if let axis = draggingGizmoAxis, let gizmoRenderer = renderer as? GizmoInteractiveRenderer {
-            gizmoRenderer.dragSelectedObject(axis: axis, viewportDelta: CGVector(dx: event.deltaX, dy: event.deltaY), viewSize: bounds.size)
+            // See `lastGizmoDragLocation`'s doc comment: real cursor-point
+            // deltas, not raw hardware `event.deltaX/deltaY` — sign
+            // convention kept identical to what `event.deltaX/deltaY`
+            // would have provided (dx positive = right, dy positive =
+            // down) so every downstream gizmo-math sign/negation
+            // (`axisProjectedWorldDelta`'s `-viewportDelta.dy`, etc.)
+            // stays correct unchanged.
+            let point = convert(event.locationInWindow, from: nil)
+            let previous = lastGizmoDragLocation ?? point
+            let viewportDelta = CGVector(dx: point.x - previous.x, dy: previous.y - point.y)
+            lastGizmoDragLocation = point
+            gizmoRenderer.dragSelectedObject(axis: axis, viewportDelta: viewportDelta, viewSize: bounds.size)
             needsDisplay = true
             return
         }

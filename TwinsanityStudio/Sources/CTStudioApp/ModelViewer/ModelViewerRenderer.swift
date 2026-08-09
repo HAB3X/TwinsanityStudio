@@ -1119,6 +1119,15 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// dropped crate should look like a crate immediately, not just once
     /// the file round-trips through a save/reload.
     private var assetIndex: GraphicsAssetIndex = GraphicsAssetIndex()
+    /// "No More Placeholder Squares": the same shared `Startup/Default.rm2`
+    /// index `WorkspaceViewModel.resolvedInstanceAssets` already falls
+    /// back to for existing Instance markers — kept here too so a
+    /// *newly placed* shared object (e.g. dropping a `BASICCRATE` from
+    /// the Forge Palette) also resolves to its real mesh immediately,
+    /// not just after a save/reload round-trip through the level's own
+    /// file. See `AssetResolver.resolveInstanceObject`'s doc comment for
+    /// where this data actually comes from.
+    private var defaultAssetIndex: GraphicsAssetIndex = GraphicsAssetIndex()
     /// Every synthetic ID handed out this session for a placed-but-unsaved
     /// object, one higher than the highest real `Instance.id` seen at
     /// upload time — see `spawnInstance`'s doc comment.
@@ -1129,12 +1138,14 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)] = [],
         resolvedInstanceAssets: [UUID: ResolvedModelAsset] = [:],
         assetIndex: GraphicsAssetIndex = GraphicsAssetIndex(),
+        defaultAssetIndex: GraphicsAssetIndex = GraphicsAssetIndex(),
         triggers: [(node: ChunkNode, trigger: TriggerVolume)] = [],
         cameras: [(node: ChunkNode, camera: PlacedCamera)] = []
     ) {
         guard let context = ModelViewerGPUContext.shared else { return nil }
         self.context = context
         self.assetIndex = assetIndex
+        self.defaultAssetIndex = defaultAssetIndex
         super.init()
         nextSyntheticInstanceID = (instanceMarkers.map(\.instance.id).max() ?? 0) + 1
         upload(placements: placements, instanceMarkers: instanceMarkers, resolvedInstanceAssets: resolvedInstanceAssets, triggers: triggers, cameras: cameras)
@@ -1600,7 +1611,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         var submeshes = ModelViewerRenderer.buildGPUSubmeshes(mesh: markerMesh.mesh, submeshMaterials: [markerMesh.material], device: device, fallbackTexture: context.fallbackTexture).submeshes
         var radius = Self.boundingRadius(of: markerMesh.mesh)
         var displayName = "New Object #\(objectID)"
-        if let resolved = AssetResolver.resolveInstanceObject(objectID: objectID, instanceSelector: 0, index: assetIndex) {
+        if let resolved = AssetResolver.resolveInstanceObject(objectID: objectID, instanceSelector: 0, index: assetIndex, defaultIndex: defaultAssetIndex) {
             let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: resolved.mesh, submeshMaterials: resolved.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
             if !built.submeshes.isEmpty {
                 submeshes = built.submeshes

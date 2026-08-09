@@ -236,7 +236,27 @@ public enum AssetResolver {
     /// `skinID` nor `modelLinks` resolves to real geometry) — the caller's
     /// fallback to a colored placeholder marker for exactly this case is
     /// what the "comprehensive population" mandate itself asks for.
-    public static func resolveInstanceObject(objectID: UInt16, instanceSelector: UInt32, index: GraphicsAssetIndex) -> ResolvedModelAsset? {
+    ///
+    /// `defaultIndex`, when provided, is tried only if `index` (the
+    /// level's own file) has no match — ported from `RMViewer.cs`'s own
+    /// `file.DataDefault`/`DefaultCont` fallback: common objects reused
+    /// across many levels (crates, gems, and other shared pickups/props)
+    /// are defined once in a shared resource file (the real disc's
+    /// `Startup/Default.rm2`, confirmed against the actual archive, not
+    /// guessed at) rather than duplicated into every level that uses them.
+    /// The reference tool's fallback branch re-reads `OGIs[0]` directly in
+    /// the default file rather than repeating the `instanceSelector`
+    /// indexing — a real, deliberate asymmetry in the source, not an
+    /// oversight here.
+    public static func resolveInstanceObject(objectID: UInt16, instanceSelector: UInt32, index: GraphicsAssetIndex, defaultIndex: GraphicsAssetIndex? = nil) -> ResolvedModelAsset? {
+        if let resolved = resolveInstanceObject(objectID: objectID, instanceSelector: instanceSelector, inSingleIndex: index) {
+            return resolved
+        }
+        guard let defaultIndex else { return nil }
+        return resolveInstanceObject(objectID: objectID, instanceSelector: 0, inSingleIndex: defaultIndex)
+    }
+
+    private static func resolveInstanceObject(objectID: UInt16, instanceSelector: UInt32, inSingleIndex index: GraphicsAssetIndex) -> ResolvedModelAsset? {
         let noValue: UInt32 = 65535
         guard let gameObject = index.gameObjects[UInt32(objectID)],
               !gameObject.ogiIDs.isEmpty, gameObject.ogiIDs[0] != noValue

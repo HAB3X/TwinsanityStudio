@@ -34,6 +34,11 @@ public struct LevelViewerContext: Identifiable {
     /// *newly placed* object's real geometry without needing a second,
     /// separate index-build pass.
     public var assetIndex: GraphicsAssetIndex
+    /// "No More Placeholder Squares": the shared `Startup/Default.rm2`
+    /// index — see `AssetResolver.resolveInstanceObject`'s doc comment —
+    /// so a newly Forge-Palette-placed shared object also resolves to
+    /// real geometry, not just existing Instance markers.
+    public var defaultAssetIndex: GraphicsAssetIndex
     /// "Level Editor Overhaul": every `Trigger`/`Camera`/`SoundEffect`
     /// record from the same file — triggers/cameras feed their scene
     /// layers (wireframe boxes, select-and-inspect only, no write path
@@ -48,6 +53,7 @@ public struct LevelViewerContext: Identifiable {
         instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)] = [],
         resolvedInstanceAssets: [UUID: ResolvedModelAsset] = [:],
         assetIndex: GraphicsAssetIndex = GraphicsAssetIndex(),
+        defaultAssetIndex: GraphicsAssetIndex = GraphicsAssetIndex(),
         triggers: [(node: ChunkNode, trigger: TriggerVolume)] = [],
         cameras: [(node: ChunkNode, camera: PlacedCamera)] = [],
         sounds: [(node: ChunkNode, sound: SoundEffectAsset)] = []
@@ -57,6 +63,7 @@ public struct LevelViewerContext: Identifiable {
         self.instanceMarkers = instanceMarkers
         self.resolvedInstanceAssets = resolvedInstanceAssets
         self.assetIndex = assetIndex
+        self.defaultAssetIndex = defaultAssetIndex
         self.triggers = triggers
         self.cameras = cameras
         self.sounds = sounds
@@ -152,6 +159,7 @@ struct LevelViewerWindow: View {
                 instanceMarkers: context.instanceMarkers,
                 resolvedInstanceAssets: context.resolvedInstanceAssets,
                 assetIndex: context.assetIndex,
+                defaultAssetIndex: context.defaultAssetIndex,
                 triggers: context.triggers,
                 cameras: context.cameras
             )
