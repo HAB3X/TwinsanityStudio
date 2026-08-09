@@ -391,6 +391,27 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         }
     }
 
+    /// Reads back every vertex position of the first skinned submesh
+    /// directly from GPU memory — used by `RealDiscDiagnosticTests` to
+    /// verify skeletal deformation actually reaches the vertex buffer
+    /// (not just that `AnimationSkeletonBinding` computes different
+    /// matrices per frame, which a rendering/write-back bug could still
+    /// leave invisible — see that fix's own commit for how this caught
+    /// exactly that).
+    func debugAllSkinnedVertexPositions() -> [SIMD3<Float>] {
+        guard let submesh = submeshes.first(where: { !$0.jointWeights.isEmpty }) else { return [] }
+        let stride = MemoryLayout<ModelVertexGPU>.stride
+        let vertexCount = submesh.vertexBuffer.length / stride
+        let ptr = submesh.vertexBuffer.contents().bindMemory(to: ModelVertexGPU.self, capacity: vertexCount)
+        var result: [SIMD3<Float>] = []
+        result.reserveCapacity(vertexCount)
+        for i in 0..<vertexCount {
+            let v = ptr[i]
+            result.append(SIMD3(v.px, v.py, v.pz))
+        }
+        return result
+    }
+
     /// Weighted-blend skinning: each vertex's position/normal is the sum of
     /// up to 4 joint influences (`StaticVertex.color`'s parallel
     /// `jointIndices`/`jointWeights` — "up to 3 active joints per vertex,
@@ -406,6 +427,20 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         for (i, v) in submesh.bindVertices.enumerated() {
             var skinnedPosition = SIMD3<Float>.zero
             var skinnedNormal = SIMD3<Float>.zero
+            // "Animation Player" fix: whether *any* lane actually found a
+            // weighted joint influence — the only correct signal for "did
+            // real skinning happen here." The blended normal's own
+            // magnitude used to stand in for this, but `SkinParser` never
+            // decodes real per-vertex normals for skin meshes (they're
+            // hard-coded to `.zero` there — a separate, pre-existing gap),
+            // so `rotationScale * v.normal` is always the zero vector
+            // regardless of whether position skinning succeeded. That made
+            // this check misfire 100% of the time for every skinned
+            // character, silently discarding the correctly-computed
+            // `skinnedPosition` and reverting every vertex back to bind
+            // pose every frame — animations decoded and computed correct,
+            // per-joint-varying matrices, but nothing ever visibly moved.
+            var totalWeight: Float = 0
             if i < submesh.jointIndices.count, i < submesh.jointWeights.count {
                 let indices = submesh.jointIndices[i]
                 let weights = submesh.jointWeights[i]
@@ -421,17 +456,25 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
                         SIMD3(matrix.columns.2.x, matrix.columns.2.y, matrix.columns.2.z)
                     )
                     skinnedNormal += weight * (rotationScale * v.normal)
+                    totalWeight += weight
                 }
             }
-            if simd_length(skinnedNormal) < 0.0001 {
-                // No (or zero-weight) joint influence recorded for this
-                // vertex — leave it exactly at bind pose rather than
-                // collapsing it to the origin.
+            if totalWeight < 0.0001 {
+                // No real joint influence found for this vertex (missing
+                // weights, or every referenced joint fell outside this
+                // frame's skinning matrices) — leave it exactly at bind
+                // pose rather than collapsing it to the origin.
                 skinnedPosition = v.position
                 skinnedNormal = v.normal
-            } else {
+            } else if simd_length(skinnedNormal) > 0.0001 {
                 skinnedNormal = simd_normalize(skinnedNormal)
             }
+            // else: real influence found (skinnedPosition is valid), but
+            // the blended normal came out ~zero because the source
+            // normals are unpopulated for this format — leave
+            // `skinnedNormal` at `.zero` rather than fabricating one;
+            // lighting on skinned characters is a known, separate gap,
+            // not something this fix invents a value for.
             gpuVertices.append(ModelVertexGPU(
                 px: skinnedPosition.x, py: skinnedPosition.y, pz: skinnedPosition.z,
                 nx: skinnedNormal.x, ny: skinnedNormal.y, nz: skinnedNormal.z,

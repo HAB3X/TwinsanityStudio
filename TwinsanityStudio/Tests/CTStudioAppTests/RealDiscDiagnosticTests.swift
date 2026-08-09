@@ -1,4 +1,8 @@
 import XCTest
+import Metal
+import simd
+import ImageIO
+import UniformTypeIdentifiers
 @testable import CTCore
 @testable import CTModels
 @testable import CTParsers
@@ -122,5 +126,99 @@ final class RealDiscDiagnosticTests: XCTestCase {
         let resolutionPercent = totalInstances > 0 ? resolvedInstances * 100 / totalInstances : 0
         print("DIAG: \(resolvedInstances)/\(totalInstances) instances resolved (\(resolutionPercent)%)")
         XCTAssertGreaterThanOrEqual(resolutionPercent, 85, "instance resolution rate regressed — expected the Default.rm2 fallback to keep this in the high 80s/90s")
+    }
+
+    /// "Animations are still not playing" — real evidence, and a
+    /// regression pin for the actual root cause: `skinVertices` used to
+    /// infer "did any joint influence apply to this vertex" from the
+    /// blended *normal's* magnitude, but `SkinParser` never decodes real
+    /// per-vertex normals for skin meshes (`normal: .zero`, a separate,
+    /// known gap) — so that check misfired 100% of the time and reverted
+    /// every skinned vertex back to bind pose every frame, even though
+    /// `AnimationSkeletonBinding` was computing correct, real,
+    /// per-joint-varying matrices the whole time. Fixed by tracking
+    /// total applied weight instead. Verified two ways against a real
+    /// skinned character (`Levels/Earth/Cavern/antfight.rm2`): the actual
+    /// GPU vertex buffer changes between frames, and the rendered pixels
+    /// (same offscreen-render technique `ModelViewerRendererTests.
+    /// testRenderRealModelToOffscreenSnapshot` uses) visibly differ.
+    func testAnimationVisiblyDeformsARealCharacter() throws {
+        let bhPath = "/Volumes/CRASH/CRASH6/CRASH.BH"
+        guard FileManager.default.fileExists(atPath: bhPath) else {
+            throw XCTSkip("Disc image not mounted")
+        }
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device available")
+        }
+        let index = try BDArchiveParser.readIndex(bhURL: URL(fileURLWithPath: bhPath))
+        // A real skinned character with a substantial multi-joint
+        // animation, found via an archive-wide scan — an animation's
+        // `componentsPerFrame` needs to be reasonably large (this one
+        // touches most of the skeleton) for the deformation to be
+        // visually obvious; some real animations in this game only drive
+        // one minor joint the visible mesh isn't even weighted to.
+        let entry = try XCTUnwrap(index.entries.first { $0.name == "Levels/Earth/Cavern/antfight.rm2" })
+        let data = try BDArchiveParser.readEntryData(entry, index: index)
+        let root = try RM2Parser.parse(data: data, fileKind: .rm2, fileName: entry.name)
+        let assetIndex = AssetResolver.buildIndex(fileRoot: root)
+        var best: (skeleton: SkeletonAsset, asset: ResolvedModelAsset, animation: AnimationAsset)?
+        for skeleton in assetIndex.skeletons.values {
+            guard skeleton.skinID != 0, assetIndex.skins[skeleton.skinID] != nil else { continue }
+            guard let resolved = AssetResolver.resolveSkeleton(skeleton, displayName: "probe", index: assetIndex) else { continue }
+            guard let animation = resolved.availableAnimations
+                .filter({ $0.body.totalFrames > 1 && $0.body.totalFrames < 2000 })
+                .max(by: { $0.body.componentsPerFrame < $1.body.componentsPerFrame })
+            else { continue }
+            if best == nil || animation.body.componentsPerFrame > best!.animation.body.componentsPerFrame {
+                best = (skeleton, resolved, animation)
+            }
+        }
+        let probe = try XCTUnwrap(best, "no real skinned+animated character with any multi-frame animation found in the fixture level")
+
+        let renderer = try XCTUnwrap(ModelViewerRenderer(asset: probe.asset))
+        XCTAssertTrue(renderer.hasGeometry)
+
+        renderer.applySkeletalPose(skeleton: probe.skeleton, track: probe.animation.body, frameIndex: 0)
+        let verts0 = renderer.debugAllSkinnedVertexPositions()
+        guard let frame0Image = renderer.renderOffscreen(width: 256, height: 256) else {
+            return XCTFail("renderOffscreen returned nil at frame 0")
+        }
+        let lastFrame = probe.animation.body.totalFrames - 1
+        renderer.applySkeletalPose(skeleton: probe.skeleton, track: probe.animation.body, frameIndex: lastFrame)
+        let vertsLast = renderer.debugAllSkinnedVertexPositions()
+        guard let frameLastImage = renderer.renderOffscreen(width: 256, height: 256) else {
+            return XCTFail("renderOffscreen returned nil at frame \(lastFrame)")
+        }
+
+        let verticesMoved = zip(verts0, vertsLast).filter { simd_distance($0, $1) > 0.0001 }.count
+        print("DIAG: \(verticesMoved)/\(verts0.count) vertices moved between frame 0 and frame \(lastFrame)")
+        XCTAssertGreaterThan(verticesMoved, verts0.count / 4, "fewer than a quarter of vertices moved — the skeletal deform isn't reaching the GPU buffer")
+
+        let differingPixels = Self.countDifferingPixels(frame0Image, frameLastImage)
+        XCTAssertGreaterThan(differingPixels, 0, "frame 0 and the last frame rendered pixel-identical — the skeletal deform isn't visibly doing anything")
+    }
+
+    private static func countDifferingPixels(_ a: CGImage, _ b: CGImage) -> Int {
+        guard let dataA = a.dataProvider?.data as Data?, let dataB = b.dataProvider?.data as Data?,
+              a.width == b.width, a.height == b.height
+        else { return -1 }
+        let bytesPerPixel = 4
+        let bytesPerRow = a.bytesPerRow
+        var differing = 0
+        let step = 4
+        var y = 0
+        while y < a.height {
+            var x = 0
+            while x < a.width {
+                let offset = y * bytesPerRow + x * bytesPerPixel
+                guard offset + 2 < dataA.count, offset + 2 < dataB.count else { x += step; continue }
+                if dataA[offset] != dataB[offset] || dataA[offset + 1] != dataB[offset + 1] || dataA[offset + 2] != dataB[offset + 2] {
+                    differing += 1
+                }
+                x += step
+            }
+            y += step
+        }
+        return differing
     }
 }
