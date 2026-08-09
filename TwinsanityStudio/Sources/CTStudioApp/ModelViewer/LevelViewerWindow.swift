@@ -406,7 +406,7 @@ struct LevelViewerWindow: View {
 
             Text("Scene Layers").font(.caption.bold()).foregroundStyle(.secondary)
             ForEach(SceneLayer.allCases, id: \.self) { layer in
-                Toggle(layer.displayName, isOn: layerBinding(for: layer))
+                Toggle(layerLabel(for: layer), isOn: layerBinding(for: layer))
                     .toggleStyle(.checkbox)
                     .font(.caption)
             }
@@ -509,6 +509,25 @@ struct LevelViewerWindow: View {
         scenePreviewTimer?.invalidate()
         scenePreviewTimer = nil
         renderer?.activeTriggerIDs = []
+    }
+
+    /// Appends a real record count to layers where "I see nothing" is
+    /// ambiguous between "this chunk genuinely has none of these" and "the
+    /// layer toggle above is off" — the two indistinguishable-looking
+    /// outcomes behind a real, recurring bug report. The count is always
+    /// shown, on or off, so toggling a layer off never makes its count
+    /// vanish along with it.
+    private func layerLabel(for layer: SceneLayer) -> String {
+        let count: Int?
+        switch layer {
+        case .actors: count = context.instanceMarkers.count
+        case .triggers: count = context.triggers.count
+        case .cameras: count = context.cameras.count
+        case .aiWaypoints: count = context.aiPositions.count
+        case .scenery, .chunkBoundaries, .linkedChunks, .crossEngine: count = nil
+        }
+        guard let count else { return layer.displayName }
+        return "\(layer.displayName) (\(count))"
     }
 
     private func layerBinding(for layer: SceneLayer) -> Binding<Bool> {
