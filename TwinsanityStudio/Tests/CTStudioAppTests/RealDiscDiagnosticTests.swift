@@ -369,4 +369,31 @@ extension RealDiscDiagnosticTests {
         print("DIAG: \(resolvedCount)/\(links.count) chunk link paths resolved to a real archive entry")
         XCTAssertEqual(resolvedCount, links.count, "every real ChunkLink in this file should resolve to a real neighboring .sm2 entry in the same archive")
     }
+
+    /// "AgentLab Visual Node Graph" (roadmap 4.2) sanity check — real
+    /// `CustomAgent` records actually exist in real level files, so the
+    /// graph shell has real data to show rather than always being empty.
+    func testCustomAgentRecordsExistInRealLevelFile() throws {
+        let bhPath = "/Volumes/CRASH/CRASH6/CRASH.BH"
+        guard FileManager.default.fileExists(atPath: bhPath) else {
+            throw XCTSkip("Disc image not mounted")
+        }
+        let index = try BDArchiveParser.readIndex(bhURL: URL(fileURLWithPath: bhPath))
+        let entry = try XCTUnwrap(index.entries.first { $0.name == "Levels/Earth/Hub/hubd.rm2" })
+        let data = try BDArchiveParser.readEntryData(entry, index: index)
+        let root = try RM2Parser.parse(data: data, fileKind: .rm2, fileName: entry.name)
+
+        var customAgentSectionCount = 0
+        var leafCount = 0
+        func walk(_ node: ChunkNode) {
+            if node.sectionType == .customAgent, !node.children.isEmpty {
+                customAgentSectionCount += 1
+                leafCount += node.children.count
+            }
+            for child in node.children { walk(child) }
+        }
+        walk(root)
+        print("DIAG: \(customAgentSectionCount) CustomAgent section(s), \(leafCount) real agent records in hubd.rm2")
+        XCTAssertGreaterThan(leafCount, 0, "expected at least one real CustomAgent record in this level")
+    }
 }

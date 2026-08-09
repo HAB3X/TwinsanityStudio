@@ -935,6 +935,12 @@ public final class WorkspaceViewModel: ObservableObject {
     /// Non-nil presents the Hex Viewer sheet (see `ContentView`).
     @Published public var hexViewerNode: ChunkNode?
 
+    /// "AgentLab Visual Node Graph" (Part 3, roadmap 4.2): non-nil presents
+    /// the AgentLab graph sheet (see `ContentView`) for a `CustomAgent`
+    /// section container node — see `AgentLabGraphView`'s doc comment for
+    /// why its nodes hold raw bytes rather than decoded behavior data.
+    @Published public var agentLabNode: ChunkNode?
+
     /// Saves a hex-edited byte range back the same way `PositionInspectorView`
     /// saves a structured edit — patch a copy of the owning file's bytes,
     /// prompt for where to write it, leave the originally-opened file alone.

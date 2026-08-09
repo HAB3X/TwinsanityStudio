@@ -1,4 +1,5 @@
 import SwiftUI
+import CTCore
 import CTModels
 
 struct SidebarView: View {
@@ -278,8 +279,17 @@ private struct SidebarRow: View {
                     Label("View Raw Bytes (Hex)…", systemImage: "number")
                 }
             }
+            if Self.customAgentSectionTypes.contains(node.sectionType), !node.children.isEmpty {
+                Button {
+                    workspace.agentLabNode = node
+                } label: {
+                    Label("Open AgentLab Graph…", systemImage: "point.3.connected.trianglepath.dotted")
+                }
+            }
         }
     }
+
+    private static let customAgentSectionTypes: Set<SectionType> = [.customAgent, .customAgentX, .customAgentDemo]
 
     private func exportGroup(_ asset: ResolvedModelAsset) {
         guard let directory = ExportPanel.chooseFolder(message: "Choose a folder to export this composite object — mesh, textures, and animations — into.") else { return }

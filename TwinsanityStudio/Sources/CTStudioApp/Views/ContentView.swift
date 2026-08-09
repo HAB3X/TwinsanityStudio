@@ -193,6 +193,10 @@ struct ContentView: View {
                     .environmentObject(workspace)
             }
         }
+        .sheet(item: $workspace.agentLabNode) { node in
+            AgentLabGraphView(sectionNode: node)
+                .environmentObject(workspace)
+        }
         .sheet(isPresented: Binding(
             get: { workspace.memoryCardAsset != nil },
             set: { if !$0 { workspace.memoryCardAsset = nil } }
