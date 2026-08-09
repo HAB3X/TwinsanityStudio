@@ -1447,6 +1447,12 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// object, one higher than the highest real `Instance.id` seen at
     /// upload time — see `spawnInstance`'s doc comment.
     private var nextSyntheticInstanceID: UInt32 = 1
+    /// "Unrestricted Chunk Free-Edit Mode": real `Instance.objectID`,
+    /// keyed by that instance's `ChunkNode.id` — populated once at
+    /// `upload()` time, read by `duplicateSelectedObject` so it can spawn
+    /// a copy of an *existing* placement without threading the full
+    /// `PlacedInstance` through `GPULevelObject` just for this one use.
+    private var instanceObjectIDByNodeID: [UUID: UInt16] = [:]
     /// Same idea as `nextSyntheticInstanceID`, for waypoints added this
     /// session via `spawnAIWaypoint` — a separate counter/namespace since
     /// `AIPosition` and `Instance` record IDs are independent (see
@@ -1514,6 +1520,12 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         let markerBuilt = ModelViewerRenderer.buildGPUSubmeshes(mesh: markerMesh.mesh, submeshMaterials: [markerMesh.material], device: device, fallbackTexture: context.fallbackTexture, textureCache: textureCache)
         let markerRadius = Self.boundingRadius(of: markerMesh.mesh)
         for (node, instance) in instanceMarkers {
+            // "Unrestricted Chunk Free-Edit Mode": remembered so
+            // `duplicateSelectedObject` can look up a real, existing
+            // Instance's own objectID by its node identity, without
+            // needing to thread `PlacedInstance` itself through
+            // `GPULevelObject` just for this one use.
+            instanceObjectIDByNodeID[node.id] = instance.objectID
             let worldPosition = SIMD3(instance.position.x, instance.position.y, instance.position.z)
             // "Comprehensive Instance Population" (Part 4B): real geometry
             // when this build could resolve one (GameObject -> GraphicsInfo
@@ -2220,6 +2232,50 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     func newInstanceInfo(at index: Int) -> (objectID: UInt16, worldPosition: SIMD3<Float>)? {
         guard objects.indices.contains(index), let objectID = objects[index].newInstanceObjectID else { return nil }
         return (objectID, objects[index].worldPosition)
+    }
+
+    /// Whether `duplicateSelectedObject` could actually do anything for
+    /// the object at `index` right now — lets the UI disable/explain the
+    /// Duplicate button up front instead of the action silently no-oping.
+    func canDuplicate(at index: Int) -> Bool {
+        guard objects.indices.contains(index) else { return false }
+        let object = objects[index]
+        switch object.layer {
+        case .actors:
+            return object.newInstanceObjectID != nil || (object.sourceNode.flatMap { instanceObjectIDByNodeID[$0.id] } != nil)
+        case .aiWaypoints:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// "Unrestricted Chunk Free-Edit Mode": duplicate the selected object
+    /// a short offset from its current position, through the exact same
+    /// real spawn+write-back pipeline `spawnInstance`/`spawnAIWaypoint`
+    /// already give the Forge Palette — the duplicate becomes a real new
+    /// record on save, not a purely visual copy nobody can persist.
+    /// Actors and AI waypoints are the only layers with a real spawn
+    /// primitive to duplicate through; scenery/trigger/camera placements
+    /// still have no write path of any kind (long-standing, unchanged by
+    /// this), so duplicating them isn't offered — `nil`, not a fabricated
+    /// copy that would silently vanish on save.
+    @discardableResult
+    func duplicateSelectedObject() -> Int? {
+        guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return nil }
+        let object = objects[selectedObjectIndex]
+        let offsetPosition = object.worldPosition + SIMD3<Float>(1, 0, 1)
+        switch object.layer {
+        case .actors:
+            let objectID = object.newInstanceObjectID ?? object.sourceNode.flatMap { instanceObjectIDByNodeID[$0.id] }
+            guard let objectID else { return nil }
+            return spawnInstance(objectID: objectID, at: offsetPosition)
+        case .aiWaypoints:
+            let rawNodeType = object.newAIWaypointRawNodeType ?? object.originalAIWaypointRawNodeType ?? 0
+            return spawnAIWaypoint(at: offsetPosition, rawNodeType: rawNodeType)
+        default:
+            return nil
+        }
     }
 
     /// "AI Pathfinding & Navmesh Editor" (roadmap 5.1): appends a brand-new

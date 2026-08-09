@@ -767,6 +767,16 @@ struct LevelViewerWindow: View {
                 transformFieldGroup(title: "Position", x: $positionX, y: $positionY, z: $positionZ, apply: applyPositionFields)
                 transformFieldGroup(title: "Rotation °", x: $rotationX, y: $rotationY, z: $rotationZ, apply: applyRotationFields)
                 transformFieldGroup(title: "Scale", x: $scaleX, y: $scaleY, z: $scaleZ, apply: applyScaleFields)
+                Button {
+                    duplicateSelected()
+                } label: {
+                    Label("Duplicate", systemImage: "plus.square.on.square")
+                }
+                .keyboardShortcut("d", modifiers: .command)
+                .disabled(!canDuplicateSelected)
+                .help(canDuplicateSelected
+                    ? "Duplicate the selected object, with real write-back to disk on save."
+                    : "Only Actor/Instance placements and AI waypoints can be duplicated — scenery, triggers, and cameras have no write path back to the file yet.")
             } else {
                 Text("Select an object below (or drag one from the Models Hub into the viewport) to transform it with the gizmo or these fields.")
                     .font(.caption2)
@@ -1037,6 +1047,28 @@ struct LevelViewerWindow: View {
         guard let undoManager, let renderer else { return }
         undoManager.setActionName("Place Object")
         Self.registerPlacementUndo(undoManager: undoManager, renderer: renderer, index: index)
+    }
+
+    private var canDuplicateSelected: Bool {
+        guard let renderer, let selectedIndex else { return false }
+        return renderer.canDuplicate(at: selectedIndex)
+    }
+
+    /// "Unrestricted Chunk Free-Edit Mode": duplicates the selected
+    /// object via `LevelViewerRenderer.duplicateSelectedObject` (a real
+    /// spawn through the same pipeline the Forge Palette uses), then
+    /// registers exactly the same kind of add/remove undo step a fresh
+    /// placement gets — whichever of Instance/AI-waypoint the duplicate
+    /// turned out to be, only the matching registration actually does
+    /// anything (each guards on its own `nil` check).
+    private func duplicateSelected() {
+        guard let renderer, let newIndex = renderer.duplicateSelectedObject() else { return }
+        selectedIndex = newIndex
+        refreshTransformFields()
+        guard let undoManager else { return }
+        undoManager.setActionName("Duplicate Object")
+        Self.registerPlacementUndo(undoManager: undoManager, renderer: renderer, index: newIndex)
+        Self.registerAIWaypointPlacementUndo(undoManager: undoManager, renderer: renderer, index: newIndex)
     }
 
     private static func registerPlacementUndo(undoManager: UndoManager, renderer: LevelViewerRenderer, index: Int) {
