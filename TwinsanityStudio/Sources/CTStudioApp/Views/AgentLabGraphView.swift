@@ -27,6 +27,25 @@ struct AgentLabGraphView: View {
     @State private var nodePositions: [UUID: CGPoint] = [:]
     @State private var dragStartPositions: [UUID: CGPoint] = [:]
     @State private var selectedNode: ChunkNode?
+    /// "Snap-to-connect wires" — real UI, honestly scoped: these are the
+    /// user's *own* organizational links between nodes (grouping, call-out
+    /// notes, whatever the user means by connecting two agents), not a
+    /// decoded Percept -> Action data/call flow — this build has no parser
+    /// for that (see this view's own top-level doc comment). Session-only,
+    /// same as node positions — no on-disk format exists to save either
+    /// into.
+    @State private var connections: Set<AgentConnection> = []
+    @State private var pendingConnectionStart: UUID?
+    @State private var pendingConnectionDragPoint: CGPoint?
+
+    private struct AgentConnection: Hashable {
+        let a: UUID
+        let b: UUID
+        init(_ x: UUID, _ y: UUID) {
+            // Normalized so a<->b and b<->a are the same connection.
+            if x.uuidString < y.uuidString { a = x; b = y } else { a = y; b = x }
+        }
+    }
 
     private var agentNodes: [ChunkNode] { sectionNode.children }
 
@@ -54,7 +73,7 @@ struct AgentLabGraphView: View {
                 Spacer()
                 Button("Close") { dismiss() }
             }
-            Text("\(agentNodes.count) real CustomAgent record(s) from this file. This build doesn't have a decoder for the Percept/Action bytecode inside each one (see this view's own doc comment) — nodes show real record metadata and a raw hex preview, not decoded behavior. Drag nodes to rearrange.")
+            Text("\(agentNodes.count) real CustomAgent record(s) from this file. This build doesn't have a decoder for the Percept/Action bytecode inside each one (see this view's own doc comment) — nodes show real record metadata and a raw hex preview, not decoded behavior. Drag a card to rearrange it; drag from a card's connector dot (bottom-right) to another card to link them — those links are your own organizational notes, not decoded engine data.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -66,14 +85,55 @@ struct AgentLabGraphView: View {
             ScrollView([.horizontal, .vertical]) {
                 ZStack(alignment: .topLeading) {
                     Color.clear.frame(width: max(proxy.size.width, canvasContentSize.width), height: max(proxy.size.height, canvasContentSize.height))
+                    connectionsLayer
                     ForEach(agentNodes) { node in
                         agentCard(node)
                             .position(nodePositions[node.id] ?? .zero)
                             .gesture(dragGesture(for: node))
                     }
                 }
+                .coordinateSpace(name: "agentLabCanvas")
             }
             .background(Self.gridBackground)
+        }
+    }
+
+    /// Every user-drawn connection, plus a live preview line while a
+    /// connector-drag is in progress. Drawn *behind* the node cards (see
+    /// `canvas`'s ZStack order) so cards remain fully clickable/draggable
+    /// on top.
+    private var connectionsLayer: some View {
+        Canvas { context, _ in
+            for connection in connections {
+                guard let start = nodePositions[connection.a], let end = nodePositions[connection.b] else { continue }
+                var path = Path()
+                path.move(to: start)
+                path.addLine(to: end)
+                context.stroke(path, with: .color(.purple.opacity(0.6)), lineWidth: 2)
+            }
+            if let startID = pendingConnectionStart, let start = nodePositions[startID], let end = pendingConnectionDragPoint {
+                var path = Path()
+                path.move(to: start)
+                path.addLine(to: end)
+                context.stroke(path, with: .color(.purple), style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
+            }
+        }
+        .allowsHitTesting(false)
+        .overlay(alignment: .topLeading) {
+            ForEach(Array(connections), id: \.self) { connection in
+                if let start = nodePositions[connection.a], let end = nodePositions[connection.b] {
+                    let midpoint = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+                    Button {
+                        connections.remove(connection)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                            .background(Circle().fill(.background))
+                    }
+                    .buttonStyle(.plain)
+                    .position(midpoint)
+                }
+            }
         }
     }
 
@@ -98,6 +158,15 @@ struct AgentLabGraphView: View {
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+            HStack {
+                Spacer()
+                Circle()
+                    .fill(pendingConnectionStart == node.id ? Color.purple : Color.purple.opacity(0.5))
+                    .frame(width: 14, height: 14)
+                    .overlay(Circle().stroke(.background, lineWidth: 2))
+                    .gesture(connectorDragGesture(from: node))
+                    .help("Drag to another card to link them (your own note, not decoded data)")
+            }
         }
         .padding(8)
         .frame(width: 180, alignment: .leading)
@@ -114,6 +183,43 @@ struct AgentLabGraphView: View {
                 nodePositions[node.id] = CGPoint(x: start.x + value.translation.width, y: start.y + value.translation.height)
             }
             .onEnded { _ in dragStartPositions[node.id] = nil }
+    }
+
+    /// Drag from a card's connector dot to another card to link them.
+    /// Uses the shared named coordinate space (`agentLabCanvas`) so
+    /// `value.location` lands in the same space `nodePositions` is
+    /// already stored in, regardless of how deep the connector dot sits
+    /// inside the card's own view hierarchy.
+    private func connectorDragGesture(from node: ChunkNode) -> some Gesture {
+        DragGesture(coordinateSpace: .named("agentLabCanvas"))
+            .onChanged { value in
+                pendingConnectionStart = node.id
+                pendingConnectionDragPoint = value.location
+            }
+            .onEnded { value in
+                defer {
+                    pendingConnectionStart = nil
+                    pendingConnectionDragPoint = nil
+                }
+                guard let target = nearestNode(to: value.location, excluding: node.id), target != node.id else { return }
+                connections.insert(AgentConnection(node.id, target))
+            }
+    }
+
+    /// The nearest node to `point` within a generous drop radius — lets a
+    /// connector drag land anywhere on the target card, not just its exact
+    /// center.
+    private func nearestNode(to point: CGPoint, excluding: UUID) -> UUID? {
+        let dropRadius: CGFloat = 100
+        var best: (id: UUID, distance: CGFloat)?
+        for node in agentNodes where node.id != excluding {
+            guard let position = nodePositions[node.id] else { continue }
+            let distance = hypot(position.x - point.x, position.y - point.y)
+            if distance < dropRadius, (best == nil || distance < best!.distance) {
+                best = (node.id, distance)
+            }
+        }
+        return best?.id
     }
 
     private func hexPreview(for node: ChunkNode) -> String {
