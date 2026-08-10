@@ -35,6 +35,10 @@ public struct CollisionSurfaceInfo: Sendable, Identifiable {
     public var particle3: UInt16
     public var sound5: UInt16
     public var sound6: UInt16
+    /// Real on-disk padding after `sound6` — the game itself never reads
+    /// it, but it's captured (not assumed `0`) so a write-back round trip
+    /// never silently overwrites real bytes with a guess.
+    public var paddingRaw: UInt16
     public var unkFloat1: Float
     public var unkFloat2: Float
     public var unkFloat3: Float
@@ -52,7 +56,7 @@ public struct CollisionSurfaceInfo: Sendable, Identifiable {
     public init(
         id: UInt32, surfaceID: UInt16, flags: UInt32,
         sound1: UInt16, sound2: UInt16, particle1: UInt16, particle2: UInt16,
-        sound3: UInt16, sound4: UInt16, particle3: UInt16, sound5: UInt16, sound6: UInt16,
+        sound3: UInt16, sound4: UInt16, particle3: UInt16, sound5: UInt16, sound6: UInt16, paddingRaw: UInt16,
         unkFloat1: Float, unkFloat2: Float, unkFloat3: Float, unkFloat4: Float, unkFloat5: Float,
         unkFloat6: Float, unkFloat7: Float, unkFloat8: Float, unkFloat9: Float, unkFloat10: Float,
         unkVector: SIMD4<Float>, unkBoundingBox1: SIMD4<Float>, unkBoundingBox2: SIMD4<Float>
@@ -69,6 +73,7 @@ public struct CollisionSurfaceInfo: Sendable, Identifiable {
         self.particle3 = particle3
         self.sound5 = sound5
         self.sound6 = sound6
+        self.paddingRaw = paddingRaw
         self.unkFloat1 = unkFloat1
         self.unkFloat2 = unkFloat2
         self.unkFloat3 = unkFloat3

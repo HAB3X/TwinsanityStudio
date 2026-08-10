@@ -1,17 +1,23 @@
 import SwiftUI
 import CTModels
 
-/// Read-only inspector for a decoded `Path` record — distinct from both
-/// `Position` (one point) and the `AIPosition`/`AIPath` waypoint system;
-/// see `PathAsset`'s doc comment.
+/// Inspector for a decoded `Path` record — distinct from both `Position`
+/// (one point) and the `AIPosition`/`AIPath` waypoint system; see
+/// `PathAsset`'s doc comment.
 struct PathInspectorView: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    let node: ChunkNode
     let path: PathAsset
+    @State private var isEditing = false
 
     var body: some View {
         Form {
             Section("Path #\(path.id)") {
                 LabeledContent("Positions", value: "\(path.positions.count)")
                 LabeledContent("Params", value: "\(path.params.count)")
+                if workspace.canSaveEdits(for: node) {
+                    Button("Edit…") { isEditing = true }
+                }
             }
             if !path.positions.isEmpty {
                 Section("Points") {
@@ -29,5 +35,8 @@ struct PathInspectorView: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $isEditing) {
+            PathEditorSheet(node: node, path: path)
+        }
     }
 }

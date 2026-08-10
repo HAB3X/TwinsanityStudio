@@ -78,11 +78,11 @@ struct InspectorView: View {
                             case .lodModel(let lodModel):
                                 LodModelInspectorView(lodModel: lodModel)
                             case .collisionSurface(let surface):
-                                CollisionSurfaceInspectorView(surface: surface)
+                                CollisionSurfaceInspectorView(node: node, surface: surface)
                             case .skydome(let skydome):
-                                SkydomeInspectorView(skydome: skydome)
+                                SkydomeInspectorView(node: node, skydome: skydome)
                             case .path(let path):
-                                PathInspectorView(path: path)
+                                PathInspectorView(node: node, path: path)
                             case .particleData(let particleData):
                                 ParticleDataInspectorView(particleData: particleData)
                             case .script(let script):

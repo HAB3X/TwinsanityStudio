@@ -1,0 +1,143 @@
+import SwiftUI
+import CTModels
+import CTParsers
+
+/// Write-back editor for a decoded `CollisionSurface` record — ports
+/// `Editors/SurfaceEditor.cs`'s field set. Fixed-size record (114 bytes),
+/// so every field here is editable in place with no risk of resizing the
+/// file; same decode -> edit -> encode -> patch -> save-as-copy loop as
+/// every other write path in this app.
+struct CollisionSurfaceEditorSheet: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(\.dismiss) private var dismiss
+    let node: ChunkNode
+    let original: CollisionSurfaceInfo
+
+    @State private var flags: String
+    @State private var surfaceID: String
+    @State private var sound1: String
+    @State private var sound2: String
+    @State private var particle1: String
+    @State private var particle2: String
+    @State private var sound3: String
+    @State private var sound4: String
+    @State private var particle3: String
+    @State private var sound5: String
+    @State private var sound6: String
+    @State private var unkFloats: [String]
+    @State private var errorMessage: String?
+    @State private var isSaving = false
+
+    init(node: ChunkNode, surface: CollisionSurfaceInfo) {
+        self.node = node
+        self.original = surface
+        _flags = State(initialValue: "\(surface.flags)")
+        _surfaceID = State(initialValue: "\(surface.surfaceID)")
+        _sound1 = State(initialValue: "\(surface.sound1)")
+        _sound2 = State(initialValue: "\(surface.sound2)")
+        _particle1 = State(initialValue: "\(surface.particle1)")
+        _particle2 = State(initialValue: "\(surface.particle2)")
+        _sound3 = State(initialValue: "\(surface.sound3)")
+        _sound4 = State(initialValue: "\(surface.sound4)")
+        _particle3 = State(initialValue: "\(surface.particle3)")
+        _sound5 = State(initialValue: "\(surface.sound5)")
+        _sound6 = State(initialValue: "\(surface.sound6)")
+        _unkFloats = State(initialValue: [
+            surface.unkFloat1, surface.unkFloat2, surface.unkFloat3, surface.unkFloat4, surface.unkFloat5,
+            surface.unkFloat6, surface.unkFloat7, surface.unkFloat8, surface.unkFloat9, surface.unkFloat10,
+        ].map { "\($0)" })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Edit Collision Surface #\(original.surfaceID)").font(.title3.bold())
+            Text("65535 is the on-disk \"no sound/particle\" sentinel — enter it to clear a slot.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Form {
+                Section("Core") {
+                    LabeledContent("Flags") { TextField("value", text: $flags).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Surface ID") { TextField("value", text: $surfaceID).textFieldStyle(.roundedBorder) }
+                }
+                Section("Sound / Particle Slots") {
+                    LabeledContent("Sound 1") { TextField("value", text: $sound1).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Sound 2") { TextField("value", text: $sound2).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Particle 1") { TextField("value", text: $particle1).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Particle 2") { TextField("value", text: $particle2).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Sound 3") { TextField("value", text: $sound3).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Sound 4") { TextField("value", text: $sound4).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Particle 3") { TextField("value", text: $particle3).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Sound 5") { TextField("value", text: $sound5).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Sound 6") { TextField("value", text: $sound6).textFieldStyle(.roundedBorder) }
+                }
+                Section("Unknown Floats (real, undetermined meaning)") {
+                    ForEach(unkFloats.indices, id: \.self) { i in
+                        LabeledContent("Unk Float \(i + 1)") { TextField("value", text: $unkFloats[i]).textFieldStyle(.roundedBorder) }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button(isSaving ? "Saving…" : "Save Edited Copy…") { save() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isSaving)
+            }
+        }
+        .padding()
+        .frame(minWidth: 420)
+    }
+
+    private func save() {
+        guard let flagsValue = UInt32(flags), let surfaceIDValue = UInt16(surfaceID),
+              let s1 = UInt16(sound1), let s2 = UInt16(sound2), let p1 = UInt16(particle1), let p2 = UInt16(particle2),
+              let s3 = UInt16(sound3), let s4 = UInt16(sound4), let p3 = UInt16(particle3), let s5 = UInt16(sound5), let s6 = UInt16(sound6)
+        else {
+            errorMessage = "Flags/IDs must be whole numbers in range."
+            return
+        }
+        let floats = unkFloats.map { Float($0) }
+        guard floats.allSatisfy({ $0 != nil }) else {
+            errorMessage = "Every unknown float must be a valid number."
+            return
+        }
+        errorMessage = nil
+
+        var edited = original
+        edited.flags = flagsValue
+        edited.surfaceID = surfaceIDValue
+        edited.sound1 = s1; edited.sound2 = s2; edited.particle1 = p1; edited.particle2 = p2
+        edited.sound3 = s3; edited.sound4 = s4; edited.particle3 = p3; edited.sound5 = s5; edited.sound6 = s6
+        let f = floats.compactMap { $0 }
+        edited.unkFloat1 = f[0]; edited.unkFloat2 = f[1]; edited.unkFloat3 = f[2]; edited.unkFloat4 = f[3]; edited.unkFloat5 = f[4]
+        edited.unkFloat6 = f[5]; edited.unkFloat7 = f[6]; edited.unkFloat8 = f[7]; edited.unkFloat9 = f[8]; edited.unkFloat10 = f[9]
+
+        let encoded = CollisionSurfaceWriter.write(edited)
+        guard let patchedBytes = workspace.patchedFileBytes(replacing: node, with: encoded) else { return }
+        guard let url = ExportPanel.chooseSaveLocation(
+            suggestedName: "\(node.displayName)_edited.rm2",
+            message: "Save the edited copy of this file, with this collision surface changed. The original file on disk is not modified."
+        ) else { return }
+        isSaving = true
+        Task {
+            do {
+                try await workspace.writeDataAsync(patchedBytes, to: url)
+                workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent) with this collision surface changed. The original file was not modified."
+                isSaving = false
+                dismiss()
+            } catch {
+                workspace.lastError = "Save failed: \(error)"
+                isSaving = false
+            }
+        }
+    }
+}

@@ -20,7 +20,7 @@ public enum CollisionSurfaceParser {
         let particle3 = try cursor.readUInt16()
         let sound5 = try cursor.readUInt16()
         let sound6 = try cursor.readUInt16()
-        _ = try cursor.readUInt16() // real on-disk padding, not stored by the game itself either
+        let paddingRaw = try cursor.readUInt16() // real on-disk padding, not read by the game itself either — kept for exact write-back round trips
         let unkFloat1 = try cursor.readFloat32()
         let unkFloat2 = try cursor.readFloat32()
         let unkFloat3 = try cursor.readFloat32()
@@ -38,7 +38,7 @@ public enum CollisionSurfaceParser {
         return CollisionSurfaceInfo(
             id: recordID, surfaceID: surfaceID, flags: flags,
             sound1: sound1, sound2: sound2, particle1: particle1, particle2: particle2,
-            sound3: sound3, sound4: sound4, particle3: particle3, sound5: sound5, sound6: sound6,
+            sound3: sound3, sound4: sound4, particle3: particle3, sound5: sound5, sound6: sound6, paddingRaw: paddingRaw,
             unkFloat1: unkFloat1, unkFloat2: unkFloat2, unkFloat3: unkFloat3, unkFloat4: unkFloat4, unkFloat5: unkFloat5,
             unkFloat6: unkFloat6, unkFloat7: unkFloat7, unkFloat8: unkFloat8, unkFloat9: unkFloat9, unkFloat10: unkFloat10,
             unkVector: unkVector, unkBoundingBox1: unkBoundingBox1, unkBoundingBox2: unkBoundingBox2

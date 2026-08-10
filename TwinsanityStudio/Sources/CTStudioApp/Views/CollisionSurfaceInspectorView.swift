@@ -6,13 +6,19 @@ import CTModels
 /// `ColData` triangle's `surfaceID` (by that field's real *value*, not
 /// this record's own chunk index-table ID).
 struct CollisionSurfaceInspectorView: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    let node: ChunkNode
     let surface: CollisionSurfaceInfo
+    @State private var isEditing = false
 
     var body: some View {
         Form {
             Section("Collision Surface") {
                 LabeledContent("Surface ID", value: "\(surface.surfaceID)")
                 LabeledContent("Flags", value: "0x\(String(surface.flags, radix: 16))")
+                if workspace.canSaveEdits(for: node) {
+                    Button("Edit…") { isEditing = true }
+                }
             }
             if !surface.assignedSoundIDs.isEmpty || !surface.assignedParticleIDs.isEmpty {
                 Section("Real Audio/VFX Triggers") {
@@ -38,5 +44,8 @@ struct CollisionSurfaceInspectorView: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $isEditing) {
+            CollisionSurfaceEditorSheet(node: node, surface: surface)
+        }
     }
 }

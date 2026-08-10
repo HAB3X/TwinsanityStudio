@@ -36,6 +36,19 @@ final class PathParserTests: XCTestCase {
         XCTAssertTrue(path.params.isEmpty)
     }
 
+    func testWriterRoundTripsExactBytes() throws {
+        var w = BinaryWriter()
+        w.writeInt32(2)
+        w.writeFloat32(1); w.writeFloat32(2); w.writeFloat32(3); w.writeFloat32(1)
+        w.writeFloat32(4); w.writeFloat32(5); w.writeFloat32(6); w.writeFloat32(1)
+        w.writeInt32(1)
+        w.writeFloat32(0.5); w.writeFloat32(1.5)
+
+        var cursor = BinaryCursor(data: w.data)
+        let path = try PathParser.parse(&cursor, recordID: 4)
+        XCTAssertEqual(PathWriter.write(path), w.data)
+    }
+
     func testHugeDeclaredPositionCountThrowsInsteadOfOverAllocating() {
         var w = BinaryWriter()
         w.writeInt32(Int32.max)

@@ -30,6 +30,18 @@ final class SkydomeParserTests: XCTestCase {
         XCTAssertTrue(skydome.meshIDs.isEmpty)
     }
 
+    func testWriterRoundTripsExactBytes() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(20480)
+        w.writeInt32(2)
+        w.writeUInt32(111)
+        w.writeUInt32(222)
+
+        var cursor = BinaryCursor(data: w.data)
+        let skydome = try SkydomeParser.parse(&cursor, recordID: 3)
+        XCTAssertEqual(SkydomeWriter.write(skydome), w.data)
+    }
+
     func testHugeDeclaredCountThrowsInsteadOfOverAllocating() {
         var w = BinaryWriter()
         w.writeUInt32(0)

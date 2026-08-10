@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 /// A minimal append-only binary writer, mirroring the subset of `BinaryCursor`'s
 /// primitives that the export/repackaging pipeline needs (BD/BH index rebuilding,
@@ -51,5 +52,15 @@ public struct BinaryWriter {
     public mutating func writeASCIIString(_ s: String, appendNullTerminator: Bool = false) {
         data.append(contentsOf: Array(s.utf8))
         if appendNullTerminator { data.append(0) }
+    }
+
+    // MARK: - Vectors (mirrors `BinaryCursor.readVector4`/`readVector3`)
+
+    public mutating func writeVector4(_ v: SIMD4<Float>) {
+        writeFloat32(v.x); writeFloat32(v.y); writeFloat32(v.z); writeFloat32(v.w)
+    }
+
+    public mutating func writeVector3(_ v: SIMD3<Float>) {
+        writeFloat32(v.x); writeFloat32(v.y); writeFloat32(v.z)
     }
 }

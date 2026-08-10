@@ -60,4 +60,23 @@ final class CollisionSurfaceParserTests: XCTestCase {
         XCTAssertEqual(surface.assignedSoundIDs, [100])
         XCTAssertEqual(surface.assignedParticleIDs, [200])
     }
+
+    func testWriterRoundTripsExactBytesIncludingPadding() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(0x001FF0F0)
+        w.writeUInt16(42)
+        w.writeUInt16(1); w.writeUInt16(2); w.writeUInt16(3); w.writeUInt16(4)
+        w.writeUInt16(5); w.writeUInt16(6); w.writeUInt16(7); w.writeUInt16(65535); w.writeUInt16(65535)
+        w.writeUInt16(0xBEEF) // real, non-zero padding — must round-trip, not get zeroed
+        for i in 1...10 { w.writeFloat32(Float(i)) }
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(-1); w.writeFloat32(-2); w.writeFloat32(-3); w.writeFloat32(-4)
+        w.writeFloat32(1); w.writeFloat32(2); w.writeFloat32(3); w.writeFloat32(4)
+
+        var cursor = BinaryCursor(data: w.data)
+        let surface = try CollisionSurfaceParser.parse(&cursor, recordID: 9)
+        let reEncoded = CollisionSurfaceWriter.write(surface)
+
+        XCTAssertEqual(reEncoded, w.data)
+    }
 }
