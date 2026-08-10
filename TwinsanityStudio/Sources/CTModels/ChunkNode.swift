@@ -56,6 +56,9 @@ public enum ChunkPayload: Sendable {
     /// library: named recipes plus their world placements), not a
     /// filterable collection, same reasoning as `.skydome`.
     case particleData(ParticleDataAsset)
+    /// A `Script`/`ScriptX`/`ScriptDemo` record — the AI condition/state-
+    /// machine system. See `ScriptAsset`'s doc comment.
+    case script(ScriptAsset)
     /// Understood record kind, but not (yet) decoded into a typed model —
     /// still browsable/exportable as a hex/raw blob.
     case raw(byteCount: Int)
@@ -98,7 +101,7 @@ public enum ChunkPayload: Sendable {
         case .aiPosition, .aiPath: return .aiWaypoint
         case .scenery, .dynamicScenery: return .scenery
         case .path: return .path
-        case .material, .position, .gameObject, .lodModel, .collisionSurface, .skydome, .particleData, .raw: return nil
+        case .material, .position, .gameObject, .lodModel, .collisionSurface, .skydome, .particleData, .script, .raw: return nil
         }
     }
 }

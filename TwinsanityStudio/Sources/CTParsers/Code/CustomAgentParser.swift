@@ -59,7 +59,13 @@ public enum CustomAgentParser {
     /// as a thrown `BinaryCursorError` from the underlying cursor read,
     /// same as every other parser in this module — never a silent partial
     /// result.
-    private static func readCommandChain(_ cursor: inout BinaryCursor, platform: AgentLabPlatformVariant) throws -> [AgentLabCommand] {
+    ///
+    /// Not `private`: `ScriptParser` reads the exact same on-disk
+    /// `ScriptCommand` chain format inside `ScriptStateBody` (`Twinsanity.
+    /// Script.MainScript.ScriptStateBody.Load`'s `command = new
+    /// ScriptCommand(reader, ver)`), so it reuses this rather than
+    /// duplicating the loop.
+    static func readCommandChain(_ cursor: inout BinaryCursor, platform: AgentLabPlatformVariant) throws -> [AgentLabCommand] {
         var commands: [AgentLabCommand] = []
         while true {
             let offset = cursor.position

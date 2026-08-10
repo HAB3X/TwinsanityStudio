@@ -340,6 +340,7 @@ private struct SidebarRow: View {
         case .skydome: return "cloud.fill"
         case .path: return "point.topleft.down.curvedto.point.bottomright.up"
         case .particleData: return "sparkles"
+        case .script: return "chart.xyaxis.line"
         case .raw, .none: return node.children.isEmpty ? "doc" : "folder"
         }
     }
@@ -368,6 +369,7 @@ private struct SidebarRow: View {
         case .skydome: return .blue
         case .path: return .mint
         case .particleData: return .yellow
+        case .script: return .indigo
         case .raw, .none: return .secondary
         }
     }
@@ -385,7 +387,7 @@ extension ChunkNode {
     /// undecoded Object/Script/Trigger/Position records to find it.
     private var displaySortRank: Int {
         switch payload {
-        case .texture, .mesh, .rigidModel, .skeleton, .animation, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .chunkLinks, .aiPosition, .aiPath, .path: return 0
+        case .texture, .mesh, .rigidModel, .skeleton, .animation, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .chunkLinks, .aiPosition, .aiPath, .path, .script: return 0
         case .material, .position, .gameObject, .lodModel, .collisionSurface, .skydome, .particleData: return 1
         case .none: return children.isEmpty ? 3 : 2
         case .raw: return 3

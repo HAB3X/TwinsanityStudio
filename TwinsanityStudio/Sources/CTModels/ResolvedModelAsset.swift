@@ -114,7 +114,7 @@ public enum AssetResolver {
                         index.rigidModels[leaf.recordID] = rigidModel
                     case .lodModel(let lodModel):
                         index.lodModels[leaf.recordID] = lodModel
-                    case .skeleton, .animation, .position, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .gameObject, .chunkLinks, .aiPosition, .aiPath, .collisionSurface, .skydome, .path, .particleData, .raw:
+                    case .skeleton, .animation, .position, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .gameObject, .chunkLinks, .aiPosition, .aiPath, .collisionSurface, .skydome, .path, .particleData, .script, .raw:
                         break
                     }
                 }

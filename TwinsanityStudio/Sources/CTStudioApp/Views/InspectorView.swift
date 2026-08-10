@@ -85,6 +85,8 @@ struct InspectorView: View {
                                 PathInspectorView(path: path)
                             case .particleData(let particleData):
                                 ParticleDataInspectorView(particleData: particleData)
+                            case .script(let script):
+                                ScriptInspectorView(script: script)
                             case .raw, .none:
                                 RawInspectorView(node: node)
                             }
@@ -114,7 +116,7 @@ struct InspectorView: View {
     private static func isCompositeEligible(_ payload: ChunkPayload?) -> Bool {
         switch payload {
         case .texture, .mesh, .material, .animation, .rigidModel, .skeleton: return true
-        case .position, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .gameObject, .chunkLinks, .aiPosition, .aiPath, .lodModel, .collisionSurface, .skydome, .path, .particleData, .raw, .none: return false
+        case .position, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .gameObject, .chunkLinks, .aiPosition, .aiPath, .lodModel, .collisionSurface, .skydome, .path, .particleData, .script, .raw, .none: return false
         }
     }
 

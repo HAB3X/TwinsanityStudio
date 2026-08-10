@@ -288,7 +288,7 @@ public enum RM2Parser {
     /// format, and falls back to a raw/undecoded payload everywhere else —
     /// including formats this package deliberately does not attempt (Xbox
     /// `Model`/`Skin` use a different, non-VIF vertex encoding; `BlendSkin`
-    /// morph-target blobs; the full `Object`/`Script` component system).
+    /// morph-target blobs).
     private static func decodeLeafPayload(sectionType: SectionType, cursor: inout BinaryCursor, size: Int, recordID: UInt32) -> ChunkPayload {
         do {
             switch sectionType {
@@ -337,6 +337,12 @@ public enum RM2Parser {
                 return .skydome(try SkydomeParser.parse(&cursor, recordID: recordID))
             case .path:
                 return .path(try PathParser.parse(&cursor, recordID: recordID))
+            case .script:
+                return .script(try ScriptParser.parse(&cursor, recordID: recordID, size: size, platform: .ps2))
+            case .scriptX:
+                return .script(try ScriptParser.parse(&cursor, recordID: recordID, size: size, platform: .xbox))
+            case .scriptDemo:
+                return .script(try ScriptParser.parse(&cursor, recordID: recordID, size: size, platform: .demo))
             default:
                 return .raw(byteCount: size)
             }
