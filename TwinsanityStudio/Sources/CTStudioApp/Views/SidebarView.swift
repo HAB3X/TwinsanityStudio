@@ -339,6 +339,7 @@ private struct SidebarRow: View {
         case .collisionSurface: return "waveform.path"
         case .skydome: return "cloud.fill"
         case .path: return "point.topleft.down.curvedto.point.bottomright.up"
+        case .particleData: return "sparkles"
         case .raw, .none: return node.children.isEmpty ? "doc" : "folder"
         }
     }
@@ -366,6 +367,7 @@ private struct SidebarRow: View {
         case .collisionSurface: return .cyan
         case .skydome: return .blue
         case .path: return .mint
+        case .particleData: return .yellow
         case .raw, .none: return .secondary
         }
     }
@@ -384,7 +386,7 @@ extension ChunkNode {
     private var displaySortRank: Int {
         switch payload {
         case .texture, .mesh, .rigidModel, .skeleton, .animation, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .chunkLinks, .aiPosition, .aiPath, .path: return 0
-        case .material, .position, .gameObject, .lodModel, .collisionSurface, .skydome: return 1
+        case .material, .position, .gameObject, .lodModel, .collisionSurface, .skydome, .particleData: return 1
         case .none: return children.isEmpty ? 3 : 2
         case .raw: return 3
         }

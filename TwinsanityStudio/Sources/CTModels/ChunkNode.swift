@@ -51,6 +51,11 @@ public enum ChunkPayload: Sendable {
     /// list plus per-point float params, distinct from both `Position`
     /// (one point) and `AIPosition`/`AIPath` (AI waypoints specifically).
     case path(PathAsset)
+    /// A `ParticleData` record — see `ParticleDataAsset`'s doc comment.
+    /// Typically a singleton per file (the level's particle-effect
+    /// library: named recipes plus their world placements), not a
+    /// filterable collection, same reasoning as `.skydome`.
+    case particleData(ParticleDataAsset)
     /// Understood record kind, but not (yet) decoded into a typed model —
     /// still browsable/exportable as a hex/raw blob.
     case raw(byteCount: Int)
@@ -93,7 +98,7 @@ public enum ChunkPayload: Sendable {
         case .aiPosition, .aiPath: return .aiWaypoint
         case .scenery, .dynamicScenery: return .scenery
         case .path: return .path
-        case .material, .position, .gameObject, .lodModel, .collisionSurface, .skydome, .raw: return nil
+        case .material, .position, .gameObject, .lodModel, .collisionSurface, .skydome, .particleData, .raw: return nil
         }
     }
 }
