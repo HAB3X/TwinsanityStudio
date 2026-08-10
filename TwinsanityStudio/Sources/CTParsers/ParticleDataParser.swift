@@ -73,7 +73,7 @@ public enum ParticleDataParser {
         // a record with only type definitions and no instance data at all
         // is real and valid, not truncated.
         if cursor.position == startPosition + size {
-            return ParticleDataAsset(id: recordID, version: version, particleTypes: particleTypes, particleInstances: [])
+            return ParticleDataAsset(id: recordID, version: version, isDefault: isDefault, particleTypes: particleTypes, particleInstances: [], instanceSectionRawCount: nil, trailingBytes: Data())
         }
 
         let instanceCheck = try cursor.readUInt32()
@@ -92,11 +92,12 @@ public enum ParticleDataParser {
 
         let remainBytes = (startPosition + size) - cursor.position
         guard remainBytes >= 0 else { throw ParticleDataParseError.negativeRemainder }
-        if remainBytes > 0 {
-            _ = try cursor.readBytes(remainBytes) // "Remain" — real trailing bytes this parser doesn't further interpret, consumed to stay positioned correctly for whatever follows.
-        }
+        let trailingBytes = remainBytes > 0 ? try cursor.readBytes(remainBytes) : Data()
 
-        return ParticleDataAsset(id: recordID, version: version, particleTypes: particleTypes, particleInstances: particleInstances)
+        return ParticleDataAsset(
+            id: recordID, version: version, isDefault: isDefault, particleTypes: particleTypes, particleInstances: particleInstances,
+            instanceSectionRawCount: instanceCheck, trailingBytes: trailingBytes
+        )
     }
 
     /// Fixed-width (16-byte) null-terminated name field — ported from the
@@ -218,9 +219,10 @@ public enum ParticleDataParser {
         // true only for version 28 (Demo), meaning only version 28
         // records carry this padding on disk at all.
         var padAmount: Int32 = 0
+        var padExtraBytes = Data()
         if !isFinal {
             padAmount = try cursor.readInt32()
-            _ = try cursor.readBytes(Int(padAmount) * 24)
+            padExtraBytes = try cursor.readBytes(Int(padAmount) * 24)
         }
 
         // Version >= 0xB && <= 0x15 (TWOC/Proto sound attachments) —
@@ -278,7 +280,7 @@ public enum ParticleDataParser {
             unkGradient1Time: unkGradient1.time, unkGradient1Value: unkGradient1.value, unkGradient2Time: unkGradient2.time, unkGradient2Value: unkGradient2.value,
             textureStartX: textureStartX, textureStartY: textureStartY, textureEndX: textureEndX, textureEndY: textureEndY,
             collisionTime: collision.time, collisionValue: collision.value, collisionNumSpheres: collisionNumSpheres, drawFlag: drawFlag,
-            padAmount: padAmount, scaleFactor: scaleFactor, particleGhostsNum: particleGhostsNum, ghostSeparation: ghostSeparation,
+            padAmount: padAmount, padExtraBytes: padExtraBytes, scaleFactor: scaleFactor, particleGhostsNum: particleGhostsNum, ghostSeparation: ghostSeparation,
             starRadialPoints: starRadialPoints, starRadiusRatio: starRadiusRatio, rampTime: rampTime, texturePage: texturePage, unkVec3: unkVec3
         )
     }

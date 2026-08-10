@@ -7,8 +7,11 @@ import CTModels
 /// `ParticleDataAsset`'s doc comment for the version-scoping this decode
 /// relies on (only versions 28/30 are parsed).
 struct ParticleDataInspectorView: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    let node: ChunkNode
     let particleData: ParticleDataAsset
     @State private var selectedDefinitionIndex: Int?
+    @State private var isEditing = false
 
     var body: some View {
         Form {
@@ -16,6 +19,13 @@ struct ParticleDataInspectorView: View {
                 LabeledContent("Version", value: "\(particleData.version)")
                 LabeledContent("Particle Types", value: "\(particleData.particleTypes.count)")
                 LabeledContent("Instances", value: "\(particleData.particleInstances.count)")
+                if particleData.canWriteBack, workspace.canSaveEdits(for: node) {
+                    Button("Edit…") { isEditing = true }
+                } else if !particleData.canWriteBack {
+                    Text("This record has an on-disk pre-header this build doesn't model — editing isn't available.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if !particleData.particleTypes.isEmpty {

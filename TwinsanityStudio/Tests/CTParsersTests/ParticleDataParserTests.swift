@@ -299,6 +299,90 @@ final class ParticleDataParserTests: XCTestCase {
         let asset = try ParticleDataParser.parse(&cursor, recordID: 1, size: w.count)
         XCTAssertTrue(asset.particleTypes.isEmpty)
         XCTAssertTrue(asset.particleInstances.isEmpty)
+        XCTAssertNil(asset.instanceSectionRawCount, "the parser's early-return case never reads an instance-count field at all")
+        XCTAssertEqual(try ParticleDataWriter.write(asset), w.data, "write-back of the early-exit case must not add a stray instance-count field")
+    }
+
+    /// Note: these two tests re-parse the writer's output rather than
+    /// comparing raw bytes, because `Self.writeDefinition`'s shared name
+    /// fixture (via `writeFixedName`) deliberately pads with `0xFF` *after*
+    /// the null terminator, to prove elsewhere that the parser discards
+    /// whatever junk follows it — bytes genuinely absent from the decoded
+    /// model (only the truncated `name` string survives), so the writer
+    /// correctly re-pads with `0x00` instead of reproducing them. A
+    /// semantic (decode -> encode -> decode -> compare-values) round trip
+    /// is the right invariant here, not raw-byte equality.
+    func testWriterRoundTripsVersion30DefinitionByValue() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(30)
+        w.writeUInt32(1)
+        _ = Self.writeDefinition(&w, isFinal: true)
+        w.writeUInt32(0) // instanceCheck: explicit zero — a real, meaningful on-disk value, not an artifact
+
+        var cursor = BinaryCursor(data: w.data)
+        let asset = try ParticleDataParser.parse(&cursor, recordID: 9, size: w.count)
+        XCTAssertEqual(asset.instanceSectionRawCount, 0, "an explicit zero instance count is real data, distinct from `nil` (no instance section at all)")
+
+        let reEncoded = try ParticleDataWriter.write(asset)
+        var reCursor = BinaryCursor(data: reEncoded)
+        let reParsed = try ParticleDataParser.parse(&reCursor, recordID: 9, size: reEncoded.count)
+
+        XCTAssertEqual(reParsed.instanceSectionRawCount, 0)
+        XCTAssertEqual(reParsed.particleTypes[0].velocity, asset.particleTypes[0].velocity)
+        XCTAssertEqual(reParsed.particleTypes[0].unkVec3, asset.particleTypes[0].unkVec3)
+        XCTAssertEqual(reParsed.particleTypes[0].colorGradient, asset.particleTypes[0].colorGradient)
+        XCTAssertEqual(reParsed.particleTypes[0].scaleFactor, asset.particleTypes[0].scaleFactor)
+    }
+
+    func testWriterRoundTripsVersion28DefinitionWithPadExtraBytesByValue() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(28)
+        w.writeUInt32(1)
+        _ = Self.writeDefinition(&w, isFinal: false, genSortValue: ParticleSystemDefinition.GenSort.radial.rawValue)
+        w.writeUInt32(2) // instanceCheck
+        for _ in 0..<2 {
+            w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0)
+            w.writeInt16(0); w.writeInt16(0); w.writeInt16(0); w.writeInt16(0); w.writeInt16(0)
+            w.writeUInt32(0)
+            Self.writeFixedName(&w, "X")
+            w.writeInt32(0); w.writeInt32(0); w.writeFloat32(0)
+            w.writeInt16(0); w.writeInt16(0); w.writeFloat32(0); w.writeFloat32(0); w.writeInt16(0)
+        }
+        w.writeBytes([0xAB, 0xCD, 0xEF]) // real trailing "Remain" bytes
+
+        var cursor = BinaryCursor(data: w.data)
+        let asset = try ParticleDataParser.parse(&cursor, recordID: 3, size: w.count)
+        XCTAssertEqual(asset.particleTypes[0].padAmount, 2)
+        XCTAssertEqual(asset.particleTypes[0].padExtraBytes.count, 48)
+        XCTAssertEqual([UInt8](asset.trailingBytes), [0xAB, 0xCD, 0xEF])
+
+        let reEncoded = try ParticleDataWriter.write(asset)
+        var reCursor = BinaryCursor(data: reEncoded)
+        let reParsed = try ParticleDataParser.parse(&reCursor, recordID: 3, size: reEncoded.count)
+
+        XCTAssertEqual(reParsed.particleTypes[0].padAmount, 2)
+        XCTAssertEqual(reParsed.particleTypes[0].padExtraBytes, asset.particleTypes[0].padExtraBytes, "real (zeroed) padding bytes must round-trip exactly, not get regenerated")
+        XCTAssertEqual(reParsed.particleInstances.count, 2)
+        XCTAssertEqual([UInt8](reParsed.trailingBytes), [0xAB, 0xCD, 0xEF])
+    }
+
+    func testWriterRefusesIsDefaultRecords() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(1000) // > 0xFF -> isDefault pre-header path
+        w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0)
+        w.writeUInt32(30) // real version, read after the pre-header
+        w.writeUInt32(0) // zero definitions
+
+        var cursor = BinaryCursor(data: w.data)
+        let asset = try ParticleDataParser.parse(&cursor, recordID: 1, size: w.count)
+
+        XCTAssertTrue(asset.isDefault)
+        XCTAssertFalse(asset.canWriteBack)
+        XCTAssertThrowsError(try ParticleDataWriter.write(asset)) { error in
+            guard case ParticleDataWriter.ParticleDataWriteError.cannotWriteBackDefaultRecord = error else {
+                return XCTFail("expected cannotWriteBackDefaultRecord, got \(error)")
+            }
+        }
     }
 
     func testUnsupportedVersionThrows() {

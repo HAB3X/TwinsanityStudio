@@ -23,15 +23,49 @@ import Foundation
 public struct ParticleDataAsset: Sendable, Identifiable {
     public let id: UInt32
     public var version: UInt32
+    /// "Default.rm2 has a pre-header: 3x (texture ID + material ID), plus a
+    /// trailing decal texture/material ID pair after the instance list" —
+    /// real on-disk layout, but this build's model doesn't capture those
+    /// extra fields (unlike every other real field here), so `canWriteBack`
+    /// is `false` whenever this is `true`: write-back would either drop
+    /// real data or have to guess at it, and this codebase never does
+    /// either.
+    public var isDefault: Bool
     public var particleTypes: [ParticleSystemDefinition]
     public var particleInstances: [ParticleSystemInstance]
+    /// The real on-disk instance-count field (`instanceCheck` in the
+    /// reference), captured whenever the parser actually read one — `nil`
+    /// only when the record ended right after its type definitions (the
+    /// parser's own early-return case, `cursor.position == startPosition +
+    /// size`), which never has this field at all.
+    ///
+    /// Kept distinct from `particleInstances.count`: the reference only
+    /// populates `particleInstances` when this raw count is nonzero and
+    /// `< 65536` (and the record isn't `isDefault`) — a `0` or
+    /// out-of-range value here is itself real on-disk data (an explicit
+    /// "no instances" marker, or something else this build doesn't
+    /// interpret), not an artifact to discard. Write-back always emits
+    /// this raw value verbatim, never re-derives it from
+    /// `particleInstances.count`.
+    public var instanceSectionRawCount: UInt32?
+    /// Real trailing "Remain" bytes past the last parsed field, up to the
+    /// record's declared size — captured (not discarded) so a write-back
+    /// round trip never silently drops real on-disk data.
+    public var trailingBytes: Data
 
-    public init(id: UInt32, version: UInt32, particleTypes: [ParticleSystemDefinition], particleInstances: [ParticleSystemInstance]) {
+    public init(id: UInt32, version: UInt32, isDefault: Bool, particleTypes: [ParticleSystemDefinition], particleInstances: [ParticleSystemInstance], instanceSectionRawCount: UInt32?, trailingBytes: Data) {
         self.id = id
         self.version = version
+        self.isDefault = isDefault
         self.particleTypes = particleTypes
         self.particleInstances = particleInstances
+        self.instanceSectionRawCount = instanceSectionRawCount
+        self.trailingBytes = trailingBytes
     }
+
+    /// `false` for `isDefault` records (see above) — the only case this
+    /// build's write path refuses.
+    public var canWriteBack: Bool { !isDefault }
 }
 
 /// `ParticleSystemDefinition` — one named particle-effect "recipe" (spawn
@@ -159,8 +193,13 @@ public struct ParticleSystemDefinition: Sendable {
     /// at `velocity` (ignoring the random emit/start values?).
     public var collisionNumSpheres: UInt8
     public var drawFlag: UInt8 // raw — see `resolvedDrawFlag`
-    /// Present only for version 28 (Demo) — real on-disk padding, `padAmount * 24` bytes, immediately discarded.
+    /// Present only for version 28 (Demo) — real on-disk padding, `padAmount * 24` bytes.
     public var padAmount: Int32
+    /// The real `padAmount * 24` padding bytes themselves — captured (not
+    /// discarded) purely so a write-back round trip never has to guess at
+    /// real on-disk bytes it can't otherwise reconstruct. Always empty when
+    /// `padAmount == 0`, which is the common case.
+    public var padExtraBytes: Data
     /// Present for versions > 0x1B — scales the particles.
     public var scaleFactor: Float
     public var particleGhostsNum: Int16
@@ -194,7 +233,7 @@ public struct ParticleSystemDefinition: Sendable {
         unkGradient1Time: [Float], unkGradient1Value: [Float], unkGradient2Time: [Float], unkGradient2Value: [Float],
         textureStartX: Float, textureStartY: Float, textureEndX: Float, textureEndY: Float,
         collisionTime: [Float], collisionValue: [Float], collisionNumSpheres: UInt8, drawFlag: UInt8,
-        padAmount: Int32, scaleFactor: Float, particleGhostsNum: Int16, ghostSeparation: Float,
+        padAmount: Int32, padExtraBytes: Data, scaleFactor: Float, particleGhostsNum: Int16, ghostSeparation: Float,
         starRadialPoints: Int16, starRadiusRatio: Float, rampTime: Float, texturePage: Int32, unkVec3: SIMD4<Float>
     ) {
         self.name = name
@@ -272,6 +311,7 @@ public struct ParticleSystemDefinition: Sendable {
         self.collisionNumSpheres = collisionNumSpheres
         self.drawFlag = drawFlag
         self.padAmount = padAmount
+        self.padExtraBytes = padExtraBytes
         self.scaleFactor = scaleFactor
         self.particleGhostsNum = particleGhostsNum
         self.ghostSeparation = ghostSeparation

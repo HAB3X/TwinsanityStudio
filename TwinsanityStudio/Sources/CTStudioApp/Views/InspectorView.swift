@@ -84,7 +84,7 @@ struct InspectorView: View {
                             case .path(let path):
                                 PathInspectorView(node: node, path: path)
                             case .particleData(let particleData):
-                                ParticleDataInspectorView(particleData: particleData)
+                                ParticleDataInspectorView(node: node, particleData: particleData)
                             case .script(let script):
                                 ScriptInspectorView(script: script)
                             case .raw, .none:
