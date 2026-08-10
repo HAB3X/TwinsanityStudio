@@ -34,4 +34,35 @@ final class LodModelParserTests: XCTestCase {
         XCTAssertEqual(lod.lodModelIDs, [999])
         XCTAssertEqual(cursor.position, w.data.count)
     }
+
+    func testWriterRoundTripPreservesAllFields() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(0x1234ABCD)
+        w.writeUInt8(3)
+        w.writeUInt32(0)
+        w.writeUInt32(100); w.writeUInt32(200); w.writeUInt32(300); w.writeUInt32(400) // lodDistances
+        w.writeUInt32(0xAABBCCDD); w.writeUInt32(0xDEADBEEF); w.writeUInt32(0x11223344) // lodModelIDs
+
+        var cursor = BinaryCursor(data: w.data)
+        let lod = try LodModelParser.parse(&cursor, recordID: 7)
+        let encoded = LodModelWriter.write(lod)
+        XCTAssertEqual(encoded, w.data, "writer must reproduce parser's input exactly")
+
+        var reCursor = BinaryCursor(data: encoded)
+        let reParsed = try LodModelParser.parse(&reCursor, recordID: 7)
+        XCTAssertEqual(reParsed.header, lod.header)
+        XCTAssertEqual(reParsed.lodDistances, lod.lodDistances)
+        XCTAssertEqual(reParsed.lodModelIDs, lod.lodModelIDs)
+    }
+
+    func testWriterDerivesModelsAmountFromLodCount() throws {
+        // Edit: shrink the list to 2 IDs. The writer must re-emit
+        // modelsAmount = 2 itself (never trust a stale count).
+        let lod = LodModelInfo(id: 1, header: 1, lodDistances: [0, 0, 0, 0], lodModelIDs: [10, 20])
+        let encoded = LodModelWriter.write(lod)
+        var cursor = BinaryCursor(data: encoded)
+        let reParsed = try LodModelParser.parse(&cursor, recordID: 1)
+        XCTAssertEqual(reParsed.lodModelIDs.count, 2)
+        XCTAssertEqual(reParsed.lodModelIDs, [10, 20])
+    }
 }

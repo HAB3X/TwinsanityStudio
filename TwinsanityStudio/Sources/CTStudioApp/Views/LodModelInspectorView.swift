@@ -7,17 +7,28 @@ import CTModels
 /// rendering (a scenery placement's `modelID` pointing here instead of
 /// directly at a `RigidModel`).
 struct LodModelInspectorView: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    let node: ChunkNode
     let lodModel: LodModelInfo
+    @State private var isEditing = false
 
     var body: some View {
         Form {
             Section("LOD Model #\(lodModel.id)") {
                 LabeledContent("Header", value: "\(lodModel.header)")
                 LabeledContent("LOD Levels", value: "\(lodModel.lodModelIDs.count)")
+                if workspace.canSaveEdits(for: node) {
+                    Button("Edit…") { isEditing = true }
+                }
             }
             Section("Alternate RigidModel IDs (highest detail first)") {
                 ForEach(Array(lodModel.lodModelIDs.enumerated()), id: \.offset) { index, id in
-                    LabeledContent("LOD \(index)", value: "#\(id)")
+                    LabeledContent("LOD \(index)", value: String(format: "#%X", id))
+                }
+            }
+            Section("LOD Distances (round-tripped, units unverified)") {
+                ForEach(Array(lodModel.lodDistances.enumerated()), id: \.offset) { index, d in
+                    LabeledContent("Slot \(index)", value: "\(d)")
                 }
             }
             Section {
@@ -27,5 +38,8 @@ struct LodModelInspectorView: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $isEditing) {
+            LodModelEditorSheet(node: node, lodModel: lodModel)
+        }
     }
 }

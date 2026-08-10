@@ -76,7 +76,7 @@ struct InspectorView: View {
                             case .aiPath(let path):
                                 AIPathInspectorView(path: path)
                             case .lodModel(let lodModel):
-                                LodModelInspectorView(lodModel: lodModel)
+                                LodModelInspectorView(node: node, lodModel: lodModel)
                             case .collisionSurface(let surface):
                                 CollisionSurfaceInspectorView(node: node, surface: surface)
                             case .skydome(let skydome):
