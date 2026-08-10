@@ -72,7 +72,11 @@ private struct MainScriptDetail: View {
                             LabeledContent("State List Index", value: "\(listIndex)")
                         }
                         if let condition = body.condition {
-                            LabeledContent("Condition", value: "vtable \(condition.vTableIndex), interval \(condition.interval), threshold \(condition.threshold)\(condition.notGate ? " (NOT)" : "")")
+                            let conditionLabel = ScriptConditionCatalog.conditionName(forID: condition.vTableIndex) ?? "vtable \(condition.vTableIndex)"
+                            LabeledContent("Condition", value: "\(conditionLabel), interval \(condition.interval), threshold \(condition.threshold)\(condition.notGate ? " (NOT)" : "")")
+                            if let category = ScriptConditionCatalog.perceptArgumentCategory(forID: condition.vTableIndex) {
+                                LabeledContent("Parameter (\(condition.parameter))", value: "\(category)")
+                            }
                         }
                         ForEach(Array(body.commands.enumerated()), id: \.offset) { cmdIndex, command in
                             LabeledContent("Command \(cmdIndex)", value: command.commandName ?? "#\(command.commandID)")

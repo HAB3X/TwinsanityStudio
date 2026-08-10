@@ -114,6 +114,17 @@ final class ScriptParserTests: XCTestCase {
         XCTAssertEqual(body.commands[0].commandID, 3)
         XCTAssertEqual(body.commands[0].rawArguments, [10, 20, 30, 40, 50])
         XCTAssertEqual(cursor.position, w.count)
+        XCTAssertEqual(ScriptConditionCatalog.conditionName(forID: condition.vTableIndex), "TimeInUnit")
+    }
+
+    func testScriptConditionCatalogSpotChecks() {
+        XCTAssertEqual(ScriptConditionCatalog.conditionName(forID: 0), "Next")
+        XCTAssertEqual(ScriptConditionCatalog.conditionName(forID: 53), "TouchingTerrain")
+        XCTAssertEqual(ScriptConditionCatalog.conditionName(forID: 629), "DemoHubMusicFlag")
+        XCTAssertNil(ScriptConditionCatalog.conditionName(forID: 579), "579 (IsChargedShot) is commented out in the reference enum — not a confirmed condition")
+        XCTAssertEqual(ScriptConditionCatalog.perceptArgumentCategory(forID: 53), .surface)
+        XCTAssertEqual(ScriptConditionCatalog.perceptArgumentCategory(forID: 59), .counter)
+        XCTAssertNil(ScriptConditionCatalog.perceptArgumentCategory(forID: 0), "Next (0) has no entry in the reference's own Args table")
     }
 
     func testChainedStatesAndChainedBodiesWithSupportType1() throws {
