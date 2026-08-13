@@ -314,7 +314,11 @@ struct LevelViewerWindow: View {
 
                 Divider()
 
-                ForgePaletteView(placedThisSession: renderer?.pendingNewInstances.count ?? 0, canResolve: { renderer?.canResolveObjectID($0) }) { objectID, name in
+                ForgePaletteView(
+                    placedThisSession: renderer?.pendingNewInstances.count ?? 0,
+                    canResolve: { renderer?.canResolveObjectID($0) },
+                    resolveForThumbnail: { renderer?.resolvedAsset(forObjectID: $0) }
+                ) { objectID, name in
                     armedPlacement = (objectID, name)
                     renderer?.pendingPlacementObjectID = objectID
                 }
@@ -1193,11 +1197,22 @@ private struct ForgePaletteView: View {
     /// rather than flashing every entry as unresolvable before load
     /// finishes.
     let canResolve: (UInt16) -> Bool?
+    /// "Drag-and-Drop Asset Palette & Tray" (roadmap 6.2): resolves an
+    /// entry to the real geometry a thumbnail render needs — `nil` for the
+    /// same reasons `canResolve` can be `nil`/`false` (renderer not ready
+    /// yet, or this level's data genuinely has no geometry for that ID).
+    let resolveForThumbnail: (UInt16) -> ResolvedModelAsset?
     let onArm: (UInt16, String) -> Void
 
     @State private var searchText = ""
     @State private var selectedCategory: DefaultObjectID.Category?
     @State private var hideUnavailable = false
+    /// Same cache/failure-set split `ModelsHubView` uses for its gallery
+    /// thumbnails, keyed by `objectID` instead of a resolved asset's own
+    /// `id` — a palette entry's thumbnail is looked up before any
+    /// `ResolvedModelAsset` exists for it.
+    @State private var thumbnailCache: [UInt16: NSImage] = [:]
+    @State private var failedThumbnailIDs: Set<UInt16> = []
 
     private var filteredEntries: [(id: UInt16, name: String)] {
         DefaultObjectID.names
@@ -1248,11 +1263,9 @@ private struct ForgePaletteView: View {
                     onArm(entry.id, entry.name)
                 } label: {
                     HStack {
-                        if !resolvable {
-                            Image(systemName: "cube.transparent")
-                                .foregroundStyle(.orange)
-                                .help("No geometry resolves for this object in this level — placing it drops an amber placeholder cube instead of a real model.")
-                        }
+                        paletteThumbnail(for: entry.id, resolvable: resolvable)
+                            .frame(width: 28, height: 28)
+                            .onAppear { loadThumbnailIfNeeded(for: entry.id) }
                         Text(entry.name).lineLimit(1).font(.caption)
                             .foregroundStyle(resolvable ? .primary : .secondary)
                         Spacer()
@@ -1263,6 +1276,46 @@ private struct ForgePaletteView: View {
             }
             .frame(height: 220)
             .listStyle(.bordered)
+        }
+    }
+
+    /// "Live 3D/2D thumbnail previews before spawning" (roadmap 6.2): a
+    /// real offscreen 3D render (`ModelThumbnailRenderer`, same renderer
+    /// the Models Hub gallery already uses) per resolvable entry — not a
+    /// generic cube glyph standing in for "some model." Entries with no
+    /// real geometry keep the amber placeholder glyph, since there's
+    /// nothing real to render a thumbnail of.
+    @ViewBuilder
+    private func paletteThumbnail(for objectID: UInt16, resolvable: Bool) -> some View {
+        if let thumbnail = thumbnailCache[objectID] {
+            Image(nsImage: thumbnail)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        } else if !resolvable || failedThumbnailIDs.contains(objectID) {
+            Image(systemName: "cube.transparent")
+                .foregroundStyle(.orange)
+                .help("No geometry resolves for this object in this level — placing it drops an amber placeholder cube instead of a real model.")
+        } else {
+            ProgressView().controlSize(.mini)
+        }
+    }
+
+    /// Same off-main-thread rendering posture as `ModelsHubView.
+    /// loadThumbnailIfNeeded` — only skipped if already cached/failed, or
+    /// if this entry has no real geometry to render in the first place.
+    private func loadThumbnailIfNeeded(for objectID: UInt16) {
+        guard thumbnailCache[objectID] == nil, !failedThumbnailIDs.contains(objectID) else { return }
+        guard let asset = resolveForThumbnail(objectID) else { return }
+        Task.detached(priority: .userInitiated) {
+            let image = ModelThumbnailRenderer.render(asset, size: 64)
+            await MainActor.run {
+                if let image {
+                    thumbnailCache[objectID] = image
+                } else {
+                    failedThumbnailIDs.insert(objectID)
+                }
+            }
         }
     }
 }

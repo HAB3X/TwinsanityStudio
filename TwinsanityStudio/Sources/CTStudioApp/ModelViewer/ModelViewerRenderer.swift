@@ -1651,10 +1651,11 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         // draggable marker per real `AIPosition` waypoint — same treatment
         // as trigger/camera markers (empty submeshes, drawn as a small
         // wireframe box by `rebuildOverlayBuffer`). Draggable via the same
-        // generic gizmo every other object uses, but session-only: this
-        // layer is deliberately excluded from `pendingLevelOverrides`
-        // (`.actors`-only guard), since this build has no verified
-        // byte-exact `AIPosition` encoder to write a moved waypoint back.
+        // generic gizmo every other object uses; deliberately excluded from
+        // `pendingLevelOverrides` itself (`.actors`-only guard) since that
+        // encodes `Instance` records, not `AIPosition` ones — a moved
+        // waypoint's own byte-exact re-encode is `pendingAIWaypointOverrides`
+        // below, via the real `WorldPlacementWriter.writeAIPosition`.
         for (node, marker) in aiPositions {
             let worldPosition = SIMD3(marker.position.x, marker.position.y, marker.position.z)
             levelObjects.append(GPULevelObject(
@@ -2231,6 +2232,18 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     func canResolveObjectID(_ objectID: UInt16) -> Bool {
         guard let resolved = AssetResolver.resolveInstanceObject(objectID: objectID, instanceSelector: 0, index: assetIndex, defaultIndex: defaultAssetIndex) else { return false }
         return !resolved.mesh.submeshes.isEmpty
+    }
+
+    /// "Drag-and-Drop Asset Palette & Tray" (roadmap 6.2): the same real
+    /// resolve `canResolveObjectID` already checks, but returning the
+    /// actual `ResolvedModelAsset` instead of a `Bool` — this is what
+    /// `ForgePaletteView` feeds to `ModelThumbnailRenderer` for a real
+    /// offscreen 3D thumbnail per entry, not a fabricated preview.
+    func resolvedAsset(forObjectID objectID: UInt16) -> ResolvedModelAsset? {
+        guard let resolved = AssetResolver.resolveInstanceObject(objectID: objectID, instanceSelector: 0, index: assetIndex, defaultIndex: defaultAssetIndex),
+              !resolved.mesh.submeshes.isEmpty
+        else { return nil }
+        return resolved
     }
 
     @discardableResult

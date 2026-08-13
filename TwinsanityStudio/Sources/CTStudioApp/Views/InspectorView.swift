@@ -20,13 +20,33 @@ struct InspectorView: View {
     /// investigation) severe enough to visibly interfere with a
     /// `ModelViewerWindow` sheet open at the same time.
     @State private var resolvedComposite: ResolvedModelAsset?
+    /// "Memory-Mapped Hex Engine" (roadmap 5.2): the docked `HexQuickView`
+    /// split pane's toggle. Available for every node (unlike the composite
+    /// toggle, which only some payload kinds support) — raw bytes exist for
+    /// any record.
+    @State private var showHexQuickView = false
+    /// Cached the same way `resolvedComposite` is (see that property's own
+    /// doc comment): `workspace.rawBytes(for:)` copies this node's full
+    /// byte range, and recomputing it inline in `body` would re-copy on
+    /// every unrelated `@Published` change anywhere in `workspace`, not
+    /// just when the selected node or the toggle actually changes.
+    @State private var hexQuickViewBytes = Data()
 
     var body: some View {
         Group {
             if let node {
+                HSplitView {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        header(for: node)
+                        HStack {
+                            header(for: node)
+                            Spacer()
+                            Toggle(isOn: $showHexQuickView) {
+                                Label("Hex Quick View", systemImage: "number.square")
+                            }
+                            .toggleStyle(.button)
+                            .help("Show this record's raw bytes in a docked, read-only split pane, synchronized to whatever's selected. For editing, use \"Open Full Hex Editor…\" inside it.")
+                        }
                         if Self.isCompositeEligible(node.payload) {
                             Toggle(isOn: $showComposite) {
                                 Label("View Parent / Composite", systemImage: "arrow.triangle.branch")
@@ -97,8 +117,20 @@ struct InspectorView: View {
                 .onChange(of: node.id) { _, _ in
                     showComposite = false
                     updateResolvedComposite(for: node)
+                    updateHexQuickViewBytes(for: node)
                 }
-                .onAppear { updateResolvedComposite(for: node) }
+                .onChange(of: showHexQuickView) { _, isShown in
+                    if isShown { updateHexQuickViewBytes(for: node) }
+                }
+                .onAppear {
+                    updateResolvedComposite(for: node)
+                    updateHexQuickViewBytes(for: node)
+                }
+                if showHexQuickView {
+                    HexQuickView(bytes: hexQuickViewBytes) { workspace.hexViewerNode = node }
+                        .frame(minWidth: 260, idealWidth: 320)
+                }
+                }
             } else {
                 ContentUnavailableView(
                     "No Selection",
@@ -127,6 +159,13 @@ struct InspectorView: View {
     /// whether to eagerly resolve it.
     private func updateResolvedComposite(for node: ChunkNode) {
         resolvedComposite = Self.isCompositeEligible(node.payload) ? workspace.resolveComposite(for: node) : nil
+    }
+
+    /// Only actually copies bytes (`workspace.rawBytes(for:)`) while the
+    /// `HexQuickView` pane is on screen — same "don't do the expensive part
+    /// unless it's actually showing" posture as `updateResolvedComposite`.
+    private func updateHexQuickViewBytes(for node: ChunkNode) {
+        hexQuickViewBytes = showHexQuickView ? (workspace.rawBytes(for: node) ?? Data()) : Data()
     }
 
     @ViewBuilder
