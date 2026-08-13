@@ -275,7 +275,7 @@ final class InteractiveMTKView: MTKView {
             return
         }
         renderer.yaw += Float(event.deltaX) * 0.01
-        renderer.pitch = max(-1.5, min(1.5, renderer.pitch + Float(event.deltaY) * 0.01))
+        renderer.pitch += Float(event.deltaY) * 0.01
         needsDisplay = true
     }
 
@@ -292,7 +292,7 @@ final class InteractiveMTKView: MTKView {
             return
         }
         let delta = Float(event.scrollingDeltaY) * 0.01
-        renderer.distanceMultiplier = max(0.3, min(20, renderer.distanceMultiplier - delta))
+        renderer.distanceMultiplier -= delta
         needsDisplay = true
     }
 }

@@ -58,7 +58,7 @@ public struct ResolvedModelAsset: Sendable, Identifiable, Codable {
     /// will see the same `recordID` recur constantly. Using `recordID`
     /// itself as `Identifiable.id` would make SwiftUI's list/sheet identity
     /// tracking silently collide across unrelated models.
-    public let id = UUID()
+    public var id = UUID()
     public let recordID: UInt32
     public var displayName: String
     public var mesh: MeshAsset
