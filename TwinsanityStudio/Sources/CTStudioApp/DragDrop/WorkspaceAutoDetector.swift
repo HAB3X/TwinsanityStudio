@@ -35,7 +35,7 @@ public struct DetectedFile: Sendable, Identifiable {
 /// which platform it targets, so the workspace can populate itself without
 /// the user picking a file type or endianness from a menu.
 public enum WorkspaceAutoDetector {
-    private static let knownExtensions: Set<String> = ["BH", "BD", "RM2", "SM2", "RMX", "SMX", "MH"]
+    private static let knownExtensions: Set<String> = ["BH", "BD", "RM2", "SM2", "RMX", "SMX", "MH", "ISO", "BIN", "CUE"]
 
     /// Detects a single file. Folders should be expanded with
     /// `scanFolder(_:)` first and each result passed through this.
@@ -49,6 +49,7 @@ public enum WorkspaceAutoDetector {
         case "SM2": return DetectedFile(url: url, kind: .sceneryResource, platform: .ps2)
         case "SMX": return DetectedFile(url: url, kind: .sceneryResource, platform: .xbox)
         case "MH": return DetectedFile(url: url, kind: .soundBank, platform: .ps2)
+        case "ISO", "BIN", "CUE": return DetectedFile(url: url, kind: .unknown, platform: .ps2)
         default: return DetectedFile(url: url, kind: .unknown, platform: .unknown)
         }
     }
