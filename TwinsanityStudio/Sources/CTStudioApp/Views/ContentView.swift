@@ -108,6 +108,11 @@ struct ContentView: View {
                         Label("Asset Diff", systemImage: "rectangle.on.rectangle")
                     }
                     .disabled(workspace.modelsHub.count < 2)
+                    Button {
+                        workspace.isModCrateHubPresented = true
+                    } label: {
+                        Label("Mod Crate Hub", systemImage: "shippingbox")
+                    }
                     Divider()
                     Button {
                         presentMemoryCardOpenPanel()
@@ -222,6 +227,9 @@ struct ContentView: View {
         .sheet(isPresented: $workspace.isAssetDiffPresented) {
             AssetDiffView()
                 .environmentObject(workspace)
+        }
+        .sheet(isPresented: $workspace.isModCrateHubPresented) {
+            ModCrateInspectorView()
         }
         .sheet(item: $workspace.hexViewerNode) { node in
             if let bytes = workspace.rawBytes(for: node) {

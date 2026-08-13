@@ -165,7 +165,7 @@ public final class WorkspaceViewModel: ObservableObject {
     /// has, without `ChunkNode`/`ISO9660Entry` needing to know about each
     /// other. Only real file leaves are registered (never directories —
     /// nothing to extract for those, they're just tree structure).
-    private var discEntryByNodeID: [UUID: (entry: ISO9660Entry, source: any LogicalSectorSource)] = [:]
+    private var discEntryByNodeID: [UUID: CTModels.DiscEntryHolder] = [:]
 
     /// "Native ISO & BIN/CUE Disc Image Mounting" (roadmap 1.4/Task 7),
     /// merged directly into the main sidebar tree — not a separate modal
@@ -244,7 +244,7 @@ public final class WorkspaceViewModel: ObservableObject {
     /// state.
     private func registerDiscEntries(_ entry: ISO9660Entry, node: ChunkNode, source: any LogicalSectorSource) {
         if !entry.isDirectory {
-            discEntryByNodeID[node.id] = (entry, source)
+            discEntryByNodeID[node.id] = CTModels.DiscEntryHolder(entry: entry, source: source)
         }
         let sortedChildren = entry.children.sorted { $0.name < $1.name }
         for (childEntry, childNode) in zip(sortedChildren, node.children) {
@@ -310,6 +310,11 @@ public final class WorkspaceViewModel: ObservableObject {
     /// "Asset Diff & Version Comparison" (blueprint 4.3): non-nil presents
     /// the diff sheet.
     @Published public var isAssetDiffPresented = false
+    /// "Offline Mod Package Manager (.Crate Hub)" (roadmap 3.3): presents
+    /// `ModCrateInspectorView`. Unlike the other hubs, this isn't gated on
+    /// any workspace scan state — it opens standalone `.crate` files
+    /// directly, independent of whatever archive is currently loaded.
+    @Published public var isModCrateHubPresented = false
 
     private var archiveIndexByRootID: [UUID: ArchiveIndex] = [:]
     /// "No More Placeholder Squares": the real game's shared object
@@ -447,7 +452,7 @@ public final class WorkspaceViewModel: ObservableObject {
         // not just when one happens to be active. Settings' Developer Mode
         // toggle (`showRawFiles`) brings it back.
         if !showRawFiles {
-            nodes = nodes.compactMap { $0.prunedOfRawContent() }
+            nodes = nodes.compactMap { $0.prunedOfRawContent(discEntryRegistry: self.discEntryByNodeID) }
         }
         if let typeFilter {
             nodes = nodes.compactMap { $0.filtered(byKind: typeFilter) }
@@ -1148,7 +1153,9 @@ public final class WorkspaceViewModel: ObservableObject {
             // structurally satisfy `isExpandableArchiveEntry` too (empty
             // children, nil payload, a recognized extension) without
             // actually being one.
-            if let (entry, source) = self.discEntryByNodeID[node.id] {
+            if let holder = self.discEntryByNodeID[node.id],
+               let entry = holder.entry as? ISO9660Entry,
+               let source = holder.source as? any LogicalSectorSource {
                 self.openDiscEntry(entry, source: source)
                 return
             }

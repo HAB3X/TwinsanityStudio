@@ -1,6 +1,29 @@
 import Foundation
 import CTCore
 
+/// A type that represents a disc-mounted file entry and its source, used
+/// by `ChunkNode.prunedOfRawContent()` to determine whether a node
+/// corresponds to a disc-mounted file that should be shown despite not
+/// having a recognizable chunk file extension.
+public protocol DiscEntrySource: Sendable {
+    /// The disc entry (e.g. an `ISO9660Entry`).
+    var entry: Any { get }
+    /// The logical sector source containing the entry's data.
+    var source: Any { get }
+}
+
+/// A simple holder for disc entry and source that conforms to DiscEntrySource.
+/// Used to store disc-mounted file information in `WorkspaceViewModel.discEntryByNodeID`.
+public struct DiscEntryHolder: DiscEntrySource {
+    public let entry: Any
+    public let source: Any
+
+    public init(entry: Any, source: Any) {
+        self.entry = entry
+        self.source = source
+    }
+}
+
 /// Decoded payload attached to a leaf `ChunkNode`, when the parser understands
 /// that record's contents. Sections (which only hold child records) carry `nil`.
 public enum ChunkPayload: Sendable {
@@ -229,7 +252,12 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
     /// surviving node, same reasoning as `filtered(matching:)`'s own doc
     /// comment: a filtered *view* must keep the real node's identity, or
     /// sidebar selection breaks exactly like it did before that fix.
-    public func prunedOfRawContent() -> ChunkNode? {
+    ///
+    /// - Parameter discEntryRegistry: Registry of disc-mounted files that
+    ///   should be shown despite not having recognizable chunk file
+    ///   extensions. Used to prevent disc image contents from being filtered
+    ///   out as "raw" content.
+    public func prunedOfRawContent(discEntryRegistry: [UUID: any DiscEntrySource]? = nil) -> ChunkNode? {
         guard !children.isEmpty else {
             // An unexpanded archive entry (`.RM2`/`.SM2`/etc. sitting inside
             // a `.BH` archive, not yet parsed) looks identical to a genuinely
@@ -247,7 +275,7 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
             default: return self
             }
         }
-        let keptChildren = children.compactMap { $0.prunedOfRawContent() }
+        let keptChildren = children.compactMap { $0.prunedOfRawContent(discEntryRegistry: discEntryRegistry) }
         guard !keptChildren.isEmpty else { return nil }
         return ChunkNode(
             id: id,
