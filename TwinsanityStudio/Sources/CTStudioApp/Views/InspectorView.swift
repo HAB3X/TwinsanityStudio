@@ -80,7 +80,7 @@ struct InspectorView: View {
                             case .camera(let camera):
                                 CameraInspectorView(node: node, camera: camera)
                             case .collision(let mesh):
-                                CollisionInspectorView(mesh: mesh)
+                                CollisionInspectorView(node: node, mesh: mesh)
                             case .scenery(let scenery):
                                 SceneryInspectorView(node: node, scenery: scenery)
                             case .dynamicScenery(let dynamicScenery):
