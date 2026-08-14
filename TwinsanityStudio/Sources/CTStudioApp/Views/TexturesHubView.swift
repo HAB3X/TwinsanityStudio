@@ -11,6 +11,12 @@ struct TexturesHubView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
     @State private var selected: TextureHubEntry?
+    /// "Offline Texture Atlas Packer" (roadmap 12.3) — batch selection,
+    /// same on/off toggle + ID-set shape `ModelsHubView` already uses for
+    /// its own batch export.
+    @State private var isBatchSelectionMode = false
+    @State private var selectedIDs: Set<UUID> = []
+    @State private var atlasError: String?
 
     private let columns = [GridItem(.adaptive(minimum: 120, maximum: 160), spacing: 12)]
 
@@ -27,13 +33,21 @@ struct TexturesHubView: View {
             TextureHubDetailView(entry: entry)
                 .environmentObject(workspace)
         }
+        .alert("Couldn't Pack Atlas", isPresented: Binding(
+            get: { atlasError != nil },
+            set: { if !$0 { atlasError = nil } }
+        )) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(atlasError ?? "")
+        }
     }
 
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Textures Hub").font(.title2.bold())
-                Text("\(filteredEntries.count) of \(workspace.texturesHub.count) textures")
+                Text(isBatchSelectionMode ? "\(selectedIDs.count) selected" : "\(filteredEntries.count) of \(workspace.texturesHub.count) textures")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -42,9 +56,44 @@ struct TexturesHubView: View {
                 ProgressView().controlSize(.small)
                 Text("Scanning…").font(.caption).foregroundStyle(.secondary)
             }
+            if isBatchSelectionMode {
+                Button("Pack into Atlas…") { packSelectedIntoAtlas() }
+                    .disabled(selectedIDs.count < 2)
+                Button("Cancel") {
+                    isBatchSelectionMode = false
+                    selectedIDs.removeAll()
+                }
+            } else {
+                Button("Select…") { isBatchSelectionMode = true }
+                    .disabled(workspace.texturesHub.isEmpty)
+            }
             Button("Close") { dismiss() }
         }
         .padding()
+    }
+
+    /// "Offline Texture Atlas Packer" (roadmap 12.3): packs every selected
+    /// texture into one atlas PNG (`TextureAtlasPacker`, a standard
+    /// shelf-packing algorithm — see that type's own doc comment). Doesn't
+    /// attempt to rewrite any consuming mesh's UVs to match: that needs a
+    /// specific mesh/submesh's material association, which this hub (a
+    /// flat, cross-file texture list) doesn't carry — the packed atlas and
+    /// its real per-texture placement rects are the honest deliverable
+    /// here.
+    private func packSelectedIntoAtlas() {
+        let textures = workspace.texturesHub.filter { selectedIDs.contains($0.id) }.map(\.texture)
+        guard !textures.isEmpty, let url = ExportPanel.chooseSaveLocation(
+            suggestedName: "atlas.png",
+            message: "Save the packed texture atlas (\(textures.count) textures)."
+        ) else { return }
+        do {
+            let layout = try TextureAtlasPacker.exportAtlas(textures, to: url)
+            workspace.statusMessage = "Saved \(url.lastPathComponent) — \(layout.atlasWidth)×\(layout.atlasHeight), \(layout.placements.count) texture(s) packed."
+            isBatchSelectionMode = false
+            selectedIDs.removeAll()
+        } catch {
+            atlasError = error.localizedDescription
+        }
     }
 
     private var controls: some View {
@@ -73,9 +122,13 @@ struct TexturesHubView: View {
                 LazyVGrid(columns: columns, spacing: 12) {
                     ForEach(filteredEntries) { entry in
                         Button {
-                            selected = entry
+                            if isBatchSelectionMode {
+                                if selectedIDs.contains(entry.id) { selectedIDs.remove(entry.id) } else { selectedIDs.insert(entry.id) }
+                            } else {
+                                selected = entry
+                            }
                         } label: {
-                            TextureThumbnailCell(entry: entry)
+                            TextureThumbnailCell(entry: entry, isBatchSelectionMode: isBatchSelectionMode, isSelected: selectedIDs.contains(entry.id))
                         }
                         .buttonStyle(.plain)
                     }
@@ -96,6 +149,8 @@ struct TexturesHubView: View {
 
 private struct TextureThumbnailCell: View {
     let entry: TextureHubEntry
+    var isBatchSelectionMode: Bool = false
+    var isSelected: Bool = false
     /// Decoding is a computed property recomputed on every `body`
     /// evaluation — cheap once, but `LazyVGrid` re-evaluates every
     /// currently-visible cell's `body` on each scroll-driven relayout, so an
@@ -139,7 +194,15 @@ private struct TextureThumbnailCell: View {
             .frame(width: 96, height: 96)
             .background(Color(nsColor: .underPageBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(isSelected ? Color.accentColor : Color(.separatorColor), lineWidth: isSelected ? 2 : 1))
+            .overlay(alignment: .topTrailing) {
+                if isBatchSelectionMode {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.white)
+                        .shadow(radius: 2)
+                        .padding(4)
+                }
+            }
 
             Text("#\(entry.texture.id)")
                 .font(.caption2.monospacedDigit())
