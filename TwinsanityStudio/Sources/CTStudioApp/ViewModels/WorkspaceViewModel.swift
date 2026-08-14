@@ -1880,13 +1880,44 @@ public final class WorkspaceViewModel: ObservableObject {
     /// Overhaul": the one call every entry point into the Level Viewer
     /// makes — resolves the scenery placements (see
     /// `resolvedLevelPlacements`) and gathers every Instance/Trigger/
-    /// Camera/SoundEffect record from the same file for the scene-layer
-    /// markers, audio panel, and events panel. Kept in one place so no
-    /// entry point can drift into gathering different data for what's
-    /// supposed to be the same view.
+    /// Camera/SoundEffect record from the same file *and* its sibling
+    /// actor file (see `siblingActorFileRoot`) for the scene-layer markers,
+    /// audio panel, and events panel. Kept in one place so no entry point
+    /// can drift into gathering different data for what's supposed to be
+    /// the same view.
+    ///
+    /// Real Twinsanity levels are conventionally split across two sibling
+    /// archive entries with the same base name: `.sm2` carries scenery/
+    /// terrain geometry, `.rm2` carries every Instance/Trigger/Camera/
+    /// AIPosition/AIPath/Script for that same level — confirmed against
+    /// the real archive (`Levels/Earth/Hub/hubb.sm2` has 462 scenery
+    /// placements and *zero* instances/triggers/cameras/AI records;
+    /// `hubb.rm2` has 114/7/11/22/21 of those respectively and zero
+    /// scenery). `openLevelViewer` is always entered from the scenery side
+    /// (see this file's three call sites), so gathering "from the same
+    /// file as `node`" alone silently produced a Level Viewer that could
+    /// never show a single actor, trigger, camera, or AI waypoint for any
+    /// real level — the geometry rendered, everything gameplay-relevant
+    /// didn't. This was a real, reproducible bug, not a design choice.
     public func openLevelViewer(for scenery: SceneryAsset, node: ChunkNode) async {
         let placements = await resolvedLevelPlacements(for: scenery, node: node)
-        let instanceMarkers = instanceRecords(inSameFileAs: node)
+        let siblingNode = await siblingActorFileRoot(for: node)
+
+        var instanceMarkers = instanceRecords(inSameFileAs: node)
+        var triggers = triggerRecords(inSameFileAs: node)
+        var cameras = cameraRecords(inSameFileAs: node)
+        var sounds = soundEffectRecords(inSameFileAs: node)
+        var aiPositions = aiPositionRecords(inSameFileAs: node)
+        var aiPaths = aiPathRecords(inSameFileAs: node)
+        if let siblingNode {
+            instanceMarkers += instanceRecords(inSameFileAs: siblingNode)
+            triggers += triggerRecords(inSameFileAs: siblingNode)
+            cameras += cameraRecords(inSameFileAs: siblingNode)
+            sounds += soundEffectRecords(inSameFileAs: siblingNode)
+            aiPositions += aiPositionRecords(inSameFileAs: siblingNode)
+            aiPaths += aiPathRecords(inSameFileAs: siblingNode)
+        }
+
         let (resolvedAssets, assetIndex) = await resolvedInstanceAssets(for: instanceMarkers, node: node)
         let defaultAssetIndex = await loadSharedDefaultAssetIndexIfNeeded() ?? GraphicsAssetIndex()
         levelViewerContext = LevelViewerContext(
@@ -1896,13 +1927,66 @@ public final class WorkspaceViewModel: ObservableObject {
             resolvedInstanceAssets: resolvedAssets,
             assetIndex: assetIndex,
             defaultAssetIndex: defaultAssetIndex,
-            triggers: triggerRecords(inSameFileAs: node),
-            cameras: cameraRecords(inSameFileAs: node),
-            sounds: soundEffectRecords(inSameFileAs: node),
+            triggers: triggers,
+            cameras: cameras,
+            sounds: sounds,
             chunkLinks: chunkLinkRecords(inSameFileAs: node),
-            aiPositions: aiPositionRecords(inSameFileAs: node),
-            aiPaths: aiPathRecords(inSameFileAs: node)
+            aiPositions: aiPositions,
+            aiPaths: aiPaths
         )
+    }
+
+    /// Finds `sceneryNode`'s sibling actor file — the real archive entry
+    /// with the same base name and a `.RM2`/`.RMX` extension where this
+    /// engine actually stores a level's Instance/Trigger/Camera/AIPosition/
+    /// AIPath data (see `openLevelViewer`'s doc comment). Parses it on
+    /// demand (reusing `expandArchiveEntry`, the same path a sidebar click
+    /// already uses) if it isn't already expanded, so this works whether or
+    /// not "Parse All" was run first. Returns `nil` — not an error, just
+    /// nothing to add — when `sceneryNode` isn't backed by an archive entry
+    /// at all (a standalone-opened loose `.sm2`) or the archive genuinely
+    /// has no matching `.rm2`/`.rmx` entry.
+    private func siblingActorFileRoot(for sceneryNode: ChunkNode) async -> ChunkNode? {
+        // `sceneryNode` is the deeply-nested record that actually carries
+        // the `.scenery` payload — its own `displayName` is that record's
+        // name, not the file's. The file's real entry name (what needs to
+        // be swapped `.sm2`->`.rm2`) lives on the *file-root* ancestor.
+        guard let ownFileRoot = findFileRoot(containing: sceneryNode, in: rootNodes),
+              let rootID = owningArchiveRootID(of: ownFileRoot),
+              let index = archiveIndexByRootID[rootID],
+              let siblingName = Self.siblingActorEntryName(forSceneryEntryName: ownFileRoot.displayName, in: index.entries)
+        else { return nil }
+
+        if let existing = allFileRoots(in: rootNodes).first(where: { $0.displayName.caseInsensitiveCompare(siblingName) == .orderedSame }) {
+            // Already a real parsed tree (non-empty children or a decoded
+            // payload) rather than the still-unexpanded placeholder every
+            // archive entry starts as.
+            if existing.payload != nil || !existing.children.isEmpty { return existing }
+            await expandArchiveEntry(existing, rootID: rootID)
+            return allFileRoots(in: rootNodes).first { $0.displayName.caseInsensitiveCompare(siblingName) == .orderedSame }
+        }
+        return nil
+    }
+
+    /// The real archive entry name for `sceneryEntryName`'s sibling actor
+    /// file — same base name, `.sm2`→`.rm2`/`.smx`→`.rmx` — looked up
+    /// against the archive's own real entry list rather than string-built,
+    /// so this only ever returns a name that genuinely exists.
+    private nonisolated static func siblingActorEntryName(forSceneryEntryName sceneryEntryName: String, in entries: [ArchiveEntry]) -> String? {
+        let sceneryExt = (sceneryEntryName as NSString).pathExtension
+        let targetExt: String
+        switch sceneryExt.lowercased() {
+        case "sm2": targetExt = "rm2"
+        case "smx": targetExt = "rmx"
+        default: return nil
+        }
+        let sceneryBase = (sceneryEntryName as NSString).deletingPathExtension
+        return entries.first { entry in
+            let entryExt = (entry.name as NSString).pathExtension
+            guard entryExt.caseInsensitiveCompare(targetExt) == .orderedSame else { return false }
+            let entryBase = (entry.name as NSString).deletingPathExtension
+            return entryBase.caseInsensitiveCompare(sceneryBase) == .orderedSame
+        }?.name
     }
 
     /// "Comprehensive Instance Population" (Part 4B): resolves every
