@@ -367,6 +367,7 @@ struct ModelViewerWindow: View {
     private var exportSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("Export", systemImage: "square.and.arrow.up").font(.headline)
+            preFlightCheckView
             Button {
                 exportCompleteAsset()
             } label: {
@@ -384,6 +385,43 @@ struct ModelViewerWindow: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// "Pre-Flight Mod Auditor" (roadmap 9.3): a real summary shown before
+    /// export, limited to what this build actually knows for certain —
+    /// texture completeness (`asset.isFullyTextured`, already tracked) and
+    /// this asset's real GPU memory footprint against the PS2 Graphics
+    /// Synthesizer's real, documented 4MB VRAM budget (the same verified
+    /// figure `HardwareProfilerHUDView` compares against). Not a fabricated
+    /// "will this soft-lock the game" verdict — this build has no decoded
+    /// pointer/dependency graph to actually audit for that.
+    private var preFlightCheckView: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            preFlightRow(
+                ok: asset.isFullyTextured,
+                okText: "Every submesh has a resolved texture",
+                failText: "Some submesh(es) have no resolved texture — would place as untextured in-game"
+            )
+            if let renderer {
+                let budgetBytes = 4 * 1024 * 1024
+                let withinBudget = renderer.gpuMemoryBytes <= budgetBytes
+                let memoryText = ByteCountFormatter.string(fromByteCount: Int64(renderer.gpuMemoryBytes), countStyle: .memory)
+                preFlightRow(
+                    ok: withinBudget,
+                    okText: "GPU memory (\(memoryText)) fits within the PS2 GS's real 4MB VRAM budget",
+                    failText: "GPU memory (\(memoryText)) exceeds the PS2 GS's real 4MB VRAM budget on its own"
+                )
+            }
+        }
+        .padding(8)
+        .background(Color(NSColor.windowBackgroundColor))
+        .cornerRadius(8)
+    }
+
+    private func preFlightRow(ok: Bool, okText: String, failText: String) -> some View {
+        Label(ok ? okText : failText, systemImage: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+            .font(.caption2)
+            .foregroundStyle(ok ? Color.secondary : Color.orange)
     }
 
     private var filteredAnimations: [AnimationAsset] {
