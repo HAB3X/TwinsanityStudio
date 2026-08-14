@@ -172,6 +172,60 @@ final class WorldPlacementParserTests: XCTestCase {
 
     /// Zero-instance case should read exactly 80 bytes — matching
     /// `Trigger.GetSize()`'s base constant (`Trigger.cs:270`).
+    /// "Gameplay Mods" (see `GameplayModCatalog`) write-back: each unknown
+    /// list's captured element-0 offset must point at its real first
+    /// element, and a single-element patch there must round-trip while
+    /// leaving every other element (and the other two lists) untouched.
+    func testInstanceUnknownListElementOffsetsRoundTripThroughWriter() throws {
+        var w = BinaryWriter()
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeUInt16(0); w.writeUInt16(0)
+        w.writeUInt16(0); w.writeUInt16(0)
+        w.writeUInt16(0); w.writeUInt16(0)
+        w.writeInt32(0); w.writeInt32(0); w.writeInt32(10)
+        w.writeInt32(0); w.writeInt32(0); w.writeInt32(10)
+        w.writeInt32(0); w.writeInt32(0); w.writeInt32(10)
+        w.writeUInt16(42)
+        w.writeInt16(-1)
+        w.writeInt16(-1)
+        w.writeUInt32(0)
+        w.writeUInt32(0x6)
+        w.writeInt32(2); w.writeUInt32(100); w.writeUInt32(200) // unknownUInt32List (UnkI321)
+        w.writeInt32(3); w.writeFloat32(1); w.writeFloat32(2); w.writeFloat32(3) // unknownFloatList (UnkI322)
+        w.writeInt32(2); w.writeUInt32(0); w.writeUInt32(0) // unknownUInt32List2 (UnkI323)
+
+        let originalBytes = w.data
+        var cursor = BinaryCursor(data: originalBytes)
+        let instance = try WorldPlacementParser.parseInstance(&cursor, recordID: 1)
+
+        XCTAssertEqual(instance.unknownUInt32List, [100, 200])
+        XCTAssertEqual(instance.unknownFloatList, [1, 2, 3])
+        XCTAssertEqual(instance.unknownUInt32List2, [0, 0])
+
+        // Every captured offset must point at its list's real element 0.
+        var probe = BinaryCursor(data: originalBytes)
+        _ = try probe.seek(to: instance.unknownUInt32ListFileOffset)
+        XCTAssertEqual(try probe.readUInt32(), 100)
+        probe = BinaryCursor(data: originalBytes)
+        _ = try probe.seek(to: instance.unknownFloatListFileOffset)
+        XCTAssertEqual(try probe.readFloat32(), 1)
+        probe = BinaryCursor(data: originalBytes)
+        _ = try probe.seek(to: instance.unknownUInt32List2FileOffset)
+        XCTAssertEqual(try probe.readUInt32(), 0)
+
+        // Patch UnkI322[1] (index 1, the middle float) and confirm only
+        // that one element changed.
+        var patched = originalBytes
+        let elementOffset = instance.unknownFloatListFileOffset + 1 * 4
+        patched.replaceSubrange(elementOffset..<(elementOffset + 4), with: WorldPlacementWriter.writeInstanceUnknownFloatElement(72.951))
+        var reparseCursor = BinaryCursor(data: patched)
+        let reparsed = try WorldPlacementParser.parseInstance(&reparseCursor, recordID: 1)
+        XCTAssertEqual(reparsed.unknownFloatList, [1, 72.951, 3])
+        XCTAssertEqual(reparsed.unknownUInt32List, [100, 200]) // untouched
+        XCTAssertEqual(reparsed.unknownUInt32List2, [0, 0]) // untouched
+        XCTAssertEqual(patched.count, originalBytes.count)
+    }
+
     func testParseTriggerConsumesExactly80BytesWithNoInstances() throws {
         var w = BinaryWriter()
         w.writeUInt32(50)   // Header

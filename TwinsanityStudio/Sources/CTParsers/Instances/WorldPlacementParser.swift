@@ -48,8 +48,16 @@ public enum WorldPlacementParser {
         let flagsFileOffset = cursor.position
         let flags = try cursor.readUInt32()
 
+        // Each list is a single `int32` count immediately followed by its
+        // elements (unlike the triple-`int32`-prefixed ID lists above), so
+        // the element-0 offset is exactly 4 bytes past where the list read
+        // starts — captured here, once, rather than re-deriving it from
+        // `cursor.position` after the fact.
+        let unknownUInt32ListFileOffset = cursor.position + 4
         let unknownUInt32List = try readUInt32List(&cursor)
+        let unknownFloatListFileOffset = cursor.position + 4
         let unknownFloatList = try readFloatList(&cursor)
+        let unknownUInt32List2FileOffset = cursor.position + 4
         let unknownUInt32List2 = try readUInt32List(&cursor)
 
         return PlacedInstance(
@@ -68,7 +76,10 @@ public enum WorldPlacementParser {
             unknownFloatList: unknownFloatList,
             unknownUInt32List2: unknownUInt32List2,
             objectIDFileOffset: objectIDFileOffset,
-            flagsFileOffset: flagsFileOffset
+            flagsFileOffset: flagsFileOffset,
+            unknownUInt32ListFileOffset: unknownUInt32ListFileOffset,
+            unknownFloatListFileOffset: unknownFloatListFileOffset,
+            unknownUInt32List2FileOffset: unknownUInt32List2FileOffset
         )
     }
 

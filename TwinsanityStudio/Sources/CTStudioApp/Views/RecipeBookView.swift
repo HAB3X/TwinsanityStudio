@@ -41,6 +41,9 @@ struct RecipeBookView: View {
     /// differ from the trigger's real, on-disk arguments end up here).
     @State private var pendingTriggerSwaps: [UUID: (UInt16, UInt16, UInt16, UInt16)] = [:]
     @State private var searchText = ""
+    /// "Gameplay Mods" (verified, CrateModLoader-sourced toggles — see
+    /// `GameplayModCatalog`) — which mod IDs are currently checked on.
+    @State private var enabledGameplayMods: Set<String> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -57,6 +60,11 @@ struct RecipeBookView: View {
                 // bounded `ScrollView` rather than nesting a `List` inside
                 // one, which fights over scroll ownership.
                 if !instanceMarkers.isEmpty { list }
+                if !applicableGameplayMods.isEmpty {
+                    Divider()
+                    ScrollView { gameplayModsSection }
+                        .frame(maxHeight: 200)
+                }
                 if !triggerGroups.isEmpty {
                     Divider()
                     ScrollView { triggerPresetsSection }
@@ -128,6 +136,85 @@ struct RecipeBookView: View {
         }
     }
 
+    // MARK: - Gameplay Mods
+
+    /// Every catalog mod that matches at least one placement's real, on-disk
+    /// `objectID` in this chunk — mirroring `swapCandidates`'/`triggerGroups`'
+    /// discipline of only ever offering something grounded in this chunk's
+    /// own data, never a mod that couldn't possibly do anything here.
+    private var applicableGameplayMods: [(mod: GameplayMod, eligibleCount: Int)] {
+        GameplayModCatalog.allMods.compactMap { mod in
+            let eligible = instanceMarkers.filter { mod.matchesObjectIDs.contains($0.instance.objectID) }
+            let applicable = eligible.filter { mod.patch($0.instance) != nil }
+            guard !eligible.isEmpty else { return nil }
+            return (mod, applicable.count)
+        }
+    }
+
+    private var gameplayModsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Gameplay Mods").font(.headline).padding(.horizontal).padding(.top, 8)
+            Text("Verified toggles ported from CrateModLoader's own Twinsanity mod list — real field patches, not invented ones. See each mod's description for exactly what it does.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
+            ForEach(applicableGameplayMods, id: \.mod.id) { entry in
+                Toggle(isOn: Binding(
+                    get: { enabledGameplayMods.contains(entry.mod.id) },
+                    set: { isOn in
+                        if isOn { enabledGameplayMods.insert(entry.mod.id) } else { enabledGameplayMods.remove(entry.mod.id) }
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text(entry.mod.title).font(.callout)
+                            Text("(\(entry.eligibleCount) placement\(entry.eligibleCount == 1 ? "" : "s"))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(entry.mod.summary).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(entry.eligibleCount == 0)
+                .padding(.horizontal)
+            }
+        }
+        .padding(.bottom, 8)
+    }
+
+    /// Every byte-range edit the currently-enabled Gameplay Mods produce —
+    /// one `GameplayMod.patch` call per matching instance, translated from
+    /// sparse element indices to absolute file offsets via the offsets
+    /// `WorldPlacementParser.parseInstance` captured for exactly this
+    /// purpose.
+    private var gameplayModEdits: [(node: ChunkNode, absoluteOffset: Int, encoded: Data)] {
+        guard !enabledGameplayMods.isEmpty else { return [] }
+        var edits: [(node: ChunkNode, absoluteOffset: Int, encoded: Data)] = []
+        for entry in instanceMarkers {
+            for mod in GameplayModCatalog.allMods where enabledGameplayMods.contains(mod.id) {
+                guard mod.matchesObjectIDs.contains(entry.instance.objectID),
+                      let patch = mod.patch(entry.instance) else { continue }
+                for (index, value) in patch.floatListElements {
+                    let offset = entry.node.fileOffset + entry.instance.unknownFloatListFileOffset + index * 4
+                    edits.append((entry.node, offset, WorldPlacementWriter.writeInstanceUnknownFloatElement(value)))
+                }
+                for (index, value) in patch.uint32ListElements {
+                    let offset = entry.node.fileOffset + entry.instance.unknownUInt32ListFileOffset + index * 4
+                    edits.append((entry.node, offset, WorldPlacementWriter.writeInstanceUnknownUInt32Element(value)))
+                }
+                for (index, value) in patch.uint32List2Elements {
+                    let offset = entry.node.fileOffset + entry.instance.unknownUInt32List2FileOffset + index * 4
+                    edits.append((entry.node, offset, WorldPlacementWriter.writeInstanceUnknownUInt32Element(value)))
+                }
+                if let flags = patch.flags {
+                    let offset = entry.node.fileOffset + entry.instance.flagsFileOffset
+                    edits.append((entry.node, offset, WorldPlacementWriter.writeInstanceFlags(flags)))
+                }
+            }
+        }
+        return edits
+    }
+
     // MARK: - Trigger Presets
 
     /// Every group of 2+ triggers that currently share the exact same
@@ -183,7 +270,7 @@ struct RecipeBookView: View {
     }
 
     private var footer: some View {
-        let total = pendingSwaps.count + pendingTriggerSwaps.count
+        let total = pendingSwaps.count + pendingTriggerSwaps.count + enabledGameplayMods.count
         return HStack {
             Text(total == 0 ? "No changes queued." : "\(total) change(s) queued.")
                 .font(.caption)
@@ -206,6 +293,7 @@ struct RecipeBookView: View {
             let encoded = WorldPlacementWriter.writeTriggerArguments(newArgs.0, newArgs.1, newArgs.2, newArgs.3)
             return (entry.node, entry.node.fileOffset + entry.trigger.argsFileOffset, encoded)
         }
+        edits += gameplayModEdits
         guard !edits.isEmpty, let patchedBytes = workspace.patchedFileBytes(applyingAbsoluteByteRangePatches: edits) else { return }
         guard let url = ExportPanel.chooseSaveLocation(
             suggestedName: "\(workspace.originalFileName(for: referenceNode) ?? "chunk")_recipe.rm2",
@@ -216,6 +304,7 @@ struct RecipeBookView: View {
             workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent) with \(edits.count) change(s)."
             pendingSwaps.removeAll()
             pendingTriggerSwaps.removeAll()
+            enabledGameplayMods.removeAll()
             dismiss()
         } catch {
             workspace.lastError = "Save failed: \(error)"

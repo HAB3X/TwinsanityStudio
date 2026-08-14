@@ -57,6 +57,19 @@ public struct PlacedInstance: Sendable, Identifiable {
     /// bytes later), for the "Instance Flags" checkbox editor
     /// (`WorldPlacementWriter.writeInstanceFlags`).
     public var flagsFileOffset: Int
+    /// Byte offset of `unknownUInt32List[0]` (`UnkI321[0]`), relative to
+    /// this `Instance` record's own start — same capture point/reasoning
+    /// as `objectIDFileOffset`. Lets "Gameplay Mods" (verified,
+    /// CrateModLoader-sourced patches — see `GameplayModCatalog`) patch a
+    /// single element of this list without re-encoding the whole
+    /// variable-length record.
+    public var unknownUInt32ListFileOffset: Int
+    /// Byte offset of `unknownFloatList[0]` (`UnkI322[0]`) — same
+    /// reasoning as `unknownUInt32ListFileOffset`.
+    public var unknownFloatListFileOffset: Int
+    /// Byte offset of `unknownUInt32List2[0]` (`UnkI323[0]`) — same
+    /// reasoning as `unknownUInt32ListFileOffset`.
+    public var unknownUInt32List2FileOffset: Int
 
     public init(
         id: UInt32,
@@ -74,10 +87,16 @@ public struct PlacedInstance: Sendable, Identifiable {
         unknownFloatList: [Float],
         unknownUInt32List2: [UInt32],
         objectIDFileOffset: Int = 0,
-        flagsFileOffset: Int = 0
+        flagsFileOffset: Int = 0,
+        unknownUInt32ListFileOffset: Int = 0,
+        unknownFloatListFileOffset: Int = 0,
+        unknownUInt32List2FileOffset: Int = 0
     ) {
         self.objectIDFileOffset = objectIDFileOffset
         self.flagsFileOffset = flagsFileOffset
+        self.unknownUInt32ListFileOffset = unknownUInt32ListFileOffset
+        self.unknownFloatListFileOffset = unknownFloatListFileOffset
+        self.unknownUInt32List2FileOffset = unknownUInt32List2FileOffset
         self.id = id
         self.position = position
         self.rotationRaw = rotationRaw

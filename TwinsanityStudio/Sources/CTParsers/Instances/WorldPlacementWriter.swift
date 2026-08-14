@@ -196,6 +196,28 @@ public enum WorldPlacementWriter {
         return writer.data
     }
 
+    /// Encodes a single element of `Instance.unknownFloatList` (`UnkI322`)
+    /// back to its on-disk 4-byte form — "Gameplay Mods" (see
+    /// `GameplayModCatalog`) write-back, patched at
+    /// `PlacedInstance.unknownFloatListFileOffset + index * 4`. Never
+    /// changes the record's size (one `Float32` in, one out).
+    public static func writeInstanceUnknownFloatElement(_ value: Float) -> Data {
+        var writer = BinaryWriter()
+        writer.writeFloat32(value)
+        return writer.data
+    }
+
+    /// Encodes a single element of `Instance.unknownUInt32List`/
+    /// `unknownUInt32List2` (`UnkI321`/`UnkI323`) back to its on-disk
+    /// 4-byte form — same reasoning as `writeInstanceUnknownFloatElement`,
+    /// patched at `unknownUInt32ListFileOffset`/`unknownUInt32List2FileOffset
+    /// + index * 4`.
+    public static func writeInstanceUnknownUInt32Element(_ value: UInt32) -> Data {
+        var writer = BinaryWriter()
+        writer.writeUInt32(value)
+        return writer.data
+    }
+
     public static func writeTriggerOrCameraPrefix(header: UInt32, enabledMask: UInt32, someFloat: Float, rotationQuaternion: SIMD4<Float>, position: SIMD4<Float>, size: SIMD4<Float>) -> Data {
         var writer = BinaryWriter()
         writer.writeUInt32(header)
