@@ -1,4 +1,5 @@
 import XCTest
+import CTModels
 @testable import CTExport
 
 final class CrateArchiveManagerTests: XCTestCase {
@@ -117,5 +118,51 @@ final class CrateArchiveManagerTests: XCTestCase {
         let entries = try CrateArchiveManager.listEntries(in: crateURL)
         XCTAssertEqual(CrateArchiveManager.filesInLayer(1, entries: entries), [])
         XCTAssertEqual(CrateArchiveManager.filesInLayer(2, entries: entries), ["b.txt"])
+    }
+
+    // MARK: - Nested crates (modcrateinfo.txt not at the zip root)
+
+    func testNestedCrateOffsetsManifestLayerAndExtractLookups() throws {
+        let stageDir = tempDir.appendingPathComponent("stage")
+        let wrapperDir = stageDir.appendingPathComponent("MyMod")
+        try FileManager.default.createDirectory(at: wrapperDir.appendingPathComponent("layer0/Wumpa"), withIntermediateDirectories: true)
+        try "!comment\nName=Nested Mod\nVersion=1.0\n"
+            .write(to: wrapperDir.appendingPathComponent("modcrateinfo.txt"), atomically: true, encoding: .utf8)
+        try Data("nested contents".utf8).write(to: wrapperDir.appendingPathComponent("layer0/Wumpa/fruit.txt"))
+
+        let crateURL = tempDir.appendingPathComponent("nested.crate")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        process.currentDirectoryURL = stageDir
+        process.arguments = ["-r", "-X", "-q", crateURL.path, "."]
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+
+        let manifest = try CrateArchiveManager.readManifest(from: crateURL)
+        XCTAssertEqual(manifest.name, "Nested Mod")
+        XCTAssertEqual(manifest.nestedPath, "MyMod/")
+        XCTAssertEqual(manifest.layerIndices, [0])
+
+        let entries = try CrateArchiveManager.listEntries(in: crateURL)
+        XCTAssertEqual(CrateArchiveManager.filesInLayer(0, entries: entries, nestedPath: manifest.nestedPath), ["Wumpa/fruit.txt"])
+
+        let destination = tempDir.appendingPathComponent("nested-extracted")
+        try CrateArchiveManager.extractLayer(0, from: crateURL, to: destination, nestedPath: manifest.nestedPath)
+        let contents = try Data(contentsOf: destination.appendingPathComponent("Wumpa/fruit.txt"))
+        XCTAssertEqual(contents, Data("nested contents".utf8))
+    }
+
+    // MARK: - Region gating
+
+    func testDeclaredRegionParsesFromSettingsKey() {
+        let withRegion = ModManifest(name: "x", description: "", author: "", version: "1.0", targetGame: "", modLoaderVersion: "", layerIndices: [], settings: ["GameRegion": "PAL"], hasIcon: false)
+        XCTAssertEqual(withRegion.declaredRegion, .pal)
+
+        let withoutRegion = ModManifest(name: "x", description: "", author: "", version: "1.0", targetGame: "", modLoaderVersion: "", layerIndices: [], settings: [:], hasIcon: false)
+        XCTAssertNil(withoutRegion.declaredRegion)
+
+        let unrecognized = ModManifest(name: "x", description: "", author: "", version: "1.0", targetGame: "", modLoaderVersion: "", layerIndices: [], settings: ["GameRegion": "Mars"], hasIcon: false)
+        XCTAssertNil(unrecognized.declaredRegion)
     }
 }

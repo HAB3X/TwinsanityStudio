@@ -230,6 +230,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $workspace.isModCrateHubPresented) {
             ModCrateInspectorView()
+                .environmentObject(workspace)
         }
         .sheet(item: $workspace.hexViewerNode) { node in
             if let bytes = workspace.rawBytes(for: node) {

@@ -19,6 +19,10 @@ import CTExport
 /// have.
 struct ModCrateInspectorView: View {
     @Environment(\.dismiss) private var dismiss
+    /// Needed for "Crate Region Gating" (`ModManifest.declaredRegion`
+    /// compared against `workspace.detectedRegion`) — every other hub view
+    /// takes this the same way.
+    @EnvironmentObject private var workspace: WorkspaceViewModel
 
     private struct LoadedCrate: Identifiable {
         let id = UUID()
@@ -115,6 +119,9 @@ struct ModCrateInspectorView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     manifestSection(crate)
+                    if !conflicts.isEmpty {
+                        conflictsSection
+                    }
                     ForEach(crate.manifest.layerIndices, id: \.self) { layerIndex in
                         layerSection(crate, layerIndex: layerIndex)
                     }
@@ -143,6 +150,11 @@ struct ModCrateInspectorView: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+            if let mismatch = regionMismatchWarning(for: crate) {
+                Label(mismatch, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             if !crate.manifest.settings.isEmpty {
                 DisclosureGroup("Settings (\(crate.manifest.settings.count))") {
                     ForEach(crate.manifest.settings.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
@@ -161,8 +173,59 @@ struct ModCrateInspectorView: View {
         .cornerRadius(12)
     }
 
+    /// "Crate Region Gating": a real, non-blocking heads-up when the crate
+    /// declares a region (`ModManifest.declaredRegion`) that doesn't match
+    /// whatever region this workspace last detected off a mounted disc's
+    /// real `SYSTEM.CNF` — never invented, `nil` on either side just means
+    /// "nothing to compare," not a silent assumption of compatibility.
+    private func regionMismatchWarning(for crate: LoadedCrate) -> String? {
+        guard let declared = crate.manifest.declaredRegion,
+              let detected = workspace.detectedRegion?.region,
+              detected != .unknown, declared != detected
+        else { return nil }
+        return "Declared for \(declared.displayName) — this workspace's currently detected disc is \(detected.displayName)."
+    }
+
+    /// "Mod Crate Conflict Detection": every `(layer, relative path)` pair
+    /// more than one currently-open crate touches — CrateModLoader itself
+    /// has no automated dependency/load-order solver (confirmed from its
+    /// real source: manual reordering only), so this matches that same
+    /// scope rather than fabricating one. Later crates in `loadedCrates`
+    /// order win when actually installed one-at-a-time the way
+    /// `extractLayer` does it — this just surfaces the collision up front.
+    private var conflicts: [(layerIndex: Int, relativePath: String, crateNames: [String])] {
+        var owners: [String: [String]] = [:]
+        for crate in loadedCrates {
+            for layerIndex in crate.manifest.layerIndices {
+                for file in CrateArchiveManager.filesInLayer(layerIndex, entries: crate.entries, nestedPath: crate.manifest.nestedPath) {
+                    owners["\(layerIndex)/\(file)", default: []].append(crate.manifest.name)
+                }
+            }
+        }
+        return owners.compactMap { key, names in
+            guard names.count > 1, let slashIndex = key.firstIndex(of: "/"), let layerIndex = Int(key[key.startIndex..<slashIndex]) else { return nil }
+            return (layerIndex: layerIndex, relativePath: String(key[key.index(after: slashIndex)...]), crateNames: names)
+        }.sorted { $0.relativePath < $1.relativePath }
+    }
+
+    private var conflictsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("\(conflicts.count) file conflict(s) across open crates", systemImage: "exclamationmark.triangle.fill")
+                .font(.headline)
+                .foregroundStyle(.orange)
+            ForEach(conflicts, id: \.relativePath) { conflict in
+                Text("layer\(conflict.layerIndex)/\(conflict.relativePath) — \(conflict.crateNames.joined(separator: ", "))")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding()
+        .background(Color.orange.opacity(0.1))
+        .cornerRadius(12)
+    }
+
     private func layerSection(_ crate: LoadedCrate, layerIndex: Int) -> some View {
-        let files = CrateArchiveManager.filesInLayer(layerIndex, entries: crate.entries)
+        let files = CrateArchiveManager.filesInLayer(layerIndex, entries: crate.entries, nestedPath: crate.manifest.nestedPath)
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label("layer\(layerIndex)", systemImage: "square.stack.3d.down.forward")
@@ -254,7 +317,7 @@ struct ModCrateInspectorView: View {
     private func extractLayer(_ layerIndex: Int, from crate: LoadedCrate) {
         guard let destination = ExportPanel.chooseFolder(message: "Choose where to extract layer\(layerIndex) — files land at the same relative paths a game install would see.") else { return }
         do {
-            try CrateArchiveManager.extractLayer(layerIndex, from: crate.url, to: destination)
+            try CrateArchiveManager.extractLayer(layerIndex, from: crate.url, to: destination, nestedPath: crate.manifest.nestedPath)
         } catch {
             errorMessage = error.localizedDescription
         }

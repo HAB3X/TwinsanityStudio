@@ -1,4 +1,5 @@
 import Foundation
+import CTModels
 
 /// The `modcrateinfo.txt`/`modcratesettings.txt` metadata read back out of a
 /// `.crate` mod package — the read-side counterpart to `CrateMetadata`,
@@ -21,6 +22,12 @@ public struct ModManifest: Equatable, Sendable {
     /// file isn't present in the archive.
     public var settings: [String: String]
     public var hasIcon: Bool
+    /// "Nested Crate Support": where inside the archive `modcrateinfo.txt`
+    /// actually sits (`CrateArchiveManager.manifestPrefix`) — `""` for the
+    /// overwhelmingly common case where it's at the zip root, or e.g.
+    /// `"MyMod/"` when the whole crate was zipped with a wrapping folder.
+    /// Every layer/asset lookup for this crate needs this same offset.
+    public var nestedPath: String
 
     public init(
         name: String,
@@ -31,7 +38,8 @@ public struct ModManifest: Equatable, Sendable {
         modLoaderVersion: String,
         layerIndices: [Int],
         settings: [String: String],
-        hasIcon: Bool
+        hasIcon: Bool,
+        nestedPath: String = ""
     ) {
         self.name = name
         self.description = description
@@ -42,5 +50,22 @@ public struct ModManifest: Equatable, Sendable {
         self.layerIndices = layerIndices
         self.settings = settings
         self.hasIcon = hasIcon
+        self.nestedPath = nestedPath
+    }
+
+    /// "Crate Region Gating": `CrateModLoader` lets a game opt into
+    /// checking a `GameRegion` settings key against the player's detected
+    /// disc region, deactivating a crate that doesn't match
+    /// (`Modder.ModCrateRegionCheck` — verified key *name* from the real
+    /// source). The *values* are a per-game convention CrateModLoader
+    /// leaves to each game's own region enum; this build has no verified
+    /// real Crash Twinsanity `.crate` using this key to check its exact
+    /// values against, so it defines them using this app's own
+    /// already-established `GameRegion` raw values (`"NTSC-U"`/`"PAL"`/
+    /// `"NTSC-J"`) — a crate author targeting this app specifically needs
+    /// to use these exact strings. `nil` when the crate declares no
+    /// region (the common case — most crates work everywhere).
+    public var declaredRegion: GameRegion? {
+        settings["GameRegion"].flatMap { GameRegion(rawValue: $0) }
     }
 }

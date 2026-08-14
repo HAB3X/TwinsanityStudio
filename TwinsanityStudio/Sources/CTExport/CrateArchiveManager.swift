@@ -32,40 +32,63 @@ public enum CrateArchiveManager {
         return output.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
     }
 
+    /// "Nested Crate Support": where inside the archive `modcrateinfo.txt`
+    /// actually sits — `""` when it's at the zip root (the overwhelmingly
+    /// common case CrateModLoader itself expects), or the prefix up to and
+    /// including the last `/` before it when the whole crate was zipped
+    /// with a wrapping folder (e.g. `"MyMod/"` for `MyMod/modcrateinfo.txt`).
+    /// `nil` when no `modcrateinfo.txt` exists anywhere in the archive —
+    /// this isn't a `.crate` at all. Matches CrateModLoader's own
+    /// `NestedPath` handling (`ModCrates.cs`).
+    static func manifestPrefix(in entries: [String]) -> String? {
+        if entries.contains("modcrateinfo.txt") { return "" }
+        for entry in entries where entry.hasSuffix("/modcrateinfo.txt") {
+            return String(entry.dropLast("modcrateinfo.txt".count))
+        }
+        return nil
+    }
+
     /// Parses the manifest without extracting the whole archive to disk —
     /// `modcrateinfo.txt`/`modcratesettings.txt` are pulled into a
     /// throwaway temp directory, and layer/icon presence is read straight
     /// off the real entry list rather than assumed.
     public static func readManifest(from crateURL: URL) throws -> ModManifest {
         let entries = try listEntries(in: crateURL)
-        guard entries.contains("modcrateinfo.txt") else { throw CrateArchiveError.manifestMissing }
+        guard let nestedPath = manifestPrefix(in: entries) else { throw CrateArchiveError.manifestMissing }
+        let infoMember = nestedPath + "modcrateinfo.txt"
+        let settingsMember = nestedPath + "modcratesettings.txt"
+        let iconMember = nestedPath + "modcrateicon.png"
 
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("TwinsanityStudioCrateRead-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        try runUnzip(["-o", "-q", crateURL.path, "modcrateinfo.txt", "-d", tempDir.path])
-        let infoText = try String(contentsOf: tempDir.appendingPathComponent("modcrateinfo.txt"), encoding: .utf8)
+        try runUnzip(["-o", "-q", crateURL.path, infoMember, "-d", tempDir.path])
+        let infoText = try String(contentsOf: tempDir.appendingPathComponent(infoMember), encoding: .utf8)
 
         var settingsText: String?
-        if entries.contains("modcratesettings.txt") {
-            try runUnzip(["-o", "-q", crateURL.path, "modcratesettings.txt", "-d", tempDir.path])
-            settingsText = try? String(contentsOf: tempDir.appendingPathComponent("modcratesettings.txt"), encoding: .utf8)
+        if entries.contains(settingsMember) {
+            try runUnzip(["-o", "-q", crateURL.path, settingsMember, "-d", tempDir.path])
+            settingsText = try? String(contentsOf: tempDir.appendingPathComponent(settingsMember), encoding: .utf8)
         }
 
         return ModManifestParser.parseInfo(
             infoText,
             settingsText: settingsText,
-            layerIndices: layerIndices(in: entries),
-            hasIcon: entries.contains("modcrateicon.png")
+            layerIndices: layerIndices(in: entries, nestedPath: nestedPath),
+            hasIcon: entries.contains(iconMember),
+            nestedPath: nestedPath
         )
     }
 
     /// The real files inside one `layer<N>/` folder, relative to that
-    /// layer's own root (directory entries excluded).
-    public static func filesInLayer(_ layerIndex: Int, entries: [String]) -> [String] {
-        let prefix = "layer\(layerIndex)/"
+    /// layer's own root (directory entries excluded). `nestedPath` offsets
+    /// the lookup the same way `readManifest` does — pass
+    /// `manifest.nestedPath`, not `""`, for a crate that isn't zipped at
+    /// its root.
+    public static func filesInLayer(_ layerIndex: Int, entries: [String], nestedPath: String = "") -> [String] {
+        let prefix = "\(nestedPath)layer\(layerIndex)/"
         return entries
             .filter { $0.hasPrefix(prefix) && !$0.hasSuffix("/") }
             .map { String($0.dropFirst(prefix.count)) }
@@ -73,11 +96,11 @@ public enum CrateArchiveManager {
     }
 
     /// Extracts one `layer<N>/` folder's contents into `destinationURL`,
-    /// stripping the `layer<N>/` prefix so the files land exactly where
-    /// `CrateModLoader.InstallLayerMod` would place them relative to a game
-    /// install directory.
-    public static func extractLayer(_ layerIndex: Int, from crateURL: URL, to destinationURL: URL) throws {
-        let prefix = "layer\(layerIndex)/"
+    /// stripping the `layer<N>/` prefix (and any `nestedPath` offset) so
+    /// the files land exactly where `CrateModLoader.InstallLayerMod` would
+    /// place them relative to a game install directory.
+    public static func extractLayer(_ layerIndex: Int, from crateURL: URL, to destinationURL: URL, nestedPath: String = "") throws {
+        let prefix = "\(nestedPath)layer\(layerIndex)/"
         let stagingDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("TwinsanityStudioCrateExtract-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
@@ -118,11 +141,12 @@ public enum CrateArchiveManager {
         try runUnzip(["-o", "-q", crateURL.path, "-d", destinationURL.path])
     }
 
-    private static func layerIndices(in entries: [String]) -> [Int] {
+    private static func layerIndices(in entries: [String], nestedPath: String) -> [Int] {
         var found = Set<Int>()
+        let layerPrefix = "\(nestedPath)layer"
         for entry in entries {
-            guard entry.hasPrefix("layer") else { continue }
-            let rest = entry.dropFirst("layer".count)
+            guard entry.hasPrefix(layerPrefix) else { continue }
+            let rest = entry.dropFirst(layerPrefix.count)
             guard let slashIndex = rest.firstIndex(of: "/") else { continue }
             if let index = Int(rest[rest.startIndex..<slashIndex]) {
                 found.insert(index)
