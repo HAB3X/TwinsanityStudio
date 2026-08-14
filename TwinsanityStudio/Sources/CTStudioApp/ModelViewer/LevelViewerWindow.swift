@@ -127,6 +127,13 @@ struct LevelViewerWindow: View {
 
     @State private var renderer: LevelViewerRenderer?
     @State private var selectedIndex: Int?
+    /// "Collapsible Sidebar Sections" (QoL): every list-heavy panel below
+    /// starts collapsed — a real level's object count runs into the
+    /// hundreds, and previously there was no way to reach the panels
+    /// beneath it without scrolling straight past all of them first.
+    @State private var isObjectListExpanded = false
+    @State private var isLevelEventsExpanded = false
+    @State private var isAIPathsExpanded = false
     @State private var viewMode: LevelViewMode = .populated
     @State private var layerVisibility: Set<SceneLayer> = Set(SceneLayer.allCases)
     @State private var positionX: String = ""
@@ -327,6 +334,11 @@ struct LevelViewerWindow: View {
                     renderer?.pendingPlacementObjectID = objectID
                 }
 
+                if !context.chunkLinks.isEmpty {
+                    Divider()
+                    chunkLinksPanel
+                }
+
                 Form {
                     LabeledContent("Placements in tree", value: "\(context.scenery.placements.count)")
                     LabeledContent("Scenery resolved", value: "\(context.placements.count)")
@@ -371,11 +383,6 @@ struct LevelViewerWindow: View {
                 if !context.triggers.isEmpty || hasScriptedInstances {
                     Divider()
                     levelEventsPanel
-                }
-
-                if !context.chunkLinks.isEmpty {
-                    Divider()
-                    chunkLinksPanel
                 }
 
                 if !context.aiPositions.isEmpty || !context.aiPaths.isEmpty {
@@ -558,6 +565,7 @@ struct LevelViewerWindow: View {
     private func selectedObjectInspector(node: ChunkNode) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Selected Object").font(.headline)
+            selectedObjectIdentityHeader(node: node)
             switch node.payload {
             case .instance(let instance):
                 InstanceInspectorView(node: node, instance: instance)
@@ -575,6 +583,42 @@ struct LevelViewerWindow: View {
         }
     }
 
+    /// A clear "what is this, and what's it called" line above every
+    /// per-record-type inspector below — real object names come from
+    /// `DefaultObjectID.names` (the same verified id->name table the Forge
+    /// Palette already uses), never invented; a raw `objectID` shows on
+    /// its own only when this build has no name for it.
+    @ViewBuilder
+    private func selectedObjectIdentityHeader(node: ChunkNode) -> some View {
+        let identity: (icon: String, kind: String, name: String) = {
+            switch node.payload {
+            case .instance(let instance):
+                let name = DefaultObjectID.names[instance.objectID] ?? "Unnamed Object #\(instance.objectID)"
+                return ("cube.transparent.fill", "Actor / Prop Instance", name)
+            case .trigger(let trigger):
+                return ("square.dashed", "Trigger Volume", "Trigger #\(trigger.id)")
+            case .camera(let camera):
+                return ("video.fill", "Camera", "Camera #\(camera.id)")
+            case .aiPosition(let marker):
+                let typeName = marker.nodeType.map { "\($0)" } ?? "Unrecognized Type"
+                return ("figure.walk", "AI Waypoint", "Waypoint #\(marker.id) (\(typeName))")
+            default:
+                return ("questionmark.square.dashed", "Unknown Record", "—")
+            }
+        }()
+        HStack(spacing: 6) {
+            Image(systemName: identity.icon).foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(identity.name).font(.callout.bold())
+                Text(identity.kind).font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
     private var hasScriptedInstances: Bool {
         context.instanceMarkers.contains { $0.instance.scriptID != -1 }
     }
@@ -588,8 +632,7 @@ struct LevelViewerWindow: View {
     /// underlying object, which (via `orbitTarget` already following the
     /// current selection) snaps the camera to it.
     private var levelEventsPanel: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Chunk Events").font(.headline)
+        DisclosureGroup(isExpanded: $isLevelEventsExpanded) {
             Text("Factual listing of Trigger volumes and script-carrying Instances — this build doesn't decode script bytecode, so there's no plain-English description of what any of these actually do.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -610,6 +653,8 @@ struct LevelViewerWindow: View {
                     node: entry.node
                 )
             }
+        } label: {
+            Text("Chunk Events").font(.headline)
         }
     }
 
@@ -899,8 +944,7 @@ struct LevelViewerWindow: View {
     /// scene-layer overlay. `AIPosition` waypoints render in the viewport
     /// instead (the "AI Waypoints" scene layer).
     private var aiPathsPanel: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("AI Paths").font(.headline)
+        DisclosureGroup(isExpanded: $isAIPathsExpanded) {
             Text("Real AIPath records — 5 raw arguments each, no confirmed link to any AI Waypoint (the reference tool's own editor doesn't interpret these either).")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -909,13 +953,17 @@ struct LevelViewerWindow: View {
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
+        } label: {
+            Text("AI Paths (\(context.aiPaths.count))").font(.headline)
         }
     }
 
+    /// Collapsed by default — a real level's object list runs into the
+    /// hundreds, and a scene this size used to mean scrolling straight
+    /// past everything below it just to reach the other sidebar panels.
     @ViewBuilder
     private var objectList: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Objects (\(renderer?.objectCount ?? 0))").font(.headline)
+        DisclosureGroup(isExpanded: $isObjectListExpanded) {
             ForEach(renderer?.objectSummaries ?? [], id: \.index) { summary in
                 Button {
                     select(summary.index)
@@ -933,6 +981,8 @@ struct LevelViewerWindow: View {
                 }
                 .buttonStyle(.plain)
             }
+        } label: {
+            Text("Objects (\(renderer?.objectCount ?? 0))").font(.headline)
         }
     }
 
@@ -1169,10 +1219,10 @@ private struct LevelAudioPanel: View {
     @State private var playingNodeID: UUID?
     @State private var player: AVAudioPlayer?
     @State private var playerDelegate: PlaybackEndDelegate?
+    @State private var isExpanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Chunk Audio").font(.headline)
+        DisclosureGroup(isExpanded: $isExpanded) {
             Text("Sound effects in this file (\(sounds.count)) — not categorized as BGM/ambient, since nothing in the decoded data distinguishes those roles.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -1194,6 +1244,8 @@ private struct LevelAudioPanel: View {
                     Spacer()
                 }
             }
+        } label: {
+            Text("Chunk Audio (\(sounds.count))").font(.headline)
         }
         .onDisappear { player?.stop() }
     }
