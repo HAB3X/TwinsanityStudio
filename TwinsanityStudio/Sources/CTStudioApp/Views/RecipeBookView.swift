@@ -32,6 +32,9 @@ struct RecipeBookView: View {
     /// `Instance`). Defaults to `[]` so every existing call site (which
     /// predates this) keeps compiling unchanged.
     var triggers: [(node: ChunkNode, trigger: TriggerVolume)] = []
+    /// Backs the "Unlocked Camera" mod — real placed `Camera` records this
+    /// chunk contains. Defaults to `[]` for the same reason `triggers` does.
+    var cameras: [(node: ChunkNode, camera: PlacedCamera)] = []
     let referenceNode: ChunkNode
 
     /// `node.id` -> chosen replacement `objectID` (only entries that
@@ -44,6 +47,10 @@ struct RecipeBookView: View {
     /// "Gameplay Mods" (verified, CrateModLoader-sourced toggles — see
     /// `GameplayModCatalog`) — which mod IDs are currently checked on.
     @State private var enabledGameplayMods: Set<String> = []
+    /// "Unlocked Camera" (CrateModLoader's `TS_UnlockedCamera`) — real
+    /// enabled/disabled placed-Camera IDs the user has toggled away from
+    /// their on-disk state.
+    @State private var pendingCameraDisables: Set<UUID> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -60,7 +67,7 @@ struct RecipeBookView: View {
                 // bounded `ScrollView` rather than nesting a `List` inside
                 // one, which fights over scroll ownership.
                 if !instanceMarkers.isEmpty { list }
-                if !applicableGameplayMods.isEmpty {
+                if !applicableGameplayMods.isEmpty || !enabledCameras.isEmpty {
                     Divider()
                     ScrollView { gameplayModsSection }
                         .frame(maxHeight: 200)
@@ -178,8 +185,57 @@ struct RecipeBookView: View {
                 .disabled(entry.eligibleCount == 0)
                 .padding(.horizontal)
             }
+            if !enabledCameras.isEmpty {
+                Toggle(isOn: Binding(
+                    get: { !pendingCameraDisables.isEmpty },
+                    set: { isOn in
+                        pendingCameraDisables = isOn ? Set(enabledCameras.map(\.node.id)) : []
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text("Unlocked Camera").font(.callout)
+                            Text("(\(enabledCameras.count) placement\(enabledCameras.count == 1 ? "" : "s"))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text("Disables every enabled placed Camera volume in this chunk (CrateModLoader's TS_UnlockedCamera), freeing the view from fixed camera locks.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal)
+            }
         }
         .padding(.bottom, 8)
+    }
+
+    /// Placed cameras whose real, on-disk `enabledMask` is nonzero — the
+    /// only ones "Unlocked Camera" has anything to do.
+    private var enabledCameras: [(node: ChunkNode, camera: PlacedCamera)] {
+        cameras.filter { $0.camera.enabledMask != 0 }
+    }
+
+    /// Byte-range edits for the "Unlocked Camera" toggle — re-encodes each
+    /// disabled camera's full, real 60-byte `Trigger`/`Camera`-shared
+    /// prefix (`writeTriggerOrCameraPrefix`) with every field unchanged
+    /// except `enabledMask`, patched at the record's own start (this
+    /// prefix is always the first 60 bytes of a `Camera` record).
+    private var cameraDisableEdits: [(node: ChunkNode, absoluteOffset: Int, encoded: Data)] {
+        guard !pendingCameraDisables.isEmpty else { return [] }
+        return cameras.compactMap { entry in
+            guard pendingCameraDisables.contains(entry.node.id) else { return nil }
+            let cam = entry.camera
+            let encoded = WorldPlacementWriter.writeTriggerOrCameraPrefix(
+                header: cam.header,
+                enabledMask: 0,
+                someFloat: cam.someFloat,
+                rotationQuaternion: cam.rotationQuaternion,
+                position: cam.position,
+                size: cam.size
+            )
+            return (entry.node, entry.node.fileOffset, encoded)
+        }
     }
 
     /// Every byte-range edit the currently-enabled Gameplay Mods produce —
@@ -270,7 +326,7 @@ struct RecipeBookView: View {
     }
 
     private var footer: some View {
-        let total = pendingSwaps.count + pendingTriggerSwaps.count + enabledGameplayMods.count
+        let total = pendingSwaps.count + pendingTriggerSwaps.count + enabledGameplayMods.count + (pendingCameraDisables.isEmpty ? 0 : 1)
         return HStack {
             Text(total == 0 ? "No changes queued." : "\(total) change(s) queued.")
                 .font(.caption)
@@ -294,6 +350,7 @@ struct RecipeBookView: View {
             return (entry.node, entry.node.fileOffset + entry.trigger.argsFileOffset, encoded)
         }
         edits += gameplayModEdits
+        edits += cameraDisableEdits
         guard !edits.isEmpty, let patchedBytes = workspace.patchedFileBytes(applyingAbsoluteByteRangePatches: edits) else { return }
         guard let url = ExportPanel.chooseSaveLocation(
             suggestedName: "\(workspace.originalFileName(for: referenceNode) ?? "chunk")_recipe.rm2",
@@ -305,6 +362,7 @@ struct RecipeBookView: View {
             pendingSwaps.removeAll()
             pendingTriggerSwaps.removeAll()
             enabledGameplayMods.removeAll()
+            pendingCameraDisables.removeAll()
             dismiss()
         } catch {
             workspace.lastError = "Save failed: \(error)"

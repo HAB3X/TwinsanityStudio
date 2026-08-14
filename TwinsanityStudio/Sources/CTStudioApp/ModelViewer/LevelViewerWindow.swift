@@ -431,8 +431,8 @@ struct LevelViewerWindow: View {
             } label: {
                 Label("Recipe Book…", systemImage: "wand.and.stars")
             }
-            .disabled(context.instanceMarkers.isEmpty && context.triggers.count < 2)
-            .help("Reassign which real object each placement resolves to, or batch-edit triggers that share the same arguments.")
+            .disabled(context.instanceMarkers.isEmpty && context.triggers.count < 2 && context.cameras.isEmpty)
+            .help("Reassign which real object each placement resolves to, batch-edit triggers that share the same arguments, apply verified Gameplay Mods, or unlock placed cameras.")
         }
         .sheet(isPresented: $isRecipeBookPresented) {
             if let referenceNode = referenceNodeForFileOps {
@@ -440,6 +440,7 @@ struct LevelViewerWindow: View {
                     instanceMarkers: context.instanceMarkers,
                     resolvedInstanceAssets: context.resolvedInstanceAssets,
                     triggers: context.triggers,
+                    cameras: context.cameras,
                     referenceNode: referenceNode
                 )
                 .environmentObject(workspace)
