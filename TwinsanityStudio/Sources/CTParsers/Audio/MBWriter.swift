@@ -7,27 +7,70 @@ import CTModels
 /// tool's real, working `MHWorker.SaveMB` function, verified against real
 /// game data to ensure identical byte layouts.
 ///
-/// This enables complete round-trip support: parse → modify → rebuild
-/// music and sound banks for game modding and custom audio replacement.
+/// `.mono` entries are genuinely re-encoded from `entry.sound`'s PCM.
+/// `.stereo` entries are written back verbatim from `entry.rawData` — this
+/// build has no stereo ADPCM demux/re-encode (see `SoundBankEntry.sound`'s
+/// doc comment), so a bank that merely *contains* untouched stereo slots
+/// can still round-trip honestly, by copying bytes rather than fabricating
+/// or discarding them.
 public enum MBWriter {
+    /// Real, fixed size of the MSVp header written before every `.mono`
+    /// entry's ADPCM payload: magic(4) + version(4) + unused(4) + size(4)
+    /// + sampleRate(4) + 3×unused(4 each=12) + name(16) = 48.
+    private static let monoHeaderSize: UInt32 = 48
+
     /// Encodes sound bank entries into `.MB` binary format.
     ///
     /// - Parameters:
-    ///   - entries: The sound bank entries to encode (must include audio data for mono/stereo)
+    ///   - entries: The sound bank entries to encode (`.mono` needs `sound`; `.stereo` needs `rawData`)
     ///   - interleave: Stereo interleave block size (0 for mono-only banks)
-    /// - Returns: Binary `.MB` Data ready to be written to disk
-    /// - Throws: EncodingError if entries cannot be properly encoded or audio data is missing
-    public static func encode(_ entries: [SoundBankEntry], interleave: UInt32 = 0) throws -> Data {
+    /// - Returns: The binary `.MB` `Data` ready to be written to disk, and a corrected copy of
+    ///   `entries` whose `offset`/`size` reflect the *real* layout just written — not necessarily
+    ///   what the input entries said, since a re-encoded `.mono` entry's actual ADPCM byte count
+    ///   can differ from its pre-edit `size`. Pass these corrected entries (not the originals) to
+    ///   `MHWriter.encode` — the `.MH` file's own offset/size table must describe this exact
+    ///   `.MB` output, or every entry after the first mismatch points at the wrong place.
+    /// - Throws: `MBWriterError.missingAudioData` if a `.mono` entry has no `sound`, or a `.stereo` entry has no `rawData`
+    public static func encode(_ entries: [SoundBankEntry], interleave: UInt32 = 0) throws -> (data: Data, entries: [SoundBankEntry]) {
         var data = Data()
+        var correctedEntries: [SoundBankEntry] = []
+        correctedEntries.reserveCapacity(entries.count)
 
         // Track current offset for MH cross-reference
         var currentOffset: UInt32 = 0
 
         for entry in entries {
             let kind = SoundBankEntryKind(rawValue: entry.rawKind)
+            let entryStartOffset = currentOffset
 
             switch kind {
-            case .mono, .stereo:
+            case .stereo:
+                // No MSVp header for stereo — raw interleaved ADPCM sits
+                // directly at `offset` (see `SoundBankParser`'s own layout
+                // doc comment). This build has no stereo demux/re-encode
+                // (see `SoundBankEntry.sound`'s doc comment), so the only
+                // honest way to write a stereo slot back is verbatim, from
+                // the real bytes `SoundBankParser` captured into
+                // `rawData` — never synthesized.
+                guard let rawData = entry.rawData else {
+                    throw MBWriterError.missingAudioData(index: entry.index)
+                }
+                data.append(rawData)
+                currentOffset += UInt32(rawData.count)
+                if interleave > 0 {
+                    let paddedSize = ((rawData.count + Int(interleave) - 1) / Int(interleave)) * Int(interleave)
+                    let paddingNeeded = paddedSize - rawData.count
+                    if paddingNeeded > 0 {
+                        data.append(contentsOf: [UInt8](repeating: 0, count: paddingNeeded))
+                        currentOffset += UInt32(paddingNeeded)
+                    }
+                }
+                var correctedStereo = entry
+                correctedStereo.offset = entryStartOffset
+                correctedStereo.size = UInt32(rawData.count) // real payload size, not counting alignment padding
+                correctedEntries.append(correctedStereo)
+
+            case .mono:
                 guard let sound = entry.sound else {
                     throw MBWriterError.missingAudioData(index: entry.index)
                 }
@@ -90,26 +133,30 @@ public enum MBWriter {
 
                 data.append(contentsOf: adpcmData)
 
-                // Update offset for next entry
-                currentOffset += UInt32(adpcmData.count)
+                // Update offset for next entry — the fixed 48-byte MSVp
+                // header plus the real ADPCM payload. Missing the header
+                // bytes here was a real, previously-silent bug: `data`
+                // itself was always correct (it really does append the
+                // header), but `currentOffset` — the only source of the
+                // "real layout" this function now returns for `MHWriter`
+                // to consume — was undercounting every entry by 48 bytes,
+                // which would have desynced every offset after the first.
+                currentOffset += monoHeaderSize + UInt32(adpcmData.count)
 
-                // Add padding if needed for stereo interleave
-                if kind == .stereo && interleave > 0 {
-                    let paddedSize = ((Int(adpcmData.count) + Int(interleave) - 1) / Int(interleave)) * Int(interleave)
-                    let paddingNeeded = paddedSize - Int(adpcmData.count)
-                    if paddingNeeded > 0 {
-                        data.append(contentsOf: [UInt8](repeating: 0, count: paddingNeeded))
-                        currentOffset += UInt32(paddingNeeded)
-                    }
-                }
+                var correctedMono = entry
+                correctedMono.offset = entryStartOffset
+                correctedMono.size = UInt32(adpcmData.count)
+                correctedEntries.append(correctedMono)
 
             case .reserved, .none:
-                // Reserved entries have no data in .MB file
-                continue
+                // Reserved entries have no data in .MB file — passed
+                // through unchanged so the corrected array still has one
+                // entry per input entry, same order.
+                correctedEntries.append(entry)
             }
         }
 
-        return data
+        return (data, correctedEntries)
     }
 }
 
@@ -122,7 +169,7 @@ public enum MBWriterError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .missingAudioData(let index):
-            return "Entry at index \(index) is mono/stereo but has no audio data to encode"
+            return "Entry at index \(index) is mono/stereo but has no sound/rawData to encode"
         case .audioEncodingFailed:
             return "Failed to encode PCM audio to ADPCM format"
         case .invalidInterleave:

@@ -7,18 +7,33 @@ import CTCore
 /// having a recognizable chunk file extension.
 public protocol DiscEntrySource: Sendable {
     /// The disc entry (e.g. an `ISO9660Entry`).
-    var entry: Any { get }
+    var entry: any Sendable { get }
     /// The logical sector source containing the entry's data.
-    var source: Any { get }
+    var source: any Sendable { get }
 }
 
 /// A simple holder for disc entry and source that conforms to DiscEntrySource.
 /// Used to store disc-mounted file information in `WorkspaceViewModel.discEntryByNodeID`.
+///
+/// `entry`/`source` are typed `any Sendable` rather than plain `Any` —
+/// `CTModels` can't import `CTParsers` (module layering: `ChunkNode.
+/// prunedOfRawContent` needs to accept a registry of these without
+/// knowing the concrete `ISO9660Entry`/`LogicalSectorSource` types), so
+/// some form of type erasure at this boundary is unavoidable. `any
+/// Sendable` keeps that erasure while still making the `Sendable`
+/// conformance above real and compiler-checked: a plain `Any` stored
+/// property makes a `Sendable` struct's own conformance unverifiable (the
+/// compiler can't prove an arbitrary boxed value is safe to send across
+/// an isolation boundary), where `any Sendable` can only ever box a value
+/// whose own type already proved it. Both real payloads used today
+/// (`ISO9660Entry`, `any LogicalSectorSource`) are already `Sendable`, so
+/// this changes no behavior at any call site — `holder.entry as?
+/// ISO9660Entry` downcasts the same way from either.
 public struct DiscEntryHolder: DiscEntrySource {
-    public let entry: Any
-    public let source: Any
+    public let entry: any Sendable
+    public let source: any Sendable
 
-    public init(entry: Any, source: Any) {
+    public init(entry: any Sendable, source: any Sendable) {
         self.entry = entry
         self.source = source
     }

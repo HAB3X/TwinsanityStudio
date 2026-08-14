@@ -33,8 +33,18 @@ public struct SoundBankEntry: Sendable, Identifiable {
     /// isn't ported, so a stereo slot's real existence/metadata is shown
     /// honestly without fabricating audio for it).
     public var sound: SoundEffectAsset?
+    /// The real, untouched on-disk bytes at `[offset, offset + size)` in
+    /// the owning `.MB` file — captured specifically for `.stereo` entries
+    /// (whose audio this build can't decode into `sound`, so it can't
+    /// re-encode one either). Lets `MBWriter` honestly round-trip a bank
+    /// that merely *contains* stereo slots, by writing this back verbatim
+    /// instead of needing a real encode path — never used to synthesize
+    /// or interpret audio, only to copy bytes this build never understood
+    /// in the first place. `nil` for `.mono`/`.reserved` entries, which
+    /// don't need it (`.mono` re-encodes for real via `sound`).
+    public var rawData: Data?
 
-    public init(index: Int, rawKind: UInt32, size: UInt32, offset: UInt32, sampleRateHz: UInt32, skip: UInt32, name: String?, sound: SoundEffectAsset?) {
+    public init(index: Int, rawKind: UInt32, size: UInt32, offset: UInt32, sampleRateHz: UInt32, skip: UInt32, name: String?, sound: SoundEffectAsset?, rawData: Data? = nil) {
         self.index = index
         self.rawKind = rawKind
         self.kind = SoundBankEntryKind(rawValue: rawKind)
@@ -44,6 +54,7 @@ public struct SoundBankEntry: Sendable, Identifiable {
         self.skip = skip
         self.name = name
         self.sound = sound
+        self.rawData = rawData
     }
 }
 

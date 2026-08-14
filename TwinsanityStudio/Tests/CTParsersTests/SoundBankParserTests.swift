@@ -77,6 +77,32 @@ final class SoundBankParserTests: XCTestCase {
         XCTAssertEqual(entry.sampleRateHz, 44100)
     }
 
+    /// A stereo entry's real, untouched on-disk bytes (raw interleaved
+    /// ADPCM directly at `offset` — no MSVp header, per this format's own
+    /// layout) must be captured into `rawData`, so `MBWriter` can round-trip
+    /// a bank containing it without needing to actually decode the audio.
+    func testStereoEntryCapturesRawBytesForRoundTrip() throws {
+        var mh = BinaryWriter()
+        mh.writeUInt32(1)
+        mh.writeUInt32(65536)
+        mh.writeUInt32(1) // type: stereo
+        mh.writeUInt32(8) // size
+        mh.writeUInt32(4) // offset
+        mh.writeUInt32(44100)
+        mh.writeUInt32(0)
+
+        var mb = BinaryWriter()
+        mb.writeBytes([0xAA, 0xBB, 0xCC, 0xDD]) // 4 bytes of unrelated leading data
+        let expectedRawBytes: [UInt8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]
+        mb.writeBytes(expectedRawBytes)
+
+        let bank = try SoundBankParser.parse(mhData: mh.data, mbData: mb.data, sourceLabel: "TEST")
+        let entry = try XCTUnwrap(bank.entries.first)
+        XCTAssertEqual(entry.kind, .stereo)
+        XCTAssertNil(entry.sound, "stereo audio itself must still not be fabricated/decoded")
+        XCTAssertEqual(entry.rawData.map(Array.init), expectedRawBytes)
+    }
+
     /// An offset that doesn't fit inside the `.MB` data (a real possibility
     /// this format allows for) must not crash the parse — the entry just
     /// comes back with no name/sound.

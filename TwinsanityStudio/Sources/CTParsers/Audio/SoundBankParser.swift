@@ -67,11 +67,28 @@ public enum SoundBankParser {
                 let (name, sampleRateHz, sound) = decodeMonoEntry(mbData: mbData, offset: offset, size: size, fallbackSampleRateHz: mhSampleRate)
                 entries.append(SoundBankEntry(index: index, rawKind: rawKind, size: size, offset: offset, sampleRateHz: sampleRateHz, skip: skip, name: name, sound: sound))
             case .stereo:
-                entries.append(SoundBankEntry(index: index, rawKind: rawKind, size: size, offset: offset, sampleRateHz: mhSampleRate, skip: skip, name: "Stereo", sound: nil))
+                // No MSVp header for stereo — raw interleaved ADPCM sits
+                // directly at `offset` (see this type's own layout doc
+                // comment). Captured verbatim (never demuxed/decoded) so
+                // `MBWriter` can round-trip a bank that merely *contains*
+                // untouched stereo slots — see `SoundBankEntry.rawData`.
+                let rawData = Self.rawBytes(in: mbData, offset: offset, size: size)
+                entries.append(SoundBankEntry(index: index, rawKind: rawKind, size: size, offset: offset, sampleRateHz: mhSampleRate, skip: skip, name: "Stereo", sound: nil, rawData: rawData))
             }
         }
 
         return SoundBankAsset(sourceLabel: sourceLabel, interleave: interleave, entries: entries)
+    }
+
+    /// `nil` if `[offset, offset + size)` doesn't actually fit inside
+    /// `mbData` — same "a bad slot doesn't crash the whole bank" posture
+    /// as `decodeMonoEntry`'s own bounds check.
+    private static func rawBytes(in mbData: Data, offset: UInt32, size: UInt32) -> Data? {
+        let start = Int(offset)
+        guard start >= 0, size > 0 else { return nil }
+        let end = start + Int(size)
+        guard start <= mbData.count, end <= mbData.count else { return nil }
+        return mbData.subdata(in: (mbData.startIndex + start)..<(mbData.startIndex + end))
     }
 
     /// `nil` name/sound (sample rate falls back to the `.MH` value) if the
