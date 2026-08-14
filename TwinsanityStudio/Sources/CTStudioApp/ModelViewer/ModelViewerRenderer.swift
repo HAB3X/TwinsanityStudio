@@ -402,6 +402,33 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     /// submesh(es) that use it" (see `ComponentVisibilityView`).
     var hiddenSubmeshIndices: Set<Int> = []
 
+    /// "Target Hardware Performance Profiler" (roadmap 9.4): the real
+    /// triangle count this frame actually draws — summed straight from
+    /// each currently-visible submesh's real index count (`indexCount / 3`,
+    /// since every submesh is drawn as a plain triangle list), not a
+    /// separate counter threaded through `encode(...)`. Derived, not
+    /// tracked, so it can never drift from what the render loop actually
+    /// does.
+    var visibleTriangleCount: Int {
+        submeshes.reduce(0) { hiddenSubmeshIndices.contains($1.originalIndex) ? $0 : $0 + $1.indexCount / 3 }
+    }
+
+    /// One draw call per visible submesh — `encode(...)`'s real draw loop,
+    /// mirrored here rather than counted inside it.
+    var visibleDrawCallCount: Int {
+        submeshes.reduce(0) { hiddenSubmeshIndices.contains($1.originalIndex) ? $0 : $0 + 1 }
+    }
+
+    /// The real GPU memory Metal itself reports for every buffer/texture
+    /// this asset currently has uploaded (`MTLResource.allocatedSize` —
+    /// the actual allocated size, not a computed estimate from vertex/
+    /// pixel counts that could drift from reality under padding/alignment
+    /// the GPU driver applies). Includes hidden submeshes too: their GPU
+    /// resources stay allocated even while not drawn.
+    var gpuMemoryBytes: Int {
+        submeshes.reduce(0) { $0 + $1.vertexBuffer.allocatedSize + $1.indexBuffer.allocatedSize + $1.texture.allocatedSize }
+    }
+
     /// Collision wireframe edges (blue), set when this renderer was built
     /// from a `CollisionMesh` rather than a `ResolvedModelAsset`. Drawn with
     /// the same line pipeline machinery as the skeleton overlay, just a

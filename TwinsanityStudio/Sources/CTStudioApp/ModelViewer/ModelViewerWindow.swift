@@ -29,6 +29,7 @@ struct ModelViewerWindow: View {
     @State private var hiddenSubmeshIndices: Set<Int> = []
     @State private var isShaderGraphEditorPresented = false
     @State private var isDependencyCrateSheetPresented = false
+    @State private var showHardwareProfiler = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -122,6 +123,15 @@ struct ModelViewerWindow: View {
                         .padding(6)
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6))
                         .padding(10)
+                    if showHardwareProfiler {
+                        HardwareProfilerHUDView(
+                            triangleCount: renderer.visibleTriangleCount,
+                            drawCallCount: renderer.visibleDrawCallCount,
+                            gpuMemoryBytes: renderer.gpuMemoryBytes
+                        )
+                        .padding(10)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -244,6 +254,14 @@ struct ModelViewerWindow: View {
                 .toggleStyle(.checkbox)
                 .disabled(isComputingOBB)
             Text("This tool's own computed oriented bounding box (Metal compute: parallel mean/covariance reduction + principal-axis fit) over this mesh's real vertex positions — not decoded game data, a real algorithm run on this asset's own geometry, tighter than a plain axis-aligned box for anything not already axis-aligned.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Divider()
+            Label("Hardware Profiler", systemImage: "speedometer").font(.subheadline.bold())
+            Toggle("Show Performance HUD", isOn: $showHardwareProfiler)
+                .toggleStyle(.checkbox)
+            Text("Real triangle/draw-call counts and real GPU memory usage for this asset, against the PS2 Graphics Synthesizer's and original Xbox's real, documented memory capacities.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 

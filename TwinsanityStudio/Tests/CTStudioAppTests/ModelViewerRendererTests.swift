@@ -300,6 +300,31 @@ final class ModelViewerRendererTests: XCTestCase {
         }
         return seen.count
     }
+
+    // MARK: - Hardware Performance Profiler (roadmap 9.4)
+
+    func testVisibleCountsMatchTheSingleTriangleAsset() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device available in this environment")
+        }
+        let renderer = try XCTUnwrap(ModelViewerRenderer(asset: makeTestAsset()))
+        XCTAssertEqual(renderer.visibleTriangleCount, 1)
+        XCTAssertEqual(renderer.visibleDrawCallCount, 1)
+        XCTAssertGreaterThan(renderer.gpuMemoryBytes, 0, "a real uploaded vertex/index buffer and texture must report nonzero allocated GPU memory")
+    }
+
+    func testHidingTheOnlySubmeshZeroesVisibleCountsButNotMemory() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device available in this environment")
+        }
+        let renderer = try XCTUnwrap(ModelViewerRenderer(asset: makeTestAsset()))
+        let memoryBeforeHiding = renderer.gpuMemoryBytes
+
+        renderer.hiddenSubmeshIndices = [0]
+        XCTAssertEqual(renderer.visibleTriangleCount, 0, "a hidden submesh must not count toward what's actually drawn")
+        XCTAssertEqual(renderer.visibleDrawCallCount, 0)
+        XCTAssertEqual(renderer.gpuMemoryBytes, memoryBeforeHiding, "hiding a submesh doesn't free its GPU resources, so memory usage must stay the same")
+    }
 }
 
 /// "Scene Preview Mode" (roadmap 7.1) — real oriented-box containment
