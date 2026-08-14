@@ -39,6 +39,18 @@ struct ModelViewerWindow: View {
     @State private var blendFrameB: Double = 0
     @State private var blendT: Double = 0.5
 
+    // MARK: - "Vertex Color & Lightmap Baking Suite" (roadmap 10.3)
+    @State private var isBaking = false
+    @State private var aoSampleCount: Double = 24
+    @State private var aoMaxDistance: Double = 2.0
+    @State private var aoStrength: Double = 1.0
+    @State private var lightAmbient: Double = 0.25
+    @State private var lightIntensity: Double = 1.0
+    /// Non-nil once a bake has been applied — the live-displayed geometry
+    /// (`displayedAsset`) swaps to this instead of the original `asset`.
+    /// Reset returns to `nil`, restoring the real, unmodified mesh.
+    @State private var bakedAsset: ResolvedModelAsset?
+
     var body: some View {
         HStack(spacing: 0) {
             viewportArea
@@ -207,6 +219,8 @@ struct ModelViewerWindow: View {
                     Divider()
                     blendSection
                 }
+                Divider()
+                vertexColorBakingSection
                 Divider()
                 exportSection
             }
@@ -454,6 +468,83 @@ struct ModelViewerWindow: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// "Vertex Color & Lightmap Baking Suite" (roadmap 10.3): bakes real
+    /// directional (Lambertian) shading and/or real ray-cast ambient
+    /// occlusion (`VertexColorBaker`) into this asset's own vertex colors,
+    /// live-previewed by swapping the renderer to a new
+    /// `ResolvedModelAsset` carrying the baked mesh. Runs off the main
+    /// thread — AO in particular is a real ray-triangle intersection test
+    /// per sample per vertex, not instant for a large mesh.
+    private var vertexColorBakingSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Vertex Color Baking", systemImage: "sun.max").font(.headline)
+
+            Text("Directional Light").font(.caption.bold())
+            LabeledContent("Ambient") { Slider(value: $lightAmbient, in: 0...1) }
+            LabeledContent("Intensity") { Slider(value: $lightIntensity, in: 0...3) }
+            Button("Bake Directional Light") { bakeDirectionalLight() }
+                .disabled(isBaking)
+
+            Divider()
+
+            Text("Ambient Occlusion").font(.caption.bold())
+            LabeledContent("Samples") { Slider(value: $aoSampleCount, in: 4...64, step: 4) }
+            LabeledContent("Max Distance") { Slider(value: $aoMaxDistance, in: 0.1...10) }
+            LabeledContent("Strength") { Slider(value: $aoStrength, in: 0...1) }
+            Button("Bake Ambient Occlusion") { bakeAmbientOcclusion() }
+                .disabled(isBaking)
+
+            if isBaking {
+                HStack { ProgressView().controlSize(.small); Text("Baking…").font(.caption).foregroundStyle(.secondary) }
+            }
+            if bakedAsset != nil {
+                Button("Reset to Original Colors") { resetBake() }
+            }
+
+            Text("Real, original bakes computed by this tool over its own already-decoded mesh data (standard Lambertian shading; hemisphere-sampled ray-cast occlusion, Möller–Trumbore) — not a recovery of the original game's own undecoded baking pipeline. Preview only until exported.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func bakeDirectionalLight() {
+        isBaking = true
+        let sourceMesh = bakedAsset?.mesh ?? asset.mesh
+        let ambient = Float(lightAmbient), intensity = Float(lightIntensity)
+        Task.detached(priority: .userInitiated) {
+            let baked = VertexColorBaker.bakeDirectionalLight(sourceMesh, lightDirection: SIMD3(-0.4, -1.0, -0.3), ambient: ambient, intensity: intensity)
+            await MainActor.run { applyBakedMesh(baked) }
+        }
+    }
+
+    private func bakeAmbientOcclusion() {
+        isBaking = true
+        let sourceMesh = bakedAsset?.mesh ?? asset.mesh
+        let samples = Int(aoSampleCount), maxDistance = Float(aoMaxDistance), strength = Float(aoStrength)
+        Task.detached(priority: .userInitiated) {
+            let baked = VertexColorBaker.bakeAmbientOcclusion(sourceMesh, sampleCount: samples, maxDistance: maxDistance, strength: strength)
+            await MainActor.run { applyBakedMesh(baked) }
+        }
+    }
+
+    @MainActor
+    private func applyBakedMesh(_ mesh: MeshAsset) {
+        var newAsset = bakedAsset ?? asset
+        newAsset.mesh = mesh
+        bakedAsset = newAsset
+        renderer = ModelViewerRenderer(asset: newAsset)
+        updateAnimationPose()
+        updateCollisionVolumeOverlay()
+        isBaking = false
+    }
+
+    private func resetBake() {
+        bakedAsset = nil
+        renderer = ModelViewerRenderer(asset: asset)
+        updateAnimationPose()
+        updateCollisionVolumeOverlay()
     }
 
     private var exportSection: some View {
