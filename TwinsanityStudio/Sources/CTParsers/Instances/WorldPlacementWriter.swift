@@ -218,6 +218,98 @@ public enum WorldPlacementWriter {
         return writer.data
     }
 
+    /// "Backend Requirement: safely inject this new record" (Part 4D),
+    /// extended to `Trigger` — a complete, brand-new `Trigger` record,
+    /// field order and defaults verified directly against `Trigger.cs`'s
+    /// own `Save()`/property-initializer values (`Header = 50`, `Enabled =
+    /// 1`, `SomeFloat = 0.3`, `Coords = [rot(0,0,0,1), pos(0,0,0,1),
+    /// size(1,1,1,1)]`, `SectionHead = 10`, empty `Instances`, `Arg1..4 =
+    /// 0`) — real defaults a freshly-`new Trigger()`'d record actually has,
+    /// not invented placeholder data. `position`/`size`/`rotationQuaternion`
+    /// are the only fields a caller has reason to set immediately (matching
+    /// where a click-to-place puts it), everything else uses the reference
+    /// default. No record ID — same reasoning as `writeNewInstance`, the ID
+    /// lives in the enclosing section's index-table entry.
+    public static func writeNewTrigger(position: SIMD4<Float>, size: SIMD4<Float> = SIMD4<Float>(1, 1, 1, 1), rotationQuaternion: SIMD4<Float> = SIMD4<Float>(0, 0, 0, 1)) -> Data {
+        var writer = BinaryWriter()
+        writer.writeBytes(writeTriggerOrCameraPrefix(header: 50, enabledMask: 1, someFloat: 0.3, rotationQuaternion: rotationQuaternion, position: position, size: size))
+        // Instances: count written twice (empty), then SectionHead.
+        writer.writeInt32(0)
+        writer.writeInt32(0)
+        writer.writeUInt32(10)
+        // Arg1...Arg4 — reference default (unset ushorts = 0).
+        writer.writeUInt16(0)
+        writer.writeUInt16(0)
+        writer.writeUInt16(0)
+        writer.writeUInt16(0)
+        return writer.data
+    }
+
+    /// "Backend Requirement: safely inject this new record" (Part 4D),
+    /// extended to `Camera` — a complete, brand-new `Camera` record, field
+    /// order and defaults verified directly against `Camera.cs`'s own
+    /// `Save()`/property-initializer values. Sharing `Trigger`'s
+    /// `Header`/`Enabled`/`Coords`/`SectionHead` defaults isn't a
+    /// coincidence — both use the identical `Pos[3]` rot/pos/size shape
+    /// (see `writeTriggerOrCameraPrefix`'s own doc comment) — but `Camera`
+    /// has its own separate default `Header = 1310720`.
+    ///
+    /// `cameraType1`/`cameraType2` default to `3` ("None," matching
+    /// `Camera.cs`'s own default) — a fresh Camera has neither sub-payload
+    /// slot filled, so `Camera.Save`'s `WriteCamera` branch never runs and
+    /// this encoder never needs to touch any of the twelve polymorphic
+    /// `Camera_*` sub-payload shapes `parseCameraSubtype` decodes. Every
+    /// other `Unk*` field is the reference's own zero/default-valued
+    /// property (`UnkFloat1 = 1`, `UnkCoords1`/`UnkCoords2 = (0,0,0,1)`,
+    /// everything else `0`) — not invented.
+    ///
+    /// `isDemo` mirrors `WorldPlacementParser.parseCamera`'s own parameter:
+    /// `Camera.cs`'s `Save`/`Load` omit `UnkShort`/`UnkByte` entirely when
+    /// `ParentType == SectionType.CameraDemo` — pass the same value the
+    /// destination collection's section type implies, not a guess.
+    public static func writeNewCamera(position: SIMD4<Float>, size: SIMD4<Float> = SIMD4<Float>(1, 1, 1, 1), rotationQuaternion: SIMD4<Float> = SIMD4<Float>(0, 0, 0, 1), isDemo: Bool = false) -> Data {
+        var writer = BinaryWriter()
+        writer.writeBytes(writeTriggerOrCameraPrefix(header: 1_310_720, enabledMask: 1, someFloat: 0.3, rotationQuaternion: rotationQuaternion, position: position, size: size))
+        // Instances: count written twice (empty), then SectionHead.
+        writer.writeInt32(0)
+        writer.writeInt32(0)
+        writer.writeUInt32(10)
+
+        writer.writeUInt32(0) // CamHeader
+        if !isDemo {
+            writer.writeUInt16(0) // UnkShort
+        }
+        writer.writeFloat32(1) // UnkFloat1
+        writer.writeVector4(SIMD4<Float>(0, 0, 0, 1)) // UnkCoords1
+        writer.writeVector4(SIMD4<Float>(0, 0, 0, 1)) // UnkCoords2
+        writer.writeFloat32(0) // UnkFloat2
+        writer.writeFloat32(0) // UnkFloat3
+        writer.writeUInt32(0) // UnkUInt1
+        writer.writeUInt32(0) // UnkUInt2
+        writer.writeUInt32(0) // UnkUInt3
+        writer.writeUInt32(0) // UnkUInt4
+        writer.writeInt32(0) // UnkInt5
+        writer.writeInt32(0) // UnkInt6
+        writer.writeFloat32(0) // UnkFloat4
+        writer.writeFloat32(0) // UnkFloat5
+        writer.writeFloat32(0) // UnkFloat6
+        writer.writeFloat32(0) // UnkFloat7
+        writer.writeUInt32(0) // UnkUInt7
+        writer.writeInt32(0) // UnkInt8
+        writer.writeUInt32(0) // UnkUInt9
+        writer.writeFloat32(0) // UnkFloat8
+
+        writer.writeUInt32(3) // CameraType1 — None
+        writer.writeUInt32(3) // CameraType2 — None
+
+        if !isDemo {
+            writer.writeUInt8(0) // UnkByte
+        }
+        // CameraType1/2 == 3 ("None") — no polymorphic sub-payload to write.
+
+        return writer.data
+    }
+
     public static func writeTriggerOrCameraPrefix(header: UInt32, enabledMask: UInt32, someFloat: Float, rotationQuaternion: SIMD4<Float>, position: SIMD4<Float>, size: SIMD4<Float>) -> Data {
         var writer = BinaryWriter()
         writer.writeUInt32(header)

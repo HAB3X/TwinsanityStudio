@@ -190,4 +190,143 @@ final class ChunkSectionInserterTests: XCTestCase {
         let detachedTarget = ChunkNode(recordID: 1, sectionType: .objectInstance, displayName: "detached", byteSize: 12, fileOffset: 0)
         XCTAssertNil(ChunkSectionInserter.insertingRecord(id: 1, encoded: Data(), into: detachedTarget, fileRoot: unrelatedRoot, originalFileBytes: Data()))
     }
+
+    /// The deletion counterpart to `testInsertingNewInstanceRoundTripsAndPreservesSiblings`
+    /// — removes one of two records by ID, re-parses with the real
+    /// `RM2Parser`, and confirms the removed ID is really gone while the
+    /// surviving record and the untouched sibling section are unaffected.
+    func testRemovingRecordRoundTripsAndPreservesSiblings() throws {
+        let keepInstance = WorldPlacementWriter.writeNewInstance(objectID: 3, position: SIMD4<Float>(1, 2, 3, 1), rotationDegrees: .zero)
+        let removeInstance = WorldPlacementWriter.writeNewInstance(objectID: 55, position: SIMD4<Float>(9, 8, 7, 1), rotationDegrees: .zero)
+        let triggerBytes = Data([0xDE, 0xAD, 0xBE, 0xEF])
+
+        let objectInstanceCollection = makeSection(children: [(id: 100, bytes: keepInstance), (id: 101, bytes: removeInstance)])
+        let triggerCollection = makeSection(children: [(id: 200, bytes: triggerBytes)])
+        let instanceContainer = makeSection(children: [(id: 6, bytes: objectInstanceCollection), (id: 7, bytes: triggerCollection)])
+        let fileBytes = makeSection(children: [(id: 0, bytes: instanceContainer)])
+
+        let fileRoot = try RM2Parser.parse(data: fileBytes, fileKind: .rm2, fileName: "synthetic4.rm2")
+        let objectInstanceNode = try XCTUnwrap(findFirst(fileRoot, sectionType: .objectInstance))
+        XCTAssertEqual(objectInstanceNode.children.count, 2, "precondition: fixture decoded as expected before any removal")
+
+        let patched = try XCTUnwrap(ChunkSectionInserter.removingRecord(id: 101, from: objectInstanceNode, fileRoot: fileRoot, originalFileBytes: fileBytes))
+
+        let reparsedRoot = try RM2Parser.parse(data: patched, fileKind: .rm2, fileName: "synthetic4.rm2")
+        let reparsedObjectInstance = try XCTUnwrap(findFirst(reparsedRoot, sectionType: .objectInstance))
+        XCTAssertEqual(reparsedObjectInstance.children.count, 1)
+        XCTAssertNil(reparsedObjectInstance.children.first(where: { $0.recordID == 101 }), "removed record must really be gone")
+
+        guard case .instance(let survivor)? = reparsedObjectInstance.children.first(where: { $0.recordID == 100 })?.payload else {
+            return XCTFail("surviving instance record didn't decode")
+        }
+        XCTAssertEqual(survivor.objectID, 3)
+        XCTAssertEqual(survivor.position, SIMD4<Float>(1, 2, 3, 1))
+
+        // The untouched sibling collection must still be exactly where it
+        // says it is, byte-for-byte.
+        let reparsedTrigger = try XCTUnwrap(findFirst(reparsedRoot, sectionType: .trigger))
+        XCTAssertEqual(reparsedTrigger.children.count, 1)
+        let triggerLeaf = try XCTUnwrap(reparsedTrigger.children.first)
+        XCTAssertEqual(triggerLeaf.recordID, 200)
+        let recoveredTriggerBytes = patched.subdata(in: (patched.startIndex + triggerLeaf.fileOffset)..<(patched.startIndex + triggerLeaf.fileOffset + triggerLeaf.byteSize))
+        XCTAssertEqual(recoveredTriggerBytes, triggerBytes)
+    }
+
+    /// Removing the *last* record in a section must produce a real,
+    /// re-parseable, genuinely empty section (RecordCount 0), not a
+    /// malformed one.
+    func testRemovingLastRecordLeavesAnEmptySection() throws {
+        let onlyInstance = WorldPlacementWriter.writeNewInstance(objectID: 9, position: .zero, rotationDegrees: .zero)
+        let objectInstanceCollection = makeSection(children: [(id: 100, bytes: onlyInstance)])
+        let instanceContainer = makeSection(children: [(id: 6, bytes: objectInstanceCollection)])
+        let fileBytes = makeSection(children: [(id: 0, bytes: instanceContainer)])
+
+        let fileRoot = try RM2Parser.parse(data: fileBytes, fileKind: .rm2, fileName: "synthetic5.rm2")
+        let objectInstanceNode = try XCTUnwrap(findFirst(fileRoot, sectionType: .objectInstance))
+
+        let patched = try XCTUnwrap(ChunkSectionInserter.removingRecord(id: 100, from: objectInstanceNode, fileRoot: fileRoot, originalFileBytes: fileBytes))
+        let reparsedRoot = try RM2Parser.parse(data: patched, fileKind: .rm2, fileName: "synthetic5.rm2")
+        let reparsedObjectInstance = try XCTUnwrap(findFirst(reparsedRoot, sectionType: .objectInstance))
+        XCTAssertEqual(reparsedObjectInstance.children.count, 0)
+    }
+
+    /// Removing from one section while a sibling section is untouched in
+    /// the same save (the general `applyingRecordChanges` path a combined
+    /// delete-Instance + add-Trigger save would exercise), verified via the
+    /// multi-section entry point directly.
+    func testRemovingFromOneSectionAlongsideUntouchedSibling() throws {
+        let keepInstance = WorldPlacementWriter.writeNewInstance(objectID: 1, position: .zero, rotationDegrees: .zero)
+        let removeInstance = WorldPlacementWriter.writeNewInstance(objectID: 2, position: .zero, rotationDegrees: .zero)
+        let objectInstanceCollection = makeSection(children: [(id: 100, bytes: keepInstance), (id: 101, bytes: removeInstance)])
+        let originalWaypoint = WorldPlacementWriter.writeAIPosition(position: SIMD4<Float>(9, 9, 9, 1), rawNodeType: 0)
+        let aiPositionCollection = makeSection(children: [(id: 200, bytes: originalWaypoint)])
+        let instanceContainer = makeSection(children: [(id: 1, bytes: aiPositionCollection), (id: 6, bytes: objectInstanceCollection)])
+        let fileBytes = makeSection(children: [(id: 0, bytes: instanceContainer)])
+
+        let fileRoot = try RM2Parser.parse(data: fileBytes, fileKind: .rm2, fileName: "synthetic6.rm2")
+        let objectInstanceNode = try XCTUnwrap(findFirst(fileRoot, sectionType: .objectInstance))
+
+        let patched = try XCTUnwrap(ChunkSectionInserter.applyingRecordChanges(
+            intoSections: [(section: objectInstanceNode, insert: [], removeIDs: [101])],
+            fileRoot: fileRoot, originalFileBytes: fileBytes
+        ))
+
+        let reparsed = try RM2Parser.parse(data: patched, fileKind: .rm2, fileName: "synthetic6.rm2")
+        let reparsedInstances = try XCTUnwrap(findFirst(reparsed, sectionType: .objectInstance))
+        XCTAssertEqual(reparsedInstances.children.count, 1)
+        XCTAssertEqual(reparsedInstances.children.first?.recordID, 100)
+
+        let reparsedWaypoints = try XCTUnwrap(findFirst(reparsed, sectionType: .aiPosition))
+        XCTAssertEqual(reparsedWaypoints.children.count, 1)
+        guard case .aiPosition(let originalWP)? = reparsedWaypoints.children.first(where: { $0.recordID == 200 })?.payload else {
+            return XCTFail("untouched sibling waypoint didn't survive")
+        }
+        XCTAssertEqual(originalWP.position, SIMD4<Float>(9, 9, 9, 1))
+    }
+
+    /// A single target section can both gain a new record and lose an
+    /// existing one in the same save — the exact shape "delete this
+    /// Instance, add a new Trigger" would need if both ever targeted the
+    /// same collection type.
+    func testCombinedInsertAndRemoveInSameSection() throws {
+        let keepInstance = WorldPlacementWriter.writeNewInstance(objectID: 1, position: .zero, rotationDegrees: .zero)
+        let removeInstance = WorldPlacementWriter.writeNewInstance(objectID: 2, position: .zero, rotationDegrees: .zero)
+        let objectInstanceCollection = makeSection(children: [(id: 100, bytes: keepInstance), (id: 101, bytes: removeInstance)])
+        let instanceContainer = makeSection(children: [(id: 6, bytes: objectInstanceCollection)])
+        let fileBytes = makeSection(children: [(id: 0, bytes: instanceContainer)])
+
+        let fileRoot = try RM2Parser.parse(data: fileBytes, fileKind: .rm2, fileName: "synthetic7.rm2")
+        let objectInstanceNode = try XCTUnwrap(findFirst(fileRoot, sectionType: .objectInstance))
+
+        let newInstance = WorldPlacementWriter.writeNewInstance(objectID: 77, position: SIMD4<Float>(5, 5, 5, 1), rotationDegrees: .zero)
+        let patched = try XCTUnwrap(ChunkSectionInserter.applyingRecordChanges(
+            intoSections: [(section: objectInstanceNode, insert: [(id: 999, encoded: newInstance)], removeIDs: [101])],
+            fileRoot: fileRoot, originalFileBytes: fileBytes
+        ))
+
+        let reparsed = try RM2Parser.parse(data: patched, fileKind: .rm2, fileName: "synthetic7.rm2")
+        let reparsedInstances = try XCTUnwrap(findFirst(reparsed, sectionType: .objectInstance))
+        XCTAssertEqual(reparsedInstances.children.count, 2)
+        XCTAssertNil(reparsedInstances.children.first(where: { $0.recordID == 101 }))
+        guard case .instance(let survivor)? = reparsedInstances.children.first(where: { $0.recordID == 100 })?.payload else {
+            return XCTFail("surviving instance didn't decode")
+        }
+        XCTAssertEqual(survivor.objectID, 1)
+        guard case .instance(let inserted)? = reparsedInstances.children.first(where: { $0.recordID == 999 })?.payload else {
+            return XCTFail("newly inserted instance didn't decode")
+        }
+        XCTAssertEqual(inserted.objectID, 77)
+    }
+
+    func testRemovingNonexistentIDReturnsNilRatherThanSilentlyNoOp() throws {
+        let onlyInstance = WorldPlacementWriter.writeNewInstance(objectID: 9, position: .zero, rotationDegrees: .zero)
+        let objectInstanceCollection = makeSection(children: [(id: 100, bytes: onlyInstance)])
+        let instanceContainer = makeSection(children: [(id: 6, bytes: objectInstanceCollection)])
+        let fileBytes = makeSection(children: [(id: 0, bytes: instanceContainer)])
+
+        let fileRoot = try RM2Parser.parse(data: fileBytes, fileKind: .rm2, fileName: "synthetic8.rm2")
+        let objectInstanceNode = try XCTUnwrap(findFirst(fileRoot, sectionType: .objectInstance))
+
+        XCTAssertNil(ChunkSectionInserter.removingRecord(id: 9999, from: objectInstanceNode, fileRoot: fileRoot, originalFileBytes: fileBytes))
+    }
 }

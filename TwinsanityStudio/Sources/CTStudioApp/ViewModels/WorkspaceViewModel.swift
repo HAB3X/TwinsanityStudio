@@ -1705,6 +1705,45 @@ public final class WorkspaceViewModel: ObservableObject {
         return walk(fileRoot)
     }
 
+    /// The `.trigger` Tier 2 collection in the same file as `levelNode` —
+    /// "Add Trigger"'s insertion/removal target, same role
+    /// `aiPositionCollectionNode` plays for waypoints. Same "must already
+    /// have at least one real Trigger" limitation: a chunk with zero
+    /// existing triggers has no `.trigger` node in the tree to target,
+    /// matching the AI-waypoint case's own documented behavior rather than
+    /// inventing new whole-section creation.
+    private func triggerCollectionNode(inSameFileAs levelNode: ChunkNode) -> ChunkNode? {
+        guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes) else { return nil }
+        func walk(_ node: ChunkNode) -> ChunkNode? {
+            if node.sectionType == .trigger, !node.children.isEmpty { return node }
+            for child in node.children {
+                if let found = walk(child) { return found }
+            }
+            return nil
+        }
+        return walk(fileRoot)
+    }
+
+    /// The `.camera`/`.cameraDemo` Tier 2 collection in the same file as
+    /// `levelNode` — "Add Camera"'s insertion/removal target. Returns which
+    /// of the two section kinds was actually found alongside the node,
+    /// since `WorldPlacementWriter.writeNewCamera(isDemo:)` needs to match
+    /// it (`.cameraDemo` omits `UnkShort`/`UnkByte`, per `Camera.cs`'s own
+    /// `ParentType == SectionType.CameraDemo` check).
+    private func cameraCollectionNode(inSameFileAs levelNode: ChunkNode) -> (node: ChunkNode, isDemo: Bool)? {
+        guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes) else { return nil }
+        let targetTypes: Set<SectionType> = [.camera, .cameraDemo]
+        func walk(_ node: ChunkNode) -> ChunkNode? {
+            if targetTypes.contains(node.sectionType), !node.children.isEmpty { return node }
+            for child in node.children {
+                if let found = walk(child) { return found }
+            }
+            return nil
+        }
+        guard let found = walk(fileRoot) else { return nil }
+        return (found, found.sectionType == .cameraDemo)
+    }
+
     /// "Backend Requirement: safely inject this new record" (Part 4D) +
     /// "AI Pathfinding & Navmesh Editor" (roadmap 5.1) — the combined save
     /// path "Save Chunk Overrides…" uses. `transformEdits` (a mix of
@@ -1726,6 +1765,12 @@ public final class WorkspaceViewModel: ObservableObject {
         applyingAbsoluteByteRangePatches controlPointEdits: [(node: ChunkNode, absoluteOffset: Int, encoded: Data)] = [],
         insertingNewInstances newInstances: [(id: UInt32, encoded: Data)],
         insertingNewAIPositions newAIPositions: [(id: UInt32, encoded: Data)],
+        insertingNewTriggers newTriggers: [(id: UInt32, encoded: Data)] = [],
+        insertingNewCameras newCameras: [(id: UInt32, encoded: Data)] = [],
+        removingInstanceIDs: [UInt32] = [],
+        removingTriggerIDs: [UInt32] = [],
+        removingCameraIDs: [UInt32] = [],
+        removingAIPositionIDs: [UInt32] = [],
         levelNode: ChunkNode
     ) -> Data? {
         guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes) else {
@@ -1754,38 +1799,62 @@ public final class WorkspaceViewModel: ObservableObject {
             currentBytes = afterControlPointEdits
         }
 
-        guard !newInstances.isEmpty || !newAIPositions.isEmpty else { return currentBytes }
+        let hasInsertions = !newInstances.isEmpty || !newAIPositions.isEmpty || !newTriggers.isEmpty || !newCameras.isEmpty
+        let hasRemovals = !removingInstanceIDs.isEmpty || !removingTriggerIDs.isEmpty || !removingCameraIDs.isEmpty || !removingAIPositionIDs.isEmpty
+        guard hasInsertions || hasRemovals else { return currentBytes }
 
-        // Both insertions go through the *one* multi-target rebuild
-        // (`insertingRecords(intoSections:...)`), never two sequential
-        // single-target calls — `.objectInstance` and `.aiPosition` are
-        // siblings under the same `.instance` container in real files, so
-        // calling the single-target version twice would rebuild the
-        // second insertion's ancestor chain from the *original* tree's
-        // offsets against a buffer the first call had already grown,
-        // silently corrupting the result. See that function's own doc
-        // comment.
-        var targets: [(section: ChunkNode, records: [(id: UInt32, encoded: Data)])] = []
-        if !newInstances.isEmpty {
+        // Every insertion *and* removal goes through the *one* multi-target
+        // rebuild (`applyingRecordChanges(intoSections:...)`), never
+        // sequential single-target calls — `.objectInstance`/`.trigger`/
+        // `.camera`/`.aiPosition` are all siblings under the same
+        // `.instance` container in real files, so calling separate passes
+        // would rebuild each later pass's ancestor chain from the
+        // *original* tree's offsets against a buffer an earlier pass had
+        // already resized, silently corrupting the result. See that
+        // function's own doc comment.
+        var targets: [(section: ChunkNode, insert: [(id: UInt32, encoded: Data)], removeIDs: [UInt32])] = []
+        if !newInstances.isEmpty || !removingInstanceIDs.isEmpty {
             guard let collectionNode = objectInstanceCollectionNode(inSameFileAs: levelNode) else {
-                lastError = "Can't place new objects here — this chunk's file has no Instance collection this build recognizes."
+                lastError = "Can't place or remove objects here — this chunk's file has no Instance collection this build recognizes."
                 return nil
             }
-            targets.append((collectionNode, newInstances))
+            targets.append((collectionNode, newInstances, removingInstanceIDs))
         }
-        if !newAIPositions.isEmpty {
+        if !newAIPositions.isEmpty || !removingAIPositionIDs.isEmpty {
             guard let collectionNode = aiPositionCollectionNode(inSameFileAs: levelNode) else {
-                lastError = "Can't add new AI waypoints here — this chunk's file has no existing AIPosition collection to add into."
+                lastError = "Can't add or remove AI waypoints here — this chunk's file has no existing AIPosition collection."
                 return nil
             }
-            targets.append((collectionNode, newAIPositions))
+            targets.append((collectionNode, newAIPositions, removingAIPositionIDs))
+        }
+        if !newTriggers.isEmpty || !removingTriggerIDs.isEmpty {
+            guard let collectionNode = triggerCollectionNode(inSameFileAs: levelNode) else {
+                lastError = "Can't add or remove triggers here — this chunk's file has no existing Trigger collection to add into."
+                return nil
+            }
+            targets.append((collectionNode, newTriggers, removingTriggerIDs))
+        }
+        if !newCameras.isEmpty || !removingCameraIDs.isEmpty {
+            guard let collection = cameraCollectionNode(inSameFileAs: levelNode) else {
+                lastError = "Can't add or remove cameras here — this chunk's file has no existing Camera collection to add into."
+                return nil
+            }
+            targets.append((collection.node, newCameras, removingCameraIDs))
         }
 
-        guard let result = ChunkSectionInserter.insertingRecords(intoSections: targets, fileRoot: fileRoot, originalFileBytes: currentBytes) else {
-            lastError = "Internal error: couldn't safely insert the new record(s) into the file structure — refusing to save a possibly-corrupt result."
+        guard let result = ChunkSectionInserter.applyingRecordChanges(intoSections: targets, fileRoot: fileRoot, originalFileBytes: currentBytes) else {
+            lastError = "Internal error: couldn't safely apply the record change(s) to the file structure — refusing to save a possibly-corrupt result."
             return nil
         }
         return result
+    }
+
+    /// Whether the destination `.camera` collection for `levelNode` is the
+    /// Demo layout (`WorldPlacementWriter.writeNewCamera(isDemo:)` needs to
+    /// match it) — `nil` when there's no existing Camera collection to add
+    /// into yet, same limitation `cameraCollectionNode` itself documents.
+    public func cameraCollectionIsDemo(inSameFileAs levelNode: ChunkNode) -> Bool? {
+        cameraCollectionNode(inSameFileAs: levelNode)?.isDemo
     }
 
     /// Packages an edited file's patched bytes (see `patchedFileBytes`) into

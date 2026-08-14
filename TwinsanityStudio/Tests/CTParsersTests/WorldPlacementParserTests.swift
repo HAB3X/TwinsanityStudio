@@ -291,6 +291,30 @@ final class WorldPlacementParserTests: XCTestCase {
         XCTAssertEqual(cursor.position, w.count)
     }
 
+    /// "Backend Requirement: safely inject this new record" (Part 4D)
+    /// extended to Trigger — a complete `writeNewTrigger` output decodes
+    /// back through the real parser to exactly the reference tool's own
+    /// `new Trigger()` default field values (`Trigger.cs`'s property
+    /// initializers), not just the shared 60-byte prefix.
+    func testWriteNewTriggerRoundTripsThroughParserWithReferenceDefaults() throws {
+        let encoded = WorldPlacementWriter.writeNewTrigger(position: SIMD4<Float>(5, 6, 7, 1))
+        var cursor = BinaryCursor(data: encoded)
+        let trigger = try WorldPlacementParser.parseTrigger(&cursor, recordID: 42)
+
+        XCTAssertEqual(trigger.header, 50)
+        XCTAssertEqual(trigger.enabledMask, 1)
+        XCTAssertEqual(trigger.someFloat, 0.3, accuracy: 0.0001)
+        XCTAssertEqual(trigger.rotationQuaternion, SIMD4<Float>(0, 0, 0, 1))
+        XCTAssertEqual(trigger.position, SIMD4<Float>(5, 6, 7, 1))
+        XCTAssertEqual(trigger.size, SIMD4<Float>(1, 1, 1, 1))
+        XCTAssertTrue(trigger.instanceIDs.isEmpty)
+        XCTAssertEqual(trigger.arg1, 0)
+        XCTAssertEqual(trigger.arg2, 0)
+        XCTAssertEqual(trigger.arg3, 0)
+        XCTAssertEqual(trigger.arg4, 0)
+        XCTAssertEqual(cursor.position, encoded.count)
+    }
+
     func testParseTriggerWithInstances() throws {
         var w = BinaryWriter()
         w.writeUInt32(0)
@@ -420,6 +444,50 @@ final class WorldPlacementParserTests: XCTestCase {
         XCTAssertNil(camera.unkShort)
         XCTAssertNil(camera.unkByte)
         XCTAssertEqual(cursor.position, w.count)
+    }
+
+    /// "Backend Requirement: safely inject this new record" (Part 4D)
+    /// extended to Camera — a complete `writeNewCamera` output decodes back
+    /// through the real parser to exactly `Camera.cs`'s own `new Camera()`
+    /// default field values, both slots reading back as `.none` (so no
+    /// polymorphic sub-payload is ever touched), non-Demo variant.
+    func testWriteNewCameraRoundTripsThroughParserWithReferenceDefaults() throws {
+        let encoded = WorldPlacementWriter.writeNewCamera(position: SIMD4<Float>(1, 2, 3, 1), isDemo: false)
+        var cursor = BinaryCursor(data: encoded)
+        let camera = try WorldPlacementParser.parseCamera(&cursor, recordID: 7, isDemo: false)
+
+        XCTAssertEqual(camera.header, 1_310_720)
+        XCTAssertEqual(camera.enabledMask, 1)
+        XCTAssertEqual(camera.someFloat, 0.3, accuracy: 0.0001)
+        XCTAssertEqual(camera.rotationQuaternion, SIMD4<Float>(0, 0, 0, 1))
+        XCTAssertEqual(camera.position, SIMD4<Float>(1, 2, 3, 1))
+        XCTAssertEqual(camera.size, SIMD4<Float>(1, 1, 1, 1))
+        XCTAssertTrue(camera.instanceIDs.isEmpty)
+        XCTAssertEqual(camera.camHeader, 0)
+        XCTAssertEqual(camera.unkShort, 0)
+        XCTAssertEqual(camera.unkFloat1, 1)
+        XCTAssertEqual(camera.unkCoords1, SIMD4<Float>(0, 0, 0, 1))
+        XCTAssertEqual(camera.unkCoords2, SIMD4<Float>(0, 0, 0, 1))
+        XCTAssertEqual(camera.unkByte, 0)
+        XCTAssertEqual(camera.cameraType1, .none)
+        XCTAssertEqual(camera.cameraType2, .none)
+        XCTAssertNil(camera.subtype1)
+        XCTAssertNil(camera.subtype2)
+        XCTAssertEqual(cursor.position, encoded.count)
+    }
+
+    /// Same as above, Demo variant — confirms `writeNewCamera(isDemo: true)`
+    /// correctly omits `UnkShort`/`UnkByte` the same way `Camera.cs`'s own
+    /// `Save` does under `ParentType == SectionType.CameraDemo`.
+    func testWriteNewCameraDemoOmitsUnkShortAndUnkByte() throws {
+        let encoded = WorldPlacementWriter.writeNewCamera(position: .zero, isDemo: true)
+        var cursor = BinaryCursor(data: encoded)
+        let camera = try WorldPlacementParser.parseCamera(&cursor, recordID: 8, isDemo: true)
+
+        XCTAssertNil(camera.unkShort)
+        XCTAssertNil(camera.unkByte)
+        XCTAssertEqual(camera.cameraType1, .none)
+        XCTAssertEqual(cursor.position, encoded.count)
     }
 
     /// Point (0x1C02) is the simplest sub-camera with an actual payload —

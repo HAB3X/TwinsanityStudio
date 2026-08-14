@@ -122,4 +122,71 @@ final class LevelInsertionIntegrationTests: XCTestCase {
         XCTAssertEqual(insertedWaypoint.position, SIMD4<Float>(6, 6, 6, 1))
         XCTAssertEqual(insertedWaypoint.rawNodeType, 4)
     }
+
+    /// Real-delete parity foundation: a single "Save Chunk Overrides…" that
+    /// both adds a new Trigger and removes a pre-existing Instance, through
+    /// the real `WorkspaceViewModel` flow — not just `ChunkSectionInserter`
+    /// in isolation. Exercises `triggerCollectionNode`/`removingInstanceIDs`
+    /// together with an unrelated insertion in the same save, the same
+    /// "one combined rebuild" shape a real user's delete-plus-place session
+    /// would produce.
+    func testSaveLevelOverridesInsertsTriggerAndRemovesInstanceThroughRealWorkspaceFlow() throws {
+        let keepInstance = WorldPlacementWriter.writeNewInstance(objectID: 1, position: .zero, rotationDegrees: .zero)
+        let removeInstance = WorldPlacementWriter.writeNewInstance(objectID: 2, position: .zero, rotationDegrees: .zero)
+        let objectInstanceCollection = makeSection(children: [(id: 100, bytes: keepInstance), (id: 101, bytes: removeInstance)])
+        let existingTrigger = WorldPlacementWriter.writeNewTrigger(position: SIMD4<Float>(1, 1, 1, 1))
+        let triggerCollection = makeSection(children: [(id: 200, bytes: existingTrigger)])
+        let instanceContainer = makeSection(children: [(id: 6, bytes: objectInstanceCollection), (id: 7, bytes: triggerCollection)])
+        let emptyCodeSection = makeSection(children: [])
+        let fileBytes = makeSection(children: [(id: 0, bytes: instanceContainer), (id: 10, bytes: emptyCodeSection)])
+
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("synthetic-\(UUID().uuidString).rm2")
+        try fileBytes.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: tempURL)
+
+        let loadExpectation = expectation(description: "single-file load completes")
+        let observation = workspace.$isLoading.dropFirst().sink { loading in
+            if !loading { loadExpectation.fulfill() }
+        }
+        wait(for: [loadExpectation], timeout: 10)
+        observation.cancel()
+
+        let fileRoot = try XCTUnwrap(workspace.rootNodes.first)
+        let instanceLeaf = try XCTUnwrap(findFirst(fileRoot, sectionType: .objectInstance)?.children.first)
+
+        let newTrigger = WorldPlacementWriter.writeNewTrigger(position: SIMD4<Float>(9, 9, 9, 1))
+        let patched = try XCTUnwrap(workspace.patchedFileBytes(
+            applyingPrefixPatches: [],
+            insertingNewInstances: [],
+            insertingNewAIPositions: [],
+            insertingNewTriggers: [(id: 999, encoded: newTrigger)],
+            removingInstanceIDs: [101],
+            levelNode: instanceLeaf
+        ))
+
+        let reparsed = try RM2Parser.parse(data: patched, fileKind: .rm2, fileName: "synthetic.rm2")
+
+        let reparsedInstances = try XCTUnwrap(findFirst(reparsed, sectionType: .objectInstance))
+        XCTAssertEqual(reparsedInstances.children.count, 1, "removed instance should really be gone")
+        XCTAssertNil(reparsedInstances.children.first(where: { $0.recordID == 101 }))
+        guard case .instance(let survivor)? = reparsedInstances.children.first(where: { $0.recordID == 100 })?.payload else {
+            return XCTFail("surviving instance didn't decode")
+        }
+        XCTAssertEqual(survivor.objectID, 1)
+
+        let reparsedTriggers = try XCTUnwrap(findFirst(reparsed, sectionType: .trigger))
+        XCTAssertEqual(reparsedTriggers.children.count, 2)
+        guard case .trigger(let originalTrigger)? = reparsedTriggers.children.first(where: { $0.recordID == 200 })?.payload else {
+            return XCTFail("pre-existing trigger didn't survive")
+        }
+        XCTAssertEqual(originalTrigger.position, SIMD4<Float>(1, 1, 1, 1))
+        guard case .trigger(let insertedTrigger)? = reparsedTriggers.children.first(where: { $0.recordID == 999 })?.payload else {
+            return XCTFail("newly inserted trigger didn't decode after going through the real WorkspaceViewModel save path")
+        }
+        XCTAssertEqual(insertedTrigger.position, SIMD4<Float>(9, 9, 9, 1))
+        XCTAssertEqual(insertedTrigger.header, 50)
+    }
 }

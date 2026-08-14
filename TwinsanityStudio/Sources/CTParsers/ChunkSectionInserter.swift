@@ -64,7 +64,7 @@ public enum ChunkSectionInserter {
     public static func insertingRecords(_ records: [(id: UInt32, encoded: Data)], into targetSection: ChunkNode, fileRoot: ChunkNode, originalFileBytes: Data) -> Data? {
         guard !records.isEmpty else { return originalFileBytes }
         guard let path = nodePath(from: fileRoot, to: targetSection) else { return nil }
-        guard var rebuiltBytes = appendingRecords(records, to: targetSection, originalFileBytes: originalFileBytes) else { return nil }
+        guard var rebuiltBytes = rebuildingSection(adding: records, removingIDs: [], sectionNode: targetSection, originalFileBytes: originalFileBytes) else { return nil }
         var rebuiltNode = targetSection
 
         for ancestor in path.dropLast().reversed() {
@@ -97,13 +97,59 @@ public enum ChunkSectionInserter {
         fileRoot: ChunkNode,
         originalFileBytes: Data
     ) -> Data? {
-        let nonEmptyTargets = targets.filter { !$0.records.isEmpty }
-        guard !nonEmptyTargets.isEmpty else { return originalFileBytes }
+        applyingRecordChanges(
+            intoSections: targets.map { (section: $0.section, insert: $0.records, removeIDs: []) },
+            fileRoot: fileRoot,
+            originalFileBytes: originalFileBytes
+        )
+    }
+
+    /// Removes the single record `id` from `targetSection` — the deletion
+    /// counterpart to `insertingRecord`. `nil` under the same refuse-rather-
+    /// than-guess conditions `insertingRecord` already has, plus: `id`
+    /// isn't actually present in `targetSection`'s own index table (a stale
+    /// caller shouldn't silently no-op and claim success on data that was
+    /// never there).
+    public static func removingRecord(id: UInt32, from targetSection: ChunkNode, fileRoot: ChunkNode, originalFileBytes: Data) -> Data? {
+        removingRecords([id], from: targetSection, fileRoot: fileRoot, originalFileBytes: originalFileBytes)
+    }
+
+    /// Batched form of `removingRecord`, same "one rebuild, not N sequential
+    /// ones" reasoning `insertingRecords(_:into:...)` already documents.
+    public static func removingRecords(_ ids: [UInt32], from targetSection: ChunkNode, fileRoot: ChunkNode, originalFileBytes: Data) -> Data? {
+        applyingRecordChanges(
+            intoSections: [(section: targetSection, insert: [], removeIDs: ids)],
+            fileRoot: fileRoot,
+            originalFileBytes: originalFileBytes
+        )
+    }
+
+    /// The fully general form: any number of target sections, each with its
+    /// own records to insert *and* IDs to remove, applied as a single top-
+    /// down rebuild — the same desync hazard `insertingRecords(intoSections:
+    /// ...)`'s doc comment describes applies equally to "insert into a
+    /// section and separately remove from it in two passes," and doubly so
+    /// when an insert and a removal target sections that share an ancestor
+    /// (e.g. deleting an Instance while adding a new Trigger in the same
+    /// "Save Chunk Overrides" — `Instance` and `Trigger` collections are
+    /// both direct children of the same `.instance` container). One rebuild
+    /// per targeted section (both its removals and insertions folded into
+    /// the same re-tiling pass, so `Delete` never runs as a separate
+    /// pretend-empty insert that a following real insert could desync
+    /// against), then one top-down ancestor walk substituting only the
+    /// sections that actually changed.
+    public static func applyingRecordChanges(
+        intoSections targets: [(section: ChunkNode, insert: [(id: UInt32, encoded: Data)], removeIDs: [UInt32])],
+        fileRoot: ChunkNode,
+        originalFileBytes: Data
+    ) -> Data? {
+        let activeTargets = targets.filter { !$0.insert.isEmpty || !$0.removeIDs.isEmpty }
+        guard !activeTargets.isEmpty else { return originalFileBytes }
 
         var rebuiltBytesByNodeID: [ObjectIdentifier: Data] = [:]
-        for target in nonEmptyTargets {
+        for target in activeTargets {
             guard rebuiltBytesByNodeID[ObjectIdentifier(target.section)] == nil else { continue }
-            guard let bytes = appendingRecords(target.records, to: target.section, originalFileBytes: originalFileBytes) else { return nil }
+            guard let bytes = rebuildingSection(adding: target.insert, removingIDs: Set(target.removeIDs), sectionNode: target.section, originalFileBytes: originalFileBytes) else { return nil }
             rebuiltBytesByNodeID[ObjectIdentifier(target.section)] = bytes
         }
 
@@ -142,10 +188,15 @@ public enum ChunkSectionInserter {
         return data.subdata(in: (data.startIndex + offset)..<(data.startIndex + offset + size))
     }
 
-    /// Rebuilds `sectionNode`'s own on-disk span with every record in
-    /// `records` appended after all of its existing ones, in the order
-    /// given.
-    private static func appendingRecords(_ records: [(id: UInt32, encoded: Data)], to sectionNode: ChunkNode, originalFileBytes: Data) -> Data? {
+    /// Rebuilds `sectionNode`'s own on-disk span with every ID in
+    /// `removingIDs` dropped and every record in `adding` appended, in that
+    /// order — kept records (everything not in `removingIDs`) keep their
+    /// original relative order, matching `TwinsSection.RemoveItem`'s own
+    /// "shift the rest down" behavior rather than reordering anything.
+    /// `removingIDs: []` reduces this to exactly what the old
+    /// `appendingRecords` did (pure append); `adding: []` reduces it to a
+    /// pure removal.
+    private static func rebuildingSection(adding records: [(id: UInt32, encoded: Data)], removingIDs: Set<UInt32>, sectionNode: ChunkNode, originalFileBytes: Data) -> Data? {
         guard sectionNode.byteSize >= 12,
               let sectionBytes = sliceBytes(originalFileBytes, offset: sectionNode.fileOffset, size: sectionNode.byteSize)
         else { return nil }
@@ -160,22 +211,37 @@ public enum ChunkSectionInserter {
         let declaredDataLength = header.entries.reduce(0) { $0 + Int($1.size) }
         guard declaredDataLength == oldDataArea.count else { return nil }
 
-        let newRecordCount = header.entries.count + records.count
+        // Refuse rather than silently no-op if asked to remove an ID that
+        // isn't actually present — a stale caller shouldn't read back
+        // success on a deletion that never happened.
+        let presentIDs = Set(header.entries.map { $0.id })
+        guard removingIDs.isSubset(of: presentIDs) else { return nil }
+
+        var keptEntries: [(id: UInt32, bytes: Data)] = []
+        keptEntries.reserveCapacity(header.entries.count - removingIDs.count)
+        for entry in header.entries where !removingIDs.contains(entry.id) {
+            let relativeOffset = Int(entry.offset) - oldHeaderIndexLength
+            guard let bytes = sliceBytes(oldDataArea, offset: relativeOffset, size: Int(entry.size)) else { return nil }
+            keptEntries.append((entry.id, bytes))
+        }
+
+        let newRecordCount = keptEntries.count + records.count
         let newHeaderIndexLength = 12 + newRecordCount * 12
-        let indexGrowth = UInt32(newHeaderIndexLength - oldHeaderIndexLength)
+        let keptDataLength = keptEntries.reduce(0) { $0 + $1.bytes.count }
         let newRecordsTotalSize = records.reduce(0) { $0 + $1.encoded.count }
 
         var writer = BinaryWriter()
         writer.writeUInt32(header.magic)
         writer.writeInt32(Int32(newRecordCount))
-        writer.writeUInt32(UInt32(declaredDataLength + newRecordsTotalSize))
+        writer.writeUInt32(UInt32(keptDataLength + newRecordsTotalSize))
 
-        for entry in header.entries {
-            writer.writeUInt32(entry.offset + indexGrowth)
-            writer.writeInt32(entry.size)
+        var runningOffset = newHeaderIndexLength
+        for entry in keptEntries {
+            writer.writeUInt32(UInt32(runningOffset))
+            writer.writeInt32(Int32(entry.bytes.count))
             writer.writeUInt32(entry.id)
+            runningOffset += entry.bytes.count
         }
-        var runningOffset = newHeaderIndexLength + oldDataArea.count
         for record in records {
             writer.writeUInt32(UInt32(runningOffset))
             writer.writeInt32(Int32(record.encoded.count))
@@ -183,7 +249,9 @@ public enum ChunkSectionInserter {
             runningOffset += record.encoded.count
         }
 
-        writer.writeBytes(oldDataArea)
+        for entry in keptEntries {
+            writer.writeBytes(entry.bytes)
+        }
         for record in records {
             writer.writeBytes(record.encoded)
         }
