@@ -118,6 +118,11 @@ struct ContentView: View {
                     } label: {
                         Label("Executable Patcher…", systemImage: "shippingbox.and.arrow.backward")
                     }
+                    Button {
+                        workspace.isArchiveRepackagerPresented = true
+                    } label: {
+                        Label("Archive Repackager…", systemImage: "arrow.triangle.2.circlepath")
+                    }
                     Divider()
                     Button {
                         presentMemoryCardOpenPanel()
@@ -246,6 +251,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $workspace.isExecutablePatcherPresented) {
             ExecutablePatcherView()
+        }
+        .sheet(isPresented: $workspace.isArchiveRepackagerPresented) {
+            ArchiveRepackagerView()
         }
         .sheet(item: $workspace.agentLabNode) { node in
             AgentLabGraphView(sectionNode: node)

@@ -378,6 +378,10 @@ public final class WorkspaceViewModel: ObservableObject {
     /// executable directly (`default.xbe`/PS2 binary), a file this
     /// workspace never otherwise loads.
     @Published public var isExecutablePatcherPresented = false
+    /// "Archive Repackager" — presents `ArchiveRepackagerView`. Also
+    /// independent of any open archive: it operates on a `.BH`/`.BD` pair
+    /// the user picks directly, not anything already mounted here.
+    @Published public var isArchiveRepackagerPresented = false
 
     private var archiveIndexByRootID: [UUID: ArchiveIndex] = [:]
     /// "No More Placeholder Squares": the real game's shared object
