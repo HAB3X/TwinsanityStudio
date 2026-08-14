@@ -158,4 +158,76 @@ final class DiscImageTests: XCTestCase {
             XCTAssertEqual(error as? ISO9660Error, .notAnISO9660Image)
         }
     }
+
+    // MARK: - ISO9660Writer
+
+    func testReplaceFileInPlaceSameSizeUpdatesContentOnly() throws {
+        let sectors = buildSyntheticISOSectors()
+        let originalImage = Data(sectors.flatMap { $0 })
+        let root = try ISO9660Reader.readRootDirectory(from: PlainISOSource(data: originalImage))
+        guard let testFile = root.children.first(where: { $0.name == "TEST.TXT" }) else { return XCTFail("TEST.TXT missing") }
+        XCTAssertEqual(testFile.lba, 20)
+
+        let replacement = Data("Goodbye ISO 9660".utf8)  // same length as "Hello, ISO 9660!" (16 bytes)
+        XCTAssertEqual(replacement.count, 16)
+        let newImage = try ISO9660Writer.replacingFile(testFile, with: replacement, in: originalImage)
+        XCTAssertEqual(newImage.count, originalImage.count, "in-place same-size replacement must not change the image's total length")
+
+        let newRoot = try ISO9660Reader.readRootDirectory(from: PlainISOSource(data: newImage))
+        let newTestFile = try XCTUnwrap(newRoot.children.first(where: { $0.name == "TEST.TXT" }))
+        XCTAssertEqual(newTestFile.lba, 20, "same-size replacement must not relocate the file")
+        XCTAssertEqual(ISO9660Reader.readFile(newTestFile, from: PlainISOSource(data: newImage)), replacement)
+
+        // The sibling directory (SUBDIR/NESTED.TXT) must be completely untouched.
+        let subdir = try XCTUnwrap(newRoot.children.first(where: { $0.name == "SUBDIR" }))
+        let nested = try XCTUnwrap(subdir.children.first(where: { $0.name == "NESTED.TXT" }))
+        XCTAssertEqual(ISO9660Reader.readFile(nested, from: PlainISOSource(data: newImage)).map { String(data: $0, encoding: .utf8) }, "Nested file content.")
+    }
+
+    func testReplaceFileInPlaceSmallerPadsAndShrinksSizeField() throws {
+        let sectors = buildSyntheticISOSectors()
+        let originalImage = Data(sectors.flatMap { $0 })
+        let root = try ISO9660Reader.readRootDirectory(from: PlainISOSource(data: originalImage))
+        let testFile = try XCTUnwrap(root.children.first(where: { $0.name == "TEST.TXT" }))
+
+        let replacement = Data("Hi".utf8)
+        let newImage = try ISO9660Writer.replacingFile(testFile, with: replacement, in: originalImage)
+        XCTAssertEqual(newImage.count, originalImage.count, "still fits inside the originally-reserved single sector")
+
+        let newRoot = try ISO9660Reader.readRootDirectory(from: PlainISOSource(data: newImage))
+        let newTestFile = try XCTUnwrap(newRoot.children.first(where: { $0.name == "TEST.TXT" }))
+        XCTAssertEqual(newTestFile.size, 2, "the directory record's size field must shrink to the real new content length, not the zero-padded sector size")
+        XCTAssertEqual(ISO9660Reader.readFile(newTestFile, from: PlainISOSource(data: newImage)), replacement)
+    }
+
+    func testReplaceFileLargerAppendsPastEndAndRelocates() throws {
+        let sectors = buildSyntheticISOSectors()
+        let originalImage = Data(sectors.flatMap { $0 })
+        let root = try ISO9660Reader.readRootDirectory(from: PlainISOSource(data: originalImage))
+        let testFile = try XCTUnwrap(root.children.first(where: { $0.name == "TEST.TXT" }))
+
+        // Larger than the single sector TEST.TXT originally occupied.
+        let replacement = Data(repeating: 0x58, count: Self.sectorSize + 500)
+        let newImage = try ISO9660Writer.replacingFile(testFile, with: replacement, in: originalImage)
+        XCTAssertGreaterThan(newImage.count, originalImage.count, "must grow the image to fit the relocated file")
+
+        let newRoot = try ISO9660Reader.readRootDirectory(from: PlainISOSource(data: newImage))
+        let newTestFile = try XCTUnwrap(newRoot.children.first(where: { $0.name == "TEST.TXT" }))
+        XCTAssertGreaterThanOrEqual(newTestFile.lba, 22, "must relocate past the original image's own sectors")
+        XCTAssertEqual(newTestFile.size, UInt32(replacement.count))
+        XCTAssertEqual(ISO9660Reader.readFile(newTestFile, from: PlainISOSource(data: newImage)), replacement)
+
+        // The sibling directory (SUBDIR/NESTED.TXT, at the old LBAs) must still read correctly.
+        let subdir = try XCTUnwrap(newRoot.children.first(where: { $0.name == "SUBDIR" }))
+        let nested = try XCTUnwrap(subdir.children.first(where: { $0.name == "NESTED.TXT" }))
+        XCTAssertEqual(ISO9660Reader.readFile(nested, from: PlainISOSource(data: newImage)).map { String(data: $0, encoding: .utf8) }, "Nested file content.")
+    }
+
+    func testReplaceFileThrowsWhenEntryDoesntFitTheSuppliedImage() {
+        let bogusEntry = ISO9660Entry(name: "GHOST.TXT", isDirectory: false, lba: 999, size: 4, directoryRecordAbsoluteOffset: 999_999)
+        let tinyImage = Data(repeating: 0, count: Self.sectorSize)
+        XCTAssertThrowsError(try ISO9660Writer.replacingFile(bogusEntry, with: Data("x".utf8), in: tinyImage)) { error in
+            XCTAssertEqual(error as? ISO9660WriterError, .entryOutOfBounds)
+        }
+    }
 }

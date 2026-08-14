@@ -15,13 +15,21 @@ public struct ISO9660Entry: Sendable, Identifiable {
     public var lba: UInt32
     public var size: UInt32
     public var children: [ISO9660Entry]
+    /// This entry's own directory-record byte offset, absolute within the
+    /// flat logical image (`parentDirectoryLBA * 2048 + offsetWithinExtent`)
+    /// — for the root entry, the Root Directory Record embedded in the PVD
+    /// itself. Used by `ISO9660Writer` to patch a file's LBA/size fields in
+    /// place after replacing its contents; not meaningful for anything
+    /// else, so no reader call site needs to touch it directly.
+    public var directoryRecordAbsoluteOffset: Int
 
-    public init(name: String, isDirectory: Bool, lba: UInt32, size: UInt32, children: [ISO9660Entry] = []) {
+    public init(name: String, isDirectory: Bool, lba: UInt32, size: UInt32, children: [ISO9660Entry] = [], directoryRecordAbsoluteOffset: Int = 0) {
         self.name = name
         self.isDirectory = isDirectory
         self.lba = lba
         self.size = size
         self.children = children
+        self.directoryRecordAbsoluteOffset = directoryRecordAbsoluteOffset
     }
 }
 
@@ -43,7 +51,7 @@ public enum ISO9660Reader {
     private static let cd001 = Data("CD001".utf8)
 
     public static func readRootDirectory(from source: any LogicalSectorSource) throws -> ISO9660Entry {
-        guard let pvd = findPrimaryVolumeDescriptor(in: source) else {
+        guard let pvdSectorIndex = findPrimaryVolumeDescriptorSector(in: source), let pvd = source.sector(pvdSectorIndex) else {
             throw ISO9660Error.notAnISO9660Image
         }
         // The Root Directory Record is embedded directly in the PVD at
@@ -52,7 +60,8 @@ public enum ISO9660Reader {
         guard let rootLBA = readUInt32LE(rootRecord, at: 2), let rootSize = readUInt32LE(rootRecord, at: 10) else {
             throw ISO9660Error.notAnISO9660Image
         }
-        return readDirectory(name: "", lba: rootLBA, size: rootSize, source: source)
+        let rootRecordAbsoluteOffset = pvdSectorIndex * sectorSize + 156
+        return readDirectory(name: "", lba: rootLBA, size: rootSize, source: source, directoryRecordAbsoluteOffset: rootRecordAbsoluteOffset)
     }
 
     /// Extracts `entry`'s real file bytes straight from the volume.
@@ -76,7 +85,7 @@ public enum ISO9660Reader {
         return result.prefix(Int(entry.size))
     }
 
-    private static func findPrimaryVolumeDescriptor(in source: any LogicalSectorSource) -> Data? {
+    private static func findPrimaryVolumeDescriptorSector(in source: any LogicalSectorSource) -> Int? {
         var index = volumeDescriptorStartSector
         // Real bound: the Volume Descriptor Set is always terminated
         // (type 255) well within a few sectors on every real disc; this
@@ -86,14 +95,14 @@ public enum ISO9660Reader {
             let type = sector[sector.startIndex]
             let identifier = sector.subdata(in: (sector.startIndex + 1)..<(sector.startIndex + 6))
             guard identifier == cd001 else { return nil }
-            if type == 1 { return sector }
+            if type == 1 { return index }
             if type == 255 { return nil } // Volume Descriptor Set Terminator
             index += 1
         }
         return nil
     }
 
-    private static func readDirectory(name: String, lba: UInt32, size: UInt32, source: any LogicalSectorSource) -> ISO9660Entry {
+    private static func readDirectory(name: String, lba: UInt32, size: UInt32, source: any LogicalSectorSource, directoryRecordAbsoluteOffset: Int) -> ISO9660Entry {
         var extent = Data()
         let sectorCount = max(1, Int((Int(size) + sectorSize - 1) / sectorSize))
         for i in 0..<sectorCount {
@@ -116,6 +125,7 @@ public enum ISO9660Reader {
             }
             guard offset + recordLength <= extent.count else { break }
             let record = extent.subdata(in: (extent.startIndex + offset)..<(extent.startIndex + offset + recordLength))
+            let recordAbsoluteOffset = Int(lba) * sectorSize + offset
             offset += recordLength
 
             guard record.count >= 33 else { continue }
@@ -139,12 +149,12 @@ public enum ISO9660Reader {
             }
 
             if isDirectory {
-                children.append(readDirectory(name: entryName, lba: entryLBA, size: entrySize, source: source))
+                children.append(readDirectory(name: entryName, lba: entryLBA, size: entrySize, source: source, directoryRecordAbsoluteOffset: recordAbsoluteOffset))
             } else {
-                children.append(ISO9660Entry(name: entryName, isDirectory: false, lba: entryLBA, size: entrySize))
+                children.append(ISO9660Entry(name: entryName, isDirectory: false, lba: entryLBA, size: entrySize, directoryRecordAbsoluteOffset: recordAbsoluteOffset))
             }
         }
-        return ISO9660Entry(name: name, isDirectory: true, lba: lba, size: size, children: children)
+        return ISO9660Entry(name: name, isDirectory: true, lba: lba, size: size, children: children, directoryRecordAbsoluteOffset: directoryRecordAbsoluteOffset)
     }
 
     private static func readUInt32LE(_ data: Data, at offset: Int) -> UInt32? {

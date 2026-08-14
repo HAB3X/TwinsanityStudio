@@ -166,6 +166,15 @@ public final class WorkspaceViewModel: ObservableObject {
     /// other. Only real file leaves are registered (never directories —
     /// nothing to extract for those, they're just tree structure).
     private var discEntryByNodeID: [UUID: CTModels.DiscEntryHolder] = [:]
+    /// "ISO/ROM Rebuild" (roadmap 7): the source `.iso` file each mounted
+    /// disc's top-level `ChunkNode.id` was actually read from — only
+    /// populated for a plain `.iso` mount, never a `.bin`/`.cue` pair
+    /// (`ISO9660Writer` only rebuilds a flat `.iso`; see its own doc
+    /// comment for why raw-sector `.bin` framing is out of scope). Lets
+    /// `replacingDiscImage` re-read the real original bytes fresh from
+    /// disk rather than needing to keep a second full copy in memory
+    /// alongside whatever `mountDiscImage` already mapped in.
+    private var mountedDiscImageURLByRootID: [UUID: URL] = [:]
 
     /// "Native ISO & BIN/CUE Disc Image Mounting" (roadmap 1.4/Task 7),
     /// merged directly into the main sidebar tree — not a separate modal
@@ -206,6 +215,9 @@ public final class WorkspaceViewModel: ObservableObject {
             let root = try ISO9660Reader.readRootDirectory(from: source)
             let node = Self.buildDiscNode(from: root, isRoot: true)
             registerDiscEntries(root, node: node, source: source)
+            if url.pathExtension.uppercased() == "ISO" {
+                mountedDiscImageURLByRootID[node.id] = url
+            }
             rootNodes.append(node)
             statusMessage = "Mounted \(url.lastPathComponent) — \(discEntryByNodeID.count) recognized file(s) available to open."
         } catch let error as CueSheetParser.ParseError {
@@ -250,6 +262,52 @@ public final class WorkspaceViewModel: ObservableObject {
         for (childEntry, childNode) in zip(sortedChildren, node.children) {
             registerDiscEntries(childEntry, node: childNode, source: source)
         }
+    }
+
+    /// "ISO/ROM Rebuild" (roadmap 7): whether `node` is a disc-mounted file
+    /// this build can actually replace — real disc entry, and mounted from
+    /// a plain `.iso` (not `.bin`/`.cue`; see `mountedDiscImageURLByRootID`'s
+    /// doc comment).
+    public func canReplaceDiscFile(_ node: ChunkNode) -> Bool {
+        guard discEntryByNodeID[node.id] != nil, let root = topLevelRoot(containing: node, in: rootNodes) else { return false }
+        return mountedDiscImageURLByRootID[root.id] != nil
+    }
+
+    /// Re-reads the disc's real original `.iso` bytes fresh from disk (so
+    /// this never depends on whatever `mountDiscImage` may have mapped in
+    /// staying resident) and hands them to `ISO9660Writer` to replace
+    /// `node`'s contents with `newData`. Returns the complete new image,
+    /// ready to save — the original file on disk is never modified.
+    /// `nil` (with `lastError` set) if `node` isn't a replaceable disc
+    /// entry (see `canReplaceDiscFile`) or the rebuild itself fails.
+    public func replacingDiscImage(afterReplacing node: ChunkNode, with newData: Data) -> Data? {
+        guard let holder = discEntryByNodeID[node.id], let entry = holder.entry as? ISO9660Entry else {
+            lastError = "This isn't a recognized disc-mounted file."
+            return nil
+        }
+        guard let root = topLevelRoot(containing: node, in: rootNodes), let imageURL = mountedDiscImageURLByRootID[root.id] else {
+            lastError = "This file's disc image was mounted from a .bin/.cue pair — rebuilding a raw-sector image isn't supported yet, only a plain .iso."
+            return nil
+        }
+        do {
+            let originalImage = try Data(contentsOf: imageURL)
+            return try ISO9660Writer.replacingFile(entry, with: newData, in: originalImage)
+        } catch {
+            lastError = "Couldn't rebuild \(imageURL.lastPathComponent): \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// The top-level entry in `rootNodes` whose subtree actually contains
+    /// `target` — unlike `findFileRoot` (which looks specifically for an
+    /// RM2/SM2-shaped Graphics/Code file root and wouldn't recognize a
+    /// disc-mounted node's shape at all), this is a plain ancestor lookup
+    /// that works for any node in the sidebar tree.
+    private func topLevelRoot(containing target: ChunkNode, in topLevelNodes: [ChunkNode]) -> ChunkNode? {
+        func contains(_ node: ChunkNode) -> Bool {
+            node === target || node.children.contains(where: contains)
+        }
+        return topLevelNodes.first(where: contains)
     }
 
     /// Extracts `entry`'s real bytes from `source`, writes them to a temp

@@ -41,6 +41,14 @@ struct InspectorView: View {
                         HStack {
                             header(for: node)
                             Spacer()
+                            if workspace.canReplaceDiscFile(node) {
+                                Button {
+                                    replaceDiscFile(node)
+                                } label: {
+                                    Label("Replace in Disc Image…", systemImage: "opticaldiscdrive")
+                                }
+                                .help("Replace this file's contents and save a new, complete .iso with the change applied. The mounted disc image on disk is never modified.")
+                            }
                             Toggle(isOn: $showHexQuickView) {
                                 Label("Hex Quick View", systemImage: "number.square")
                             }
@@ -166,6 +174,33 @@ struct InspectorView: View {
     /// unless it's actually showing" posture as `updateResolvedComposite`.
     private func updateHexQuickViewBytes(for node: ChunkNode) {
         hexQuickViewBytes = showHexQuickView ? (workspace.rawBytes(for: node) ?? Data()) : Data()
+    }
+
+    /// "ISO/ROM Rebuild" (roadmap 7): pick a replacement file from disk,
+    /// rebuild the disc image with it in place of `node`'s real contents
+    /// (`WorkspaceViewModel.replacingDiscImage`), then save the complete
+    /// new `.iso`. The originally-mounted image on disk is never touched —
+    /// every step here works on in-memory copies until the final save.
+    private func replaceDiscFile(_ node: ChunkNode) {
+        let openPanel = NSOpenPanel()
+        openPanel.canChooseDirectories = false
+        openPanel.canChooseFiles = true
+        openPanel.allowsMultipleSelection = false
+        openPanel.message = "Choose the replacement file for \(node.displayName)."
+        guard openPanel.runModal() == .OK, let sourceURL = openPanel.url,
+              let newData = try? Data(contentsOf: sourceURL)
+        else { return }
+        guard let newImage = workspace.replacingDiscImage(afterReplacing: node, with: newData) else { return }
+        guard let destinationURL = ExportPanel.chooseSaveLocation(
+            suggestedName: "modified.iso",
+            message: "Save the rebuilt disc image with \(node.displayName) replaced. The originally mounted image is not modified."
+        ) else { return }
+        do {
+            try newImage.write(to: destinationURL)
+            workspace.statusMessage = "Saved rebuilt disc image to \(destinationURL.lastPathComponent) with \(node.displayName) replaced."
+        } catch {
+            workspace.lastError = "Couldn't save the rebuilt disc image: \(error.localizedDescription)"
+        }
     }
 
     @ViewBuilder
