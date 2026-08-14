@@ -59,6 +59,13 @@ public struct LevelViewerContext: Identifiable {
     /// doc comment — factual list panel only).
     public var aiPositions: [(node: ChunkNode, marker: AIPositionMarker)]
     public var aiPaths: [(node: ChunkNode, path: AIPathRecord)]
+    /// "Collision / Ground Floor": the level's real, decoded collision
+    /// mesh(es) — the actual walkable ground, previously never rendered
+    /// anywhere in this Level Viewer (only scattered decorative scenery
+    /// props were), which is what made a real level look like scattered
+    /// pieces with massive gaps between them. See `WorkspaceViewModel.
+    /// collisionMeshRecords`'s doc comment.
+    public var collisionMeshes: [(node: ChunkNode, mesh: CollisionMesh)]
 
     public init(
         scenery: SceneryAsset,
@@ -72,7 +79,8 @@ public struct LevelViewerContext: Identifiable {
         sounds: [(node: ChunkNode, sound: SoundEffectAsset)] = [],
         chunkLinks: [(node: ChunkNode, link: ChunkLink)] = [],
         aiPositions: [(node: ChunkNode, marker: AIPositionMarker)] = [],
-        aiPaths: [(node: ChunkNode, path: AIPathRecord)] = []
+        aiPaths: [(node: ChunkNode, path: AIPathRecord)] = [],
+        collisionMeshes: [(node: ChunkNode, mesh: CollisionMesh)] = []
     ) {
         self.scenery = scenery
         self.placements = placements
@@ -86,6 +94,7 @@ public struct LevelViewerContext: Identifiable {
         self.chunkLinks = chunkLinks
         self.aiPositions = aiPositions
         self.aiPaths = aiPaths
+        self.collisionMeshes = collisionMeshes
     }
 }
 
@@ -115,7 +124,7 @@ enum LevelViewMode: CaseIterable {
 
     var layerPreset: Set<SceneLayer> {
         switch self {
-        case .geometryOnly: return [.scenery]
+        case .geometryOnly: return [.scenery, .collision]
         case .populated: return Set(SceneLayer.allCases)
         }
     }
@@ -214,6 +223,7 @@ struct LevelViewerWindow: View {
                 cameras: context.cameras,
                 chunkLinks: context.chunkLinks,
                 aiPositions: context.aiPositions,
+                collisionMeshes: context.collisionMeshes.map(\.mesh),
                 isDemoCameraCollection: isDemoCameraCollection
             )
             renderer?.snapToGrid = snapToGrid
@@ -547,6 +557,7 @@ struct LevelViewerWindow: View {
         case .triggers: count = context.triggers.count
         case .cameras: count = context.cameras.count
         case .aiWaypoints: count = context.aiPositions.count
+        case .collision: count = context.collisionMeshes.count
         case .scenery, .chunkBoundaries, .linkedChunks, .crossEngine: count = nil
         }
         guard let count else { return layer.displayName }

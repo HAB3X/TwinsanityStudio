@@ -104,6 +104,17 @@ private final class ModelViewerGPUContext {
     /// `collisionLineColoredPipelineState`, just drawn as triangles at a
     /// low, see-through alpha instead of lines.
     let translucentQuadPipelineState: MTLRenderPipelineState?
+    /// The level's real, decoded collision mesh (`ColData`) — the
+    /// reference tool's own default-on ground floor (`RMViewer.cs`:
+    /// `collisions = true` in its constructor, drawn as solid lit
+    /// triangles), never previously rendered anywhere in this Level
+    /// Viewer. Same interleaved position+color vertex layout as
+    /// `collisionLineColoredPipelineState`'s wireframe, drawn *filled* and
+    /// *opaque* (full alpha, depth-write enabled via the ordinary
+    /// `depthState`) instead of translucent — this is the level's actual
+    /// ground, not an overlay, so it needs to correctly occlude/be
+    /// occluded like any other solid geometry.
+    let collisionFillPipelineState: MTLRenderPipelineState?
     let depthState: MTLDepthStencilState
     /// Same depth comparison as `depthState` but no depth *write* — a
     /// translucent overlay quad shouldn't occlude whatever draws after it
@@ -210,6 +221,17 @@ private final class ModelViewerGPUContext {
             translucentQuadPipelineState = try? device.makeRenderPipelineState(descriptor: translucentDescriptor)
         } else {
             translucentQuadPipelineState = nil
+        }
+
+        if let colorLineVertexFn = library.makeFunction(name: "vertex_line_colored"), let fillFragmentFn = library.makeFunction(name: "fragment_collision_fill") {
+            let fillDescriptor = MTLRenderPipelineDescriptor()
+            fillDescriptor.vertexFunction = colorLineVertexFn
+            fillDescriptor.fragmentFunction = fillFragmentFn
+            fillDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            fillDescriptor.depthAttachmentPixelFormat = .depth32Float
+            collisionFillPipelineState = try? device.makeRenderPipelineState(descriptor: fillDescriptor)
+        } else {
+            collisionFillPipelineState = nil
         }
 
         let depthDescriptor = MTLDepthStencilDescriptor()
@@ -1314,6 +1336,10 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     fragment float4 fragment_translucent_quad(LineColorOut in [[stage_in]]) {
         return float4(in.color.rgb, 0.28);
     }
+
+    fragment float4 fragment_collision_fill(LineColorOut in [[stage_in]]) {
+        return float4(in.color.rgb, 1.0);
+    }
     """
 }
 
@@ -1326,10 +1352,11 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
 /// four groups an object belongs to — drives both draw-time visibility
 /// filtering and the "Geometry Only"/"Fully Populated" mode preset.
 enum SceneLayer: CaseIterable, Hashable {
-    case scenery, actors, triggers, cameras, chunkBoundaries, linkedChunks, aiWaypoints, crossEngine
+    case collision, scenery, actors, triggers, cameras, chunkBoundaries, linkedChunks, aiWaypoints, crossEngine
 
     var displayName: String {
         switch self {
+        case .collision: return "Collision / Ground Floor"
         case .scenery: return "Scenery / Terrain"
         case .actors: return "Actors / Entities"
         case .triggers: return "Trigger Volumes & Death Planes"
@@ -1552,6 +1579,54 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// lines through `collisionLineColoredPipelineState`.
     private var chunkWallTriangleBuffer: MTLBuffer?
     private var chunkWallTriangleVertexCount = 0
+    /// The level's real collision mesh, filled and opaque — see
+    /// `ModelViewerGPUContext.collisionFillPipelineState`'s doc comment
+    /// for why this is the actual fix for "scenery looks scattered with
+    /// massive gaps": the reference tool renders this by default as the
+    /// level's real ground, with decorative scenery *off* by default: this
+    /// build's Level Viewer never rendered it at all, so what showed was
+    /// only the sparse decorative props with nothing connecting them.
+    /// Built once at upload time (unlike `overlayLineBuffer`, this doesn't
+    /// depend on any runtime-changing state like active-trigger
+    /// highlighting), gated at draw time by `layerVisibility.contains(.collision)`.
+    private var collisionFillBuffer: MTLBuffer?
+    private var collisionFillVertexCount = 0
+
+    /// Builds one combined interleaved position+color triangle buffer from
+    /// every real `CollisionMesh` this level's file (and, when loaded, its
+    /// sibling actor file) carries — `ColData` only lives in `.RM2` files
+    /// (confirmed: `SMViewer.cs` has no ColData handling at all), so a
+    /// scenery-only `.sm2` node passes an empty array here and this is a
+    /// no-op, same "nothing to draw" posture the rest of this renderer
+    /// already has for absent data. Flat-colored by `surfaceID`
+    /// (`ModelViewerRenderer.color(forSurfaceID:)`, the same stable
+    /// palette the standalone Collision Viewer's wireframe already uses)
+    /// rather than lit — this format's collision vertices carry no decoded
+    /// normals to light with, and a flat-colored floor still reads clearly
+    /// as solid ground.
+    private func rebuildCollisionFillBuffer(meshes: [CollisionMesh]) {
+        var floats: [Float] = []
+        for mesh in meshes {
+            for triangle in mesh.triangles {
+                guard triangle.vertexIndex1 < mesh.vertices.count,
+                      triangle.vertexIndex2 < mesh.vertices.count,
+                      triangle.vertexIndex3 < mesh.vertices.count
+                else { continue }
+                let color = ModelViewerRenderer.color(forSurfaceID: triangle.surfaceID)
+                for index in [triangle.vertexIndex1, triangle.vertexIndex2, triangle.vertexIndex3] {
+                    let v = mesh.vertices[index]
+                    floats.append(contentsOf: [v.x, v.y, v.z, color.x, color.y, color.z])
+                }
+            }
+        }
+        guard !floats.isEmpty else {
+            collisionFillBuffer = nil
+            collisionFillVertexCount = 0
+            return
+        }
+        collisionFillVertexCount = floats.count / 6
+        collisionFillBuffer = device.makeBuffer(bytes: floats, length: floats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
+    }
 
     /// - Parameters:
     ///   - placements: each resolved object's world position
@@ -1630,6 +1705,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         cameras: [(node: ChunkNode, camera: PlacedCamera)] = [],
         chunkLinks: [(node: ChunkNode, link: ChunkLink)] = [],
         aiPositions: [(node: ChunkNode, marker: AIPositionMarker)] = [],
+        collisionMeshes: [CollisionMesh] = [],
         isDemoCameraCollection: Bool = false
     ) {
         guard let context = ModelViewerGPUContext.shared else { return nil }
@@ -1643,6 +1719,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         nextSyntheticTriggerID = (triggers.map(\.trigger.id).max() ?? 0) + 1
         nextSyntheticCameraID = (cameras.map(\.camera.id).max() ?? 0) + 1
         upload(placements: placements, instanceMarkers: instanceMarkers, resolvedInstanceAssets: resolvedInstanceAssets, triggers: triggers, cameras: cameras, chunkLinks: chunkLinks, aiPositions: aiPositions)
+        rebuildCollisionFillBuffer(meshes: collisionMeshes)
     }
 
     private func upload(
@@ -2118,6 +2195,11 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
 
     var hasGeometry: Bool { !objects.isEmpty }
     var objectCount: Int { objects.count }
+    /// Whether a real collision floor was built from `collisionMeshes` at
+    /// construction time — see `collisionFillBuffer`'s own doc comment.
+    /// Exposed for testing without making the buffer itself public.
+    var hasCollisionFill: Bool { collisionFillBuffer != nil && collisionFillVertexCount > 0 }
+    var collisionFillTriangleCount: Int { collisionFillVertexCount / 3 }
 
     /// Backs the Level Viewer sidebar's object list and the coordinate
     /// nudge fields — index-paired with the internal `objects` array so
@@ -3024,6 +3106,22 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                 encoder.setFragmentTexture(submesh.texture, index: 0)
                 encoder.drawIndexedPrimitives(type: .triangle, indexCount: submesh.indexCount, indexType: .uint32, indexBuffer: submesh.indexBuffer, indexBufferOffset: 0)
             }
+        }
+
+        // "Collision / Ground Floor": the level's real, solid ground —
+        // drawn as part of the opaque pass (own pipeline/depth state, cull
+        // off since the real triangle winding isn't independently
+        // confirmed, same posture the chunk-wall fill below already takes)
+        // so it correctly occludes/is occluded by everything else in the
+        // scene, not layered on afterward like the translucent overlays.
+        if layerVisibility.contains(.collision), let fillPipeline = context.collisionFillPipelineState, let collisionFillBuffer, collisionFillVertexCount > 0 {
+            var uniforms = Uniforms(modelViewProjection: viewProjection, modelMatrix: matrix_identity_float4x4, lightDirection: lightDirection)
+            encoder.setRenderPipelineState(fillPipeline)
+            encoder.setDepthStencilState(context.depthState)
+            encoder.setCullMode(.none)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            encoder.setVertexBuffer(collisionFillBuffer, offset: 0, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: collisionFillVertexCount)
         }
 
         if let coloredPipeline = context.collisionLineColoredPipelineState {

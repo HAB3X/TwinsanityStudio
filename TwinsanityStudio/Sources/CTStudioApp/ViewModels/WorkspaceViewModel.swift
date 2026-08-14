@@ -1170,6 +1170,23 @@ public final class WorkspaceViewModel: ObservableObject {
         }.map { (node: $0.node, camera: $0.value) }
     }
 
+    /// "Collision / Ground Floor": every real `ColData` collision mesh in
+    /// the same file — the level's actual walkable ground, decoded as real
+    /// triangle geometry (see `CollisionMesh`'s own doc comment), but
+    /// never previously rendered anywhere in the Level Viewer. `ColData`
+    /// only lives in `.RM2` actor files (confirmed against the reference
+    /// tool: `SMViewer.cs` has no `ColData` handling at all), so calling
+    /// this for a scenery-only `.sm2` node returns an empty list — same
+    /// "always call on both node and siblingNode, use whichever file
+    /// actually has it" pattern `openLevelViewer` already uses for
+    /// instances/triggers/cameras.
+    public func collisionMeshRecords(inSameFileAs levelNode: ChunkNode) -> [(node: ChunkNode, mesh: CollisionMesh)] {
+        recordsInSameFile(as: levelNode) { payload in
+            if case .collision(let mesh) = payload { return mesh }
+            return nil
+        }.map { (node: $0.node, mesh: $0.value) }
+    }
+
     /// Every decoded `SoundEffect` record in the same file — feeds the
     /// Level Audio panel. Deliberately presented as exactly that ("sound
     /// effects in this file"), not "BGM"/"ambient bank": `SoundEffectAsset`
@@ -1979,6 +1996,7 @@ public final class WorkspaceViewModel: ObservableObject {
         var sounds = soundEffectRecords(inSameFileAs: node)
         var aiPositions = aiPositionRecords(inSameFileAs: node)
         var aiPaths = aiPathRecords(inSameFileAs: node)
+        var collisionMeshes = collisionMeshRecords(inSameFileAs: node)
         if let siblingNode {
             instanceMarkers += instanceRecords(inSameFileAs: siblingNode)
             triggers += triggerRecords(inSameFileAs: siblingNode)
@@ -1986,6 +2004,7 @@ public final class WorkspaceViewModel: ObservableObject {
             sounds += soundEffectRecords(inSameFileAs: siblingNode)
             aiPositions += aiPositionRecords(inSameFileAs: siblingNode)
             aiPaths += aiPathRecords(inSameFileAs: siblingNode)
+            collisionMeshes += collisionMeshRecords(inSameFileAs: siblingNode)
         }
 
         let (resolvedAssets, assetIndex) = await resolvedInstanceAssets(for: instanceMarkers, node: node, siblingNode: siblingNode)
@@ -2002,7 +2021,8 @@ public final class WorkspaceViewModel: ObservableObject {
             sounds: sounds,
             chunkLinks: chunkLinkRecords(inSameFileAs: node),
             aiPositions: aiPositions,
-            aiPaths: aiPaths
+            aiPaths: aiPaths,
+            collisionMeshes: collisionMeshes
         )
     }
 
