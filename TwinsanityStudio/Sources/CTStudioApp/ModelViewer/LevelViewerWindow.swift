@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import simd
 import CTModels
 import CTParsers
 import UniformTypeIdentifiers
@@ -12,7 +13,7 @@ import AVFoundation
 public struct LevelViewerContext: Identifiable {
     public let id = UUID()
     public var scenery: SceneryAsset
-    public var placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)]
+    public var placements: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)]
     /// "Direct .RM2 Write-Back": every `Instance` record (crate, enemy,
     /// platform, …) from the same file, paired with the `ChunkNode` its
     /// transform gets patched back into on save. Drawn as placeholder
@@ -61,7 +62,7 @@ public struct LevelViewerContext: Identifiable {
 
     public init(
         scenery: SceneryAsset,
-        placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)],
+        placements: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)],
         instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)] = [],
         resolvedInstanceAssets: [UUID: ResolvedModelAsset] = [:],
         assetIndex: GraphicsAssetIndex = GraphicsAssetIndex(),
@@ -348,7 +349,7 @@ struct LevelViewerWindow: View {
                 }
                 .formStyle(.grouped)
 
-                Text("Scenery objects are drawn at their correct world position, but not yet rotated or scaled to match the chunk data — only translation is currently applied, and scenery has no write path yet (in-session sandbox only). The amber cubes are Instance records (crate/enemy/platform placements) — their position/rotation is real, live-editable with the gizmo, and \"Save Chunk Overrides…\" below writes it back to a copy of the file. Green/cyan wireframe boxes are Triggers/Cameras — click to select and inspect; no 3D gizmo yet, but their inspector panel below has real, writable position/size/rotation fields with their own \"Save Edited Copy…\" button. The small magenta boxes along a camera's path are its real spline/path control points — click and drag one with the gizmo like any other object; \"Save Chunk Overrides…\" patches each moved point's own 16 bytes straight into the file, without needing to re-encode the rest of that Camera record. Inserting or removing a control point isn't supported yet — only moving an existing one.")
+                Text("Scenery objects are drawn at their correct world position, rotation, and scale, decoded from the chunk data — scenery has no write path yet (in-session sandbox only). The amber cubes are Instance records (crate/enemy/platform placements) — their position/rotation is real, live-editable with the gizmo, and \"Save Chunk Overrides…\" below writes it back to a copy of the file. Green/cyan wireframe boxes are Triggers/Cameras — click to select and inspect; no 3D gizmo yet, but their inspector panel below has real, writable position/size/rotation fields with their own \"Save Edited Copy…\" button. The small magenta boxes along a camera's path are its real spline/path control points — click and drag one with the gizmo like any other object; \"Save Chunk Overrides…\" patches each moved point's own 16 bytes straight into the file, without needing to re-encode the rest of that Camera record. Inserting or removing a control point isn't supported yet — only moving an existing one.")
                     .font(.caption2)
                     .foregroundStyle(.orange)
 

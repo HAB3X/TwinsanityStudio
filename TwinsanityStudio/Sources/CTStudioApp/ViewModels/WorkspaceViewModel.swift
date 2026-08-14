@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import simd
 import CTCore
 import CTModels
 import CTParsers
@@ -1861,16 +1862,16 @@ public final class WorkspaceViewModel: ObservableObject {
     /// a plain `Sendable` struct), so the actual resolution loop can run
     /// entirely off the main actor; only the initial `findFileRoot` lookup
     /// (touching `rootNodes`) needs to happen here first.
-    public func resolvedLevelPlacements(for scenery: SceneryAsset, node: ChunkNode) async -> [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)] {
+    public func resolvedLevelPlacements(for scenery: SceneryAsset, node: ChunkNode) async -> [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)] {
         guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return [] }
         return await Task.detached(priority: .userInitiated) {
             let index = AssetResolver.buildIndex(fileRoot: fileRoot)
-            var results: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)] = []
+            var results: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)] = []
             for placement in scenery.placements {
-                guard let translation = placement.translation,
+                guard let transform = placement.worldTransform,
                       let resolved = AssetResolver.resolveModelID(placement.modelID, displayName: "Scenery Object #\(placement.modelID)", index: index)
                 else { continue }
-                results.append((translation, resolved))
+                results.append((transform.position, transform.rotation, transform.scale, resolved))
             }
             return results
         }.value
@@ -2108,7 +2109,7 @@ public final class WorkspaceViewModel: ObservableObject {
         return true
     }
 
-    public func loadChunkLinkPlacements(for link: ChunkLink) async -> (fileName: String, placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)])? {
+    public func loadChunkLinkPlacements(for link: ChunkLink) async -> (fileName: String, placements: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)])? {
         let normalizedPath = link.path.replacingOccurrences(of: "\\", with: "/")
         let targetName = normalizedPath.lowercased().hasSuffix(".sm2") ? normalizedPath : normalizedPath + ".sm2"
 
@@ -2118,7 +2119,7 @@ public final class WorkspaceViewModel: ObservableObject {
             }.map { (archiveIndex, $0) }
         }).first else { return nil }
 
-        return await Task.detached(priority: .userInitiated) { () -> (String, [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)])? in
+        return await Task.detached(priority: .userInitiated) { () -> (String, [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)])? in
             guard let data = try? BDArchiveParser.readEntryData(match.1, index: match.0),
                   let fileRoot = try? Self.mainTreeDriver(forExtension: (match.1.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: .sm2, fileName: match.1.name)
             else { return nil }
@@ -2132,12 +2133,12 @@ public final class WorkspaceViewModel: ObservableObject {
             guard let scenery else { return (match.1.name, []) }
 
             let index = AssetResolver.buildIndex(fileRoot: fileRoot)
-            var results: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)] = []
+            var results: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)] = []
             for placement in scenery.placements {
-                guard let translation = placement.translation,
+                guard let transform = placement.worldTransform,
                       let resolved = AssetResolver.resolveModelID(placement.modelID, displayName: "Scenery Object #\(placement.modelID)", index: index)
                 else { continue }
-                results.append((translation, resolved))
+                results.append((transform.position, transform.rotation, transform.scale, resolved))
             }
             return (match.1.name, results)
         }.value

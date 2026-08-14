@@ -1464,17 +1464,16 @@ protocol GizmoInteractiveRenderer: OrbitCameraRenderer {
 }
 
 /// "Scenery/Level Assembly": draws every resolved placement from a
-/// `SceneryAsset` in one scene, each positioned at its own world-space
-/// translation. Shares `ModelViewerGPUContext`/`GPUSubmesh` upload logic
-/// with `ModelViewerRenderer` — the only real difference is drawing many
-/// objects with per-object model matrices instead of one object at identity.
+/// `SceneryAsset` in one scene, each positioned/oriented/scaled from its
+/// own world-space transform. Shares `ModelViewerGPUContext`/`GPUSubmesh`
+/// upload logic with `ModelViewerRenderer` — the only real difference is
+/// drawing many objects with per-object model matrices instead of one
+/// object at identity.
 ///
-/// Rotation/scale from each placement's decoded 4-row matrix are
-/// deliberately **not** applied — only translation (row 3) is, the same
-/// "position is trustworthy, full matrix orientation isn't independently
-/// confirmed" simplification `ModelViewerWindow.bindPoseSkeletonSegments()`
-/// already makes for joint matrices. Objects will show up in the right
-/// place but not necessarily facing the right way yet.
+/// Rotation/scale come from `SceneryModelPlacement.worldTransform`, which
+/// decomposes the on-disk 4-row matrix using the reference tool's own
+/// working 3D viewer construction (`RMViewer.cs`/`SMViewer.cs`
+/// `LoadScenery`) — not guessed or independently derived.
 final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     private let context: ModelViewerGPUContext
     var device: MTLDevice { context.device }
@@ -1581,7 +1580,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     private var nextSyntheticAIPositionID: UInt32 = 1
 
     init?(
-        placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)],
+        placements: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)],
         instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)] = [],
         resolvedInstanceAssets: [UUID: ResolvedModelAsset] = [:],
         assetIndex: GraphicsAssetIndex = GraphicsAssetIndex(),
@@ -1602,7 +1601,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     }
 
     private func upload(
-        placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)],
+        placements: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)],
         instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)],
         resolvedInstanceAssets: [UUID: ResolvedModelAsset],
         triggers: [(node: ChunkNode, trigger: TriggerVolume)],
@@ -1626,10 +1625,10 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             maxBound = simd_max(maxBound, p)
         }
 
-        for (worldPosition, asset) in placements {
+        for (worldPosition, rotation, scale, asset) in placements {
             let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: asset.mesh, submeshMaterials: asset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture, textureCache: textureCache)
             guard !built.submeshes.isEmpty else { continue }
-            levelObjects.append(GPULevelObject(worldPosition: worldPosition, displayName: asset.displayName, submeshes: built.submeshes, layer: .scenery, boundingRadius: Self.boundingRadius(of: asset.mesh)))
+            levelObjects.append(GPULevelObject(worldPosition: worldPosition, rotation: rotation, scale: scale, displayName: asset.displayName, submeshes: built.submeshes, layer: .scenery, boundingRadius: Self.boundingRadius(of: asset.mesh)))
             // Bounds are tracked from placement position, not local mesh
             // extent — for a whole-level view, "where objects are" matters
             // far more than any one object's own size.
@@ -2225,20 +2224,22 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
 
     /// "Chunk-Based Architecture" (Part 2): appends a neighboring chunk's
     /// already-resolved scenery placements — offset by `worldOffset` (the
-    /// requesting `ChunkLink.chunkMatrix`'s translation row, see
-    /// `WorkspaceViewModel.loadChunkLinkPlacements`'s doc comment for why
-    /// only translation, not the full matrix, is applied) — into this same
+    /// requesting `ChunkLink.chunkMatrix`'s translation row; only that
+    /// link's own translation is applied, each placement's own rotation/
+    /// scale still comes from its own decoded transform) — into this same
     /// viewport as a distinct, independently toggleable `.linkedChunks`
     /// layer. Same "don't recenter the camera" convention as `addObject`:
     /// loading a neighbor in for context shouldn't yank the view away from
     /// what the user was already looking at.
-    func stitchChunk(placements: [(worldPosition: SIMD3<Float>, asset: ResolvedModelAsset)], worldOffset: SIMD3<Float>) -> Int {
+    func stitchChunk(placements: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)], worldOffset: SIMD3<Float>) -> Int {
         var added = 0
-        for (worldPosition, asset) in placements {
+        for (worldPosition, rotation, scale, asset) in placements {
             let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: asset.mesh, submeshMaterials: asset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
             guard !built.submeshes.isEmpty else { continue }
             objects.append(GPULevelObject(
                 worldPosition: worldPosition + worldOffset,
+                rotation: rotation,
+                scale: scale,
                 displayName: asset.displayName,
                 submeshes: built.submeshes,
                 layer: .linkedChunks,

@@ -49,7 +49,7 @@ final class ModelViewerRendererTests: XCTestCase {
             throw XCTSkip("No Metal device available in this environment")
         }
         let asset = makeTestAsset()
-        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), asset)]))
+        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), SIMD3<Float>(1, 1, 1), asset)]))
         renderer.select(index: 0)
 
         // Deliberately away from 90°-multiple angles, where gimbal lock
@@ -70,7 +70,7 @@ final class ModelViewerRendererTests: XCTestCase {
             throw XCTSkip("No Metal device available in this environment")
         }
         let asset = makeTestAsset()
-        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), asset)]))
+        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), SIMD3<Float>(1, 1, 1), asset)]))
         renderer.select(index: 0)
 
         // A zero/negative scale collapses or flips the mesh in a way
@@ -216,7 +216,7 @@ final class ModelViewerRendererTests: XCTestCase {
             throw XCTSkip("No Metal device available in this environment")
         }
         let asset = makeTestAsset()
-        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), asset)]))
+        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), SIMD3<Float>(1, 1, 1), asset)]))
         let before = renderer.objectCount
 
         let newIndex = try XCTUnwrap(renderer.spawnInstance(objectID: 42, at: SIMD3<Float>(5, 1, -3)))
@@ -238,7 +238,7 @@ final class ModelViewerRendererTests: XCTestCase {
             throw XCTSkip("No Metal device available in this environment")
         }
         let asset = makeTestAsset()
-        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), asset)]))
+        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), SIMD3<Float>(1, 1, 1), asset)]))
         let before = renderer.objectCount
         let index = try XCTUnwrap(renderer.spawnInstance(objectID: 7, at: .zero))
 
@@ -264,7 +264,7 @@ final class ModelViewerRendererTests: XCTestCase {
             throw XCTSkip("No Metal device available in this environment")
         }
         let asset = makeTestAsset()
-        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), asset)]))
+        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), SIMD3<Float>(1, 1, 1), asset)]))
         let viewSize = CGSize(width: 800, height: 600)
         let center = CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
 

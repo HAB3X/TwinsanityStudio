@@ -31,6 +31,37 @@ public struct SceneryModelPlacement: Sendable {
         let v = modelMatrix[3]
         return SIMD3(v.x, v.y, v.z)
     }
+
+    /// Decomposes the full 4-row transform into position/rotation/scale,
+    /// using the exact construction the reference tool's own working 3D
+    /// viewer uses (`RMViewer.cs`/`SMViewer.cs` `LoadScenery`: row 0's XYZ
+    /// negated, rows 0/1/2 become columns 1/2/3 of the rotation/scale
+    /// block, row 3 is the translation unchanged). Scale is each column's
+    /// length; dividing it out leaves a pure rotation matrix for
+    /// `simd_quatf`.
+    public var worldTransform: (position: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>)? {
+        guard modelMatrix.count > 3 else { return nil }
+        let row0 = modelMatrix[0]
+        let row1 = modelMatrix[1]
+        let row2 = modelMatrix[2]
+        let row3 = modelMatrix[3]
+
+        let col0 = SIMD3<Float>(-row0.x, -row0.y, -row0.z)
+        let col1 = SIMD3<Float>(row1.x, row1.y, row1.z)
+        let col2 = SIMD3<Float>(row2.x, row2.y, row2.z)
+
+        let scaleX = simd_length(col0)
+        let scaleY = simd_length(col1)
+        let scaleZ = simd_length(col2)
+
+        let rotationMatrix = simd_float3x3(columns: (
+            scaleX > 0.0001 ? col0 / scaleX : SIMD3<Float>(1, 0, 0),
+            scaleY > 0.0001 ? col1 / scaleY : SIMD3<Float>(0, 1, 0),
+            scaleZ > 0.0001 ? col2 / scaleZ : SIMD3<Float>(0, 0, 1)
+        ))
+
+        return (SIMD3(row3.x, row3.y, row3.z), simd_quatf(rotationMatrix), SIMD3(scaleX, scaleY, scaleZ))
+    }
 }
 
 /// A `SceneryModelStruct` — a group of placements sharing one header/type
