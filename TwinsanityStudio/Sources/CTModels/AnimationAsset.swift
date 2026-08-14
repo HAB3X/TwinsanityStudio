@@ -30,8 +30,27 @@ public struct AnimStaticTransform: Sendable, Codable {
     }
 
     public var linearValue: Float { Float(stored) / 4096.0 }
+    /// Real, previously-broken bug: `UInt16.max &+ 1` performs *wrapping*
+    /// addition within `UInt16` itself (Swift has no automatic integer
+    /// promotion the way C#'s `ushort.MaxValue + 1` gets promoted to `int`
+    /// before adding) — `65535 &+ 1` overflows to `0`, not `65536`,
+    /// silently turning this into a division by zero. Any nonzero `stored`
+    /// value then produced `±Infinity` radians, and `simd_quatf(angle:
+    /// .infinity, ...)`'s `sin`/`cos` of an infinite angle is `NaN` —
+    /// poisoning that joint's rotation, and by extension (through the
+    /// parent-chain composition in `AnimationSkeletonBinding.
+    /// animatedWorldTransforms`) every one of its descendants too, for
+    /// every joint whose rotation channel happened to be in this
+    /// "static/frame-invariant" pool rather than the per-frame animated
+    /// one — which real data does constantly (a joint that doesn't rotate
+    /// on a given clip still gets a `Transformation` entry here, not a
+    /// zero). This is likely the actual root cause of "animation playback
+    /// distorts/scrunches the model and it doesn't move": a `NaN`-poisoned
+    /// pose is identical every frame (`NaN` in, `NaN` out, regardless of
+    /// which frame's translation/scale data is otherwise genuinely
+    /// varying), reading as "frozen in a broken shape."
     public var rotationRadians: Float {
-        (Float(stored) * 16) / Float(UInt16.max &+ 1) * .pi * 2
+        (Float(stored) * 16) / (Float(UInt16.max) + 1) * .pi * 2
     }
 }
 

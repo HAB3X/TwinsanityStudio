@@ -52,3 +52,45 @@ final class AnimationParserTests: XCTestCase {
         XCTAssertTrue(animation.facial.jointSettings.isEmpty)
     }
 }
+
+/// Regression for a real, confirmed bug: `AnimStaticTransform.rotationRadians`
+/// divided by `Float(UInt16.max &+ 1)` — Swift's `&+` wraps *within*
+/// `UInt16` (no automatic promotion to a wider type the way C#'s
+/// `ushort.MaxValue + 1` gets promoted to `int`), so `65535 &+ 1` silently
+/// overflowed to `0`, turning every nonzero static rotation value into a
+/// division by zero. `simd_quatf(angle: .infinity, ...)`'s `sin`/`cos` of
+/// an infinite angle is NaN, poisoning that joint's rotation and — through
+/// `AnimationSkeletonBinding`'s parent-chain composition — every one of its
+/// descendants too, for any joint whose rotation channel happened to be in
+/// the static/frame-invariant pool rather than the per-frame animated one
+/// (which real game data does constantly). This was very likely the actual
+/// root cause of "animation playback distorts the model and it doesn't
+/// move": a NaN-poisoned pose looks identical every frame regardless of
+/// which frame's otherwise-genuinely-varying data feeds it.
+final class AnimStaticTransformRotationTests: XCTestCase {
+    func testRotationRadiansIsFiniteForNonzeroStoredValue() {
+        // A real, plausible on-disk value — not zero (which would have
+        // masked the bug: 0/anything is still 0, not Infinity).
+        let transform = AnimStaticTransform(stored: 1024)
+        XCTAssertTrue(transform.rotationRadians.isFinite, "rotationRadians must never be Infinity/NaN for a normal stored value")
+    }
+
+    func testRotationRadiansMatchesHandComputedValue() {
+        // (1024 * 16) / 65536 * 2π = 0.25 * 2π = π/2 — same fixed-point
+        // scale already verified for the per-frame animated path
+        // (AnimationSkeletonBindingTests.testLocalPoseAllAnimatedChannels
+        // uses the identical raw value or 90°).
+        let transform = AnimStaticTransform(stored: 1024)
+        XCTAssertEqual(transform.rotationRadians, .pi / 2, accuracy: 0.0001)
+    }
+
+    func testRotationRadiansAtFullRangeStillFinite() {
+        // The exact boundary value that exposed the bug: Int16.max is the
+        // largest magnitude `stored` can hold, maximizing the numerator
+        // and therefore how far a division-by-zero bug would diverge.
+        let transform = AnimStaticTransform(stored: Int16.max)
+        XCTAssertTrue(transform.rotationRadians.isFinite)
+        let negative = AnimStaticTransform(stored: Int16.min)
+        XCTAssertTrue(negative.rotationRadians.isFinite)
+    }
+}
