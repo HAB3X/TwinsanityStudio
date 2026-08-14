@@ -204,6 +204,17 @@ struct ContentView: View {
         .onChange(of: workspace.levelViewerContext?.id) { _, newValue in
             if newValue != nil { openWindow(id: GPUViewerWindowID.level) }
         }
+        // "Tear-Away Workspaces" (roadmap 9.5): the Hex Viewer and Mod
+        // Crate Hub open as real windows too, not sheets — see
+        // `TearAwayWindowHosts.swift`'s doc comment for why these two
+        // specifically (no "closes when you pick something" navigation to
+        // fight, unlike the asset-browsing hubs below).
+        .onChange(of: workspace.hexViewerNode?.id) { _, newValue in
+            if newValue != nil { openWindow(id: TearAwayWindowID.hexViewer) }
+        }
+        .onChange(of: workspace.isModCrateHubPresented) { _, isPresented in
+            if isPresented { openWindow(id: TearAwayWindowID.modCrateHub) }
+        }
         .sheet(isPresented: $workspace.isModelsHubPresented) {
             ModelsHubView()
                 .environmentObject(workspace)
@@ -227,16 +238,6 @@ struct ContentView: View {
         .sheet(isPresented: $workspace.isAssetDiffPresented) {
             AssetDiffView()
                 .environmentObject(workspace)
-        }
-        .sheet(isPresented: $workspace.isModCrateHubPresented) {
-            ModCrateInspectorView()
-                .environmentObject(workspace)
-        }
-        .sheet(item: $workspace.hexViewerNode) { node in
-            if let bytes = workspace.rawBytes(for: node) {
-                HexViewerWindow(node: node, originalBytes: bytes)
-                    .environmentObject(workspace)
-            }
         }
         .sheet(item: $workspace.agentLabNode) { node in
             AgentLabGraphView(sectionNode: node)

@@ -66,6 +66,19 @@ struct CTStudioApp: App {
                 .tint(workspace.accentColorChoice.color)
         }
 
+        // "Tear-Away Workspaces" (roadmap 9.5) — see
+        // `TearAwayWindowHosts.swift`'s doc comment.
+        Window("Hex Viewer", id: TearAwayWindowID.hexViewer) {
+            HexViewerWindowHost()
+                .environmentObject(workspace)
+                .tint(workspace.accentColorChoice.color)
+        }
+        Window("Mod Crate Hub", id: TearAwayWindowID.modCrateHub) {
+            ModCrateHubWindowHost()
+                .environmentObject(workspace)
+                .tint(workspace.accentColorChoice.color)
+        }
+
         // "New Settings Window": `Settings { }` is SwiftUI's dedicated
         // macOS Preferences scene — it wires the standard app-menu
         // "Settings…" item and ⌘, automatically, no manual command needed.
