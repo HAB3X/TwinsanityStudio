@@ -68,6 +68,17 @@ struct SoundEffectInspectorView: View {
     @State private var isImporting = false
     @State private var importError: String?
 
+    // MARK: - "Dynamic Audio Injector & Loop Master" (roadmap 8.2): loop preview
+    /// This format has no decoded/verified loop-point metadata this build
+    /// has found — these are a real, tool-side playback aid for testing
+    /// where a *replacement* clip should loop before committing to it via
+    /// "Replace with Audio…", not a claim about the original game's own
+    /// (undecoded) loop points.
+    @State private var loopPreviewEnabled = false
+    @State private var loopStartFraction: Double = 0
+    @State private var loopEndFraction: Double = 1
+    @State private var loopMonitorTimer: Timer?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             waveform
@@ -106,6 +117,22 @@ struct SoundEffectInspectorView: View {
                     .foregroundStyle(.orange)
             }
 
+            if !sound.pcmSamples.isEmpty {
+                Divider()
+                Toggle("Loop Preview", isOn: $loopPreviewEnabled)
+                    .toggleStyle(.checkbox)
+                if loopPreviewEnabled {
+                    LabeledContent("Loop Start") { Slider(value: $loopStartFraction, in: 0...loopEndFraction) }
+                    LabeledContent("Loop End") { Slider(value: $loopEndFraction, in: loopStartFraction...1) }
+                    Text(String(format: "%.2fs – %.2fs of %.2fs", loopStartFraction * sound.durationSeconds, loopEndFraction * sound.durationSeconds, sound.durationSeconds))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Text("A real, tool-side playback loop for testing where a *replacement* clip should loop before committing to it — this format has no decoded loop-point metadata this build has found, so this isn't a claim about the original game's own loop points.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             if let node, sound.sourceAudioByteRange != nil {
                 Divider()
                 HStack {
@@ -128,7 +155,10 @@ struct SoundEffectInspectorView: View {
                 }
             }
         }
-        .onDisappear { player?.stop() }
+        .onDisappear {
+            player?.stop()
+            stopLoopMonitor()
+        }
     }
 
     private var waveform: some View {
@@ -158,6 +188,7 @@ struct SoundEffectInspectorView: View {
     private func togglePlayback() {
         if isPlaying {
             player?.stop()
+            stopLoopMonitor()
             isPlaying = false
             return
         }
@@ -197,6 +228,30 @@ struct SoundEffectInspectorView: View {
             workspace.lastError = "AVAudioPlayer.play() returned false — playback didn't start (check system output device/volume)."
         }
         isPlaying = started
+        if started, loopPreviewEnabled {
+            newPlayer.numberOfLoops = -1 // safety net in case the loop range reaches the very end of the clip
+            newPlayer.currentTime = loopStartFraction * newPlayer.duration
+            startLoopMonitor()
+        }
+    }
+
+    /// Polls `player.currentTime` at 20Hz and seeks back to the real loop
+    /// start the moment it crosses the real loop end — `AVAudioPlayer` has
+    /// no native "loop this sub-range" API, only "loop the whole clip."
+    private func startLoopMonitor() {
+        stopLoopMonitor()
+        loopMonitorTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+            guard let player, isPlaying, loopPreviewEnabled else { return }
+            let loopEndTime = loopEndFraction * player.duration
+            if player.currentTime >= loopEndTime {
+                player.currentTime = loopStartFraction * player.duration
+            }
+        }
+    }
+
+    private func stopLoopMonitor() {
+        loopMonitorTimer?.invalidate()
+        loopMonitorTimer = nil
     }
 
     private func exportWAV() {
