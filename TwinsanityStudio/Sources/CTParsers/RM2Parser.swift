@@ -298,12 +298,8 @@ public enum RM2Parser {
                 return .texture(try TextureXParser.parse(&cursor, recordID: recordID))
             case .model:
                 return .mesh(try ModelParser.parse(&cursor, recordID: recordID))
-            case .modelX:
-                return .mesh(try ModelXParser.parse(&cursor, recordID: recordID))
             case .skin:
                 return .mesh(try SkinParser.parse(&cursor, recordID: recordID))
-            case .skinX:
-                return .mesh(try SkinXParser.parse(&cursor, recordID: recordID))
             case .rigidModel, .mesh:
                 return .rigidModel(try RigidModelParser.parse(&cursor, recordID: recordID))
             case .material:
