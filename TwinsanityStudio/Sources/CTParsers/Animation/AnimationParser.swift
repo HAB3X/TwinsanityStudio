@@ -7,6 +7,19 @@ import CTModels
 /// value pool. Ported from `Twinsanity/Items/Code/Animation.cs`.
 public enum AnimationParser {
     public static func parse(_ cursor: inout BinaryCursor, recordID: UInt32) throws -> AnimationAsset {
+        // Real, verified-against-reference leading field (`Animation.
+        // Bitfield`, `Animation.cs:12,78`) — 4 bytes read once, before the
+        // body track's own packer/frame-count, and never repeated for the
+        // facial track. Its meaning isn't decoded anywhere in the reference
+        // tool beyond being written back verbatim, so it's consumed here
+        // purely to keep every following field's offset correct; skipping
+        // it (the previous state of this parser) silently shifted the
+        // entire record 4 bytes early — every joint setting, static
+        // transform, and per-frame value decoded from the wrong bytes, and
+        // `totalFrames` itself decoded as the low 16 bits of what should
+        // have been `AnimationDataPacker`, producing implausible frame
+        // counts (seen in the wild: 23,730) and a garbled pose.
+        _ = try cursor.readUInt32()
         let body = try readTrack(&cursor, requireNonEmpty: true)
         let facial = try readTrack(&cursor, requireNonEmpty: false)
         return AnimationAsset(id: recordID, body: body, facial: facial)

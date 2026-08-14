@@ -7,6 +7,13 @@ final class AnimationParserTests: XCTestCase {
     func testParsesBodyTrackAndSkipsEmptyFacialTrack() throws {
         var w = BinaryWriter()
 
+        // Leading `Bitfield: UInt32` (`Animation.cs:12,78`) — read once,
+        // before the body track's own packer, and never repeated for the
+        // facial track. Its value is opaque/unused by this parser; any
+        // value proves it's being consumed rather than shifting every
+        // following field 4 bytes early.
+        w.writeUInt32(0xDEADBEEF)
+
         // Body packer: joints=1 (bits[0:7)), transformations=1 i.e. raw*2=2
         // (bits[10:22)), componentsPerFrame=2 (bits[22:32)).
         let joints: UInt32 = 1
