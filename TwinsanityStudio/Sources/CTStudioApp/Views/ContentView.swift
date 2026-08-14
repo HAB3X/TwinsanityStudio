@@ -113,6 +113,11 @@ struct ContentView: View {
                     } label: {
                         Label("Mod Crate Hub", systemImage: "shippingbox")
                     }
+                    Button {
+                        workspace.isExecutablePatcherPresented = true
+                    } label: {
+                        Label("Executable Patcher…", systemImage: "shippingbox.and.arrow.backward")
+                    }
                     Divider()
                     Button {
                         presentMemoryCardOpenPanel()
@@ -238,6 +243,9 @@ struct ContentView: View {
         .sheet(isPresented: $workspace.isAssetDiffPresented) {
             AssetDiffView()
                 .environmentObject(workspace)
+        }
+        .sheet(isPresented: $workspace.isExecutablePatcherPresented) {
+            ExecutablePatcherView()
         }
         .sheet(item: $workspace.agentLabNode) { node in
             AgentLabGraphView(sectionNode: node)

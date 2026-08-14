@@ -373,6 +373,11 @@ public final class WorkspaceViewModel: ObservableObject {
     /// any workspace scan state — it opens standalone `.crate` files
     /// directly, independent of whatever archive is currently loaded.
     @Published public var isModCrateHubPresented = false
+    /// "Executable Patcher" — presents `ExecutablePatcherView`. Also
+    /// independent of any open archive: it operates on the game's boot
+    /// executable directly (`default.xbe`/PS2 binary), a file this
+    /// workspace never otherwise loads.
+    @Published public var isExecutablePatcherPresented = false
 
     private var archiveIndexByRootID: [UUID: ArchiveIndex] = [:]
     /// "No More Placeholder Squares": the real game's shared object
