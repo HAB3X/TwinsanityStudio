@@ -1,4 +1,5 @@
 import SwiftUI
+import simd
 import CTModels
 
 /// "Collision Mesh & Trigger Overlays" (blueprint 4.1): a dedicated Metal
@@ -12,6 +13,18 @@ struct CollisionViewerWindow: View {
     @State private var renderer: ModelViewerRenderer?
     @State private var colorBySurface = false
 
+    // MARK: - "Local Physics & Collision Playground" (roadmap 12.1)
+    @State private var physicsBall: PhysicsPlayground?
+    @State private var physicsTimer: Timer?
+    @State private var gravity: Double = -9.8
+    @State private var restitution: Double = 0.5
+    @State private var friction: Double = 0.3
+    @State private var ballRadius: Double = 0.5
+    /// Computed once from the mesh's own real vertex positions, not
+    /// re-derived every physics step.
+    @State private var worldTriangles: [(SIMD3<Float>, SIMD3<Float>, SIMD3<Float>)] = []
+    @State private var dropPoint: SIMD3<Float> = .zero
+
     var body: some View {
         HStack(spacing: 0) {
             viewportArea
@@ -20,10 +33,68 @@ struct CollisionViewerWindow: View {
                 .frame(width: 280)
         }
         .frame(minWidth: 820, minHeight: 560)
-        .onAppear { renderer = ModelViewerRenderer(collisionMesh: mesh) }
+        .onAppear {
+            renderer = ModelViewerRenderer(collisionMesh: mesh)
+            computeWorldTrianglesAndDropPoint()
+        }
         .onChange(of: colorBySurface) { _, newValue in
             renderer?.collisionColorMode = newValue ? .bySurfaceID : .solid
         }
+        .onDisappear { stopPhysics() }
+    }
+
+    /// Real triangle positions straight from the mesh's own decoded
+    /// vertices/indices — the exact same geometry the wireframe overlay
+    /// draws, so "drop a ball" is always testing against what's actually
+    /// on screen. `dropPoint` starts centered above the mesh's real
+    /// bounding box, high enough to fall onto it rather than through
+    /// empty space to one side.
+    private func computeWorldTrianglesAndDropPoint() {
+        worldTriangles = mesh.triangles.compactMap { triangle in
+            guard mesh.vertices.indices.contains(triangle.vertexIndex1),
+                  mesh.vertices.indices.contains(triangle.vertexIndex2),
+                  mesh.vertices.indices.contains(triangle.vertexIndex3)
+            else { return nil }
+            let v1 = mesh.vertices[triangle.vertexIndex1], v2 = mesh.vertices[triangle.vertexIndex2], v3 = mesh.vertices[triangle.vertexIndex3]
+            return (SIMD3(v1.x, v1.y, v1.z), SIMD3(v2.x, v2.y, v2.z), SIMD3(v3.x, v3.y, v3.z))
+        }
+        guard !mesh.vertices.isEmpty else { return }
+        var minP = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var maxP = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        for v in mesh.vertices {
+            let p = SIMD3(v.x, v.y, v.z)
+            minP = simd_min(minP, p)
+            maxP = simd_max(maxP, p)
+        }
+        let center = (minP + maxP) / 2
+        dropPoint = SIMD3(center.x, maxP.y + (maxP.y - minP.y) * 0.5 + 1, center.z)
+    }
+
+    private func dropBall() {
+        stopPhysics()
+        var ball = PhysicsPlayground(position: dropPoint, radius: Float(ballRadius))
+        ball.gravity = Float(gravity)
+        ball.restitution = Float(restitution)
+        ball.friction = Float(friction)
+        physicsBall = ball
+        updateBallOverlay()
+        physicsTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { _ in
+            guard physicsBall != nil else { return }
+            physicsBall?.step(deltaTime: 1.0 / 60.0, against: worldTriangles)
+            updateBallOverlay()
+        }
+    }
+
+    private func stopPhysics() {
+        physicsTimer?.invalidate()
+        physicsTimer = nil
+        physicsBall = nil
+        renderer?.physicsBallWorldPositions = []
+    }
+
+    private func updateBallOverlay() {
+        guard let physicsBall else { return }
+        renderer?.physicsBallWorldPositions = ModelViewerRenderer.sphereEdges(center: physicsBall.position, radius: physicsBall.radius)
     }
 
     @ViewBuilder
@@ -83,6 +154,9 @@ struct CollisionViewerWindow: View {
                      : "Every triangle edge is drawn — shared edges between adjacent triangles overlap rather than being deduplicated.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+
+                Divider()
+                physicsPlaygroundSection
             }
             .padding(16)
         }
@@ -110,6 +184,42 @@ struct CollisionViewerWindow: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
+        }
+    }
+
+    /// "Local Physics & Collision Playground" (roadmap 12.1): drops a real
+    /// simulated sphere and steps it against this mesh's own real
+    /// triangles at 60Hz, live. Gravity/restitution/friction are exactly
+    /// what the roadmap calls for — user-adjustable test values ("slippery
+    /// ice or bouncy crates"), not a recreation of the shipped game's own
+    /// physics tuning, which this codebase has no decoded/verified model
+    /// of.
+    private var physicsPlaygroundSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Physics Playground", systemImage: "circle.circle").font(.subheadline.bold())
+
+            LabeledContent("Gravity") { Slider(value: $gravity, in: -30...0) }
+            LabeledContent("Restitution") { Slider(value: $restitution, in: 0...1) }
+            LabeledContent("Friction") { Slider(value: $friction, in: 0...1) }
+            LabeledContent("Ball Radius") { Slider(value: $ballRadius, in: 0.1...5) }
+
+            if let physicsBall {
+                Text("y = \(String(format: "%.2f", physicsBall.position.y))  |  speed = \(String(format: "%.2f", simd_length(physicsBall.velocity)))")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Button("Drop Ball") { dropBall() }
+                    .disabled(worldTriangles.isEmpty)
+                if physicsBall != nil {
+                    Button("Stop") { stopPhysics() }
+                }
+            }
+
+            Text("A real local simulation (gravity + sphere-vs-triangle collision) against this mesh's own real geometry — entirely offline, not connected to any emulator, and not a claim this matches the original game's own physics tuning.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 }

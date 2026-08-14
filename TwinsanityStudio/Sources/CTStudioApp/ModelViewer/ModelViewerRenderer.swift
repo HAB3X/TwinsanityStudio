@@ -394,6 +394,23 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
     }
     private var proceduralOBBLineBuffer: MTLBuffer?
 
+    /// "Local Physics & Collision Playground" (roadmap 12.1): a wireframe
+    /// sphere (three orthogonal circles) at `PhysicsPlayground`'s current
+    /// world-space ball position, drawn with the same colored-line
+    /// machinery as `collisionVolumeWorldPositions`/`proceduralOBBWorldPositions`
+    /// above — the ball is a real, locally-simulated object, not decoded
+    /// game data or a computed analysis result, so it gets its own color
+    /// to stay visually distinct from both.
+    var physicsBallWorldPositions: [(SIMD3<Float>, SIMD3<Float>)] = [] {
+        didSet {
+            physicsBallLineBuffer = Self.makeColoredLineBuffer(
+                device: device, segments: physicsBallWorldPositions,
+                colors: [SIMD3<Float>](repeating: SIMD3(1.0, 0.9, 0.2), count: physicsBallWorldPositions.count)
+            )
+        }
+    }
+    private var physicsBallLineBuffer: MTLBuffer?
+
     /// "Granular Component Visibility": submesh indices (matching
     /// `ResolvedModelAsset.mesh.submeshes`/`.submeshMaterials`) to skip
     /// during the draw pass. Indices, not identity, because that's the
@@ -581,6 +598,26 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             (corners[4], corners[5]), (corners[5], corners[6]), (corners[6], corners[7]), (corners[7], corners[4]),
             (corners[0], corners[4]), (corners[1], corners[5]), (corners[2], corners[6]), (corners[3], corners[7])
         ]
+    }
+
+    /// "Local Physics & Collision Playground" (roadmap 12.1): three
+    /// orthogonal circles (XY/XZ/YZ planes) approximating a wireframe
+    /// sphere at `center` — the standard, cheap way to visualize a sphere
+    /// with line-list geometry (no filled-sphere pipeline needed).
+    static func sphereEdges(center: SIMD3<Float>, radius: Float, segments: Int = 24) -> [(SIMD3<Float>, SIMD3<Float>)] {
+        guard radius > 0, segments >= 3 else { return [] }
+        var result: [(SIMD3<Float>, SIMD3<Float>)] = []
+        result.reserveCapacity(segments * 3)
+        for i in 0..<segments {
+            let angle1 = 2 * Float.pi * Float(i) / Float(segments)
+            let angle2 = 2 * Float.pi * Float(i + 1) / Float(segments)
+            let (s1, c1) = (sin(angle1), cos(angle1))
+            let (s2, c2) = (sin(angle2), cos(angle2))
+            result.append((center + radius * SIMD3(c1, s1, 0), center + radius * SIMD3(c2, s2, 0))) // XY
+            result.append((center + radius * SIMD3(c1, 0, s1), center + radius * SIMD3(c2, 0, s2))) // XZ
+            result.append((center + radius * SIMD3(0, c1, s1), center + radius * SIMD3(0, c2, s2))) // YZ
+        }
+        return result
     }
 
     private static func makeColoredLineBuffer(device: MTLDevice, segments: [(SIMD3<Float>, SIMD3<Float>)], colors: [SIMD3<Float>]) -> MTLBuffer? {
@@ -983,6 +1020,17 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
             encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: proceduralOBBWorldPositions.count * 2)
+        }
+
+        // "Local Physics & Collision Playground" (roadmap 12.1) — same
+        // colored-line pipeline, yellow so the live-simulated ball reads
+        // as distinct from both the decoded `GI_CollisionData` overlay and
+        // the computed OBB.
+        if let coloredPipelineState = context.collisionLineColoredPipelineState, let lineBuffer = physicsBallLineBuffer, !physicsBallWorldPositions.isEmpty {
+            encoder.setRenderPipelineState(coloredPipelineState)
+            encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: physicsBallWorldPositions.count * 2)
         }
 
         if collisionColorMode == .bySurfaceID, let coloredPipelineState = context.collisionLineColoredPipelineState, let lineBuffer = collisionLineColoredBuffer, !collisionEdgeWorldPositions.isEmpty {
