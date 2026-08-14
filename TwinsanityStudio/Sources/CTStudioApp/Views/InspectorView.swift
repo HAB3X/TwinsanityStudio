@@ -195,11 +195,18 @@ struct InspectorView: View {
             suggestedName: "modified.iso",
             message: "Save the rebuilt disc image with \(node.displayName) replaced. The originally mounted image is not modified."
         ) else { return }
-        do {
-            try newImage.write(to: destinationURL)
-            workspace.statusMessage = "Saved rebuilt disc image to \(destinationURL.lastPathComponent) with \(node.displayName) replaced."
-        } catch {
-            workspace.lastError = "Couldn't save the rebuilt disc image: \(error.localizedDescription)"
+        // A rebuilt disc image can be hundreds of MB to several GB — same
+        // "write large data off the main actor" discipline as every other
+        // save path in this app (`writeDataAsync` itself, plus the
+        // `isSaving` toggle it drives, which the toolbar's global spinner
+        // already reads).
+        Task {
+            do {
+                try await workspace.writeDataAsync(newImage, to: destinationURL)
+                workspace.statusMessage = "Saved rebuilt disc image to \(destinationURL.lastPathComponent) with \(node.displayName) replaced."
+            } catch {
+                workspace.lastError = "Couldn't save the rebuilt disc image: \(error.localizedDescription)"
+            }
         }
     }
 

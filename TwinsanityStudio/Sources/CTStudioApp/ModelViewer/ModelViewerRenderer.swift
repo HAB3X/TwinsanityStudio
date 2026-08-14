@@ -1838,7 +1838,15 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// pattern the Animation Sandbox's own playback timer already uses).
     func updateActiveTriggers() {
         let eye = cameraEyeWorldPosition
-        activeTriggerIDs = Set(triggers.compactMap { Self.triggerContains($0.trigger, point: eye) ? $0.trigger.id : nil })
+        let newActive = Set(triggers.compactMap { Self.triggerContains($0.trigger, point: eye) ? $0.trigger.id : nil })
+        // `activeTriggerIDs`'s `didSet` rebuilds the whole overlay buffer
+        // (every trigger/camera/spline/AI waypoint/chunk wall, two fresh
+        // `MTLBuffer` allocations) — this is called 10x/second by Scene
+        // Preview Mode's timer, so skipping the assignment when nothing
+        // actually changed avoids that full rebuild on every tick the
+        // camera doesn't cross a trigger boundary.
+        guard newActive != activeTriggerIDs else { return }
+        activeTriggerIDs = newActive
     }
 
     /// Rebuilds the line-primitive vertex buffer for trigger/camera

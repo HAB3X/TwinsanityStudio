@@ -51,6 +51,7 @@ struct RecipeBookView: View {
     /// enabled/disabled placed-Camera IDs the user has toggled away from
     /// their on-disk state.
     @State private var pendingCameraDisables: Set<UUID> = []
+    @State private var isSaving = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -332,8 +333,8 @@ struct RecipeBookView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
-            Button("Apply Recipe…") { applyRecipe() }
-                .disabled(total == 0)
+            Button(isSaving ? "Saving…" : "Apply Recipe…") { applyRecipe() }
+                .disabled(total == 0 || isSaving)
         }
         .padding()
     }
@@ -356,16 +357,21 @@ struct RecipeBookView: View {
             suggestedName: "\(workspace.originalFileName(for: referenceNode) ?? "chunk")_recipe.rm2",
             message: "Save the edited copy of this file with \(edits.count) change(s) applied. The original file on disk is not modified."
         ) else { return }
-        do {
-            try patchedBytes.write(to: url)
-            workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent) with \(edits.count) change(s)."
-            pendingSwaps.removeAll()
-            pendingTriggerSwaps.removeAll()
-            enabledGameplayMods.removeAll()
-            pendingCameraDisables.removeAll()
-            dismiss()
-        } catch {
-            workspace.lastError = "Save failed: \(error)"
+        isSaving = true
+        Task {
+            do {
+                try await workspace.writeDataAsync(patchedBytes, to: url)
+                workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent) with \(edits.count) change(s)."
+                pendingSwaps.removeAll()
+                pendingTriggerSwaps.removeAll()
+                enabledGameplayMods.removeAll()
+                pendingCameraDisables.removeAll()
+                isSaving = false
+                dismiss()
+            } catch {
+                workspace.lastError = "Save failed: \(error)"
+                isSaving = false
+            }
         }
     }
 }

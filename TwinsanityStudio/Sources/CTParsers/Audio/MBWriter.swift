@@ -32,13 +32,31 @@ public enum MBWriter {
                     throw MBWriterError.missingAudioData(index: entry.index)
                 }
 
+                // Audio data - PCM needs to be encoded to ADPCM first.
+                // Encoded before the header below (rather than after, as a
+                // separate step) so the header's size field below reflects
+                // the real encoded byte count, not the pre-edit
+                // `entry.size` — those two can legitimately differ (ADPCM
+                // encoding nuances, or the PCM itself having been edited to
+                // a different sample count), and a stale header size would
+                // otherwise desync from the payload actually written.
+                let adpcmData = ADPCMEncoder.fromPCMMono(sound.pcmSamples)
+
                 // Write MSVp header
                 data.append(contentsOf: Array("MSVp".utf8)) // magic
                 data.append(contentsOf: [0, 0, 0, 1])       // version = 1
                 data.append(contentsOf: [0, 0, 0, 0])       // unused
 
-                // Size field (big-endian, redundant with MH size)
-                let sizeField = UInt32(entry.size).bigEndian
+                // Size field (big-endian, redundant with MH size) — the
+                // real, just-computed encoded byte count. Extracted
+                // MSB-first directly from the plain value: calling
+                // `.bigEndian` first and *then* extracting MSB-first is a
+                // double byte-swap that silently writes little-endian
+                // bytes instead (confirmed against `SoundBankParser.
+                // decodeMonoEntry`, which reads this exact field — and the
+                // sample rate below — genuinely MSB-first per its own
+                // doc comment, "confirmed against real data").
+                let sizeField = UInt32(adpcmData.count)
                 data.append(contentsOf: [
                     UInt8((sizeField >> 24) & 0xFF),
                     UInt8((sizeField >> 16) & 0xFF),
@@ -46,8 +64,8 @@ public enum MBWriter {
                     UInt8(sizeField & 0xFF)
                 ])
 
-                // Sample rate (big-endian)
-                let sampleRateBE = UInt32(sound.sampleRateHz).bigEndian
+                // Sample rate (big-endian) — same direct-extraction fix.
+                let sampleRateBE = UInt32(sound.sampleRateHz)
                 data.append(contentsOf: [
                     UInt8((sampleRateBE >> 24) & 0xFF),
                     UInt8((sampleRateBE >> 16) & 0xFF),
@@ -69,15 +87,6 @@ public enum MBWriter {
                     }
                 }
                 data.append(contentsOf: nameBytes)
-
-                // Audio data - PCM needs to be encoded to ADPCM first
-                let adpcmData = ADPCMEncoder.fromPCMMono(sound.pcmSamples)
-
-                // Verify the encoded data matches expected size (allow small variance)
-                if adpcmData.count != Int(entry.size) {
-                    // This can happen due to ADPCM encoding nuances - we'll use what we got
-                    // but log a warning in production code
-                }
 
                 data.append(contentsOf: adpcmData)
 

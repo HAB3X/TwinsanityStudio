@@ -133,8 +133,16 @@ public struct SkeletonAsset: Sendable, Identifiable, Codable {
             childrenByParentIndex[joint.parentJointIndex, default: []].append(joint)
         }
 
+        // Guards against more than just a joint being its own direct
+        // parent: a malformed/corrupt file could have a longer
+        // `parentJointIndex` cycle (A's parent is B, B's parent is A),
+        // which would otherwise recurse forever — same "don't let a
+        // corrupt file crash the app via runaway indirection" reasoning as
+        // `AssetResolver.resolveModelID`'s depth guard on `LodModel` chains.
+        var visited: Set<UInt32> = [rootJoint.jointIndex]
         func build(_ joint: Joint) -> SkeletonTreeNode {
-            let childJoints = (childrenByParentIndex[joint.jointIndex] ?? []).filter { $0.jointIndex != joint.jointIndex }
+            let childJoints = (childrenByParentIndex[joint.jointIndex] ?? []).filter { !visited.contains($0.jointIndex) }
+            for child in childJoints { visited.insert(child.jointIndex) }
             return SkeletonTreeNode(joint: joint, children: childJoints.map(build))
         }
         return build(rootJoint)

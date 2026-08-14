@@ -494,13 +494,16 @@ public final class WorkspaceViewModel: ObservableObject {
     /// Deliberately not recursive: `SYSTEM.CNF` is only ever meaningful at
     /// an actual disc/ISO root, so searching subfolders would risk
     /// matching an unrelated file and reporting a wrong region with false
-    /// confidence.
-    private func detectRegion(inFolder folder: URL) {
-        detectedRegion = nil
-        guard let entries = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return }
-        guard let cnfURL = entries.first(where: { $0.lastPathComponent.uppercased() == "SYSTEM.CNF" }) else { return }
-        guard let contents = try? String(contentsOf: cnfURL, encoding: .ascii) else { return }
-        detectedRegion = SystemCNFParser.parse(contents: contents)
+    /// confidence. `static`/non-isolated (unlike the rest of this
+    /// `@MainActor` class) so `open(url:)` can run it inside a
+    /// `Task.detached` alongside `WorkspaceAutoDetector.scanFolder` — same
+    /// reasoning as that function's own doc comment about not blocking the
+    /// main actor on folder-sized disk I/O.
+    private nonisolated static func detectRegionSync(inFolder folder: URL) -> SystemCNFInfo? {
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return nil }
+        guard let cnfURL = entries.first(where: { $0.lastPathComponent.uppercased() == "SYSTEM.CNF" }) else { return nil }
+        guard let contents = try? String(contentsOf: cnfURL, encoding: .ascii) else { return nil }
+        return SystemCNFParser.parse(contents: contents)
     }
 
     /// The tree the sidebar actually renders: `rootNodes` narrowed by the
@@ -547,33 +550,23 @@ public final class WorkspaceViewModel: ObservableObject {
         var isDir: ObjCBool = false
         FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
         if isDir.boolValue {
-            detectRegion(inFolder: url)
-            let detected = WorkspaceAutoDetector.scanFolder(url)
-            statusMessage = "Found \(detected.count) recognizable file(s) in \(url.lastPathComponent)."
-            if let detectedRegion, detectedRegion.region != .unknown {
-                statusMessage += " Detected region: \(detectedRegion.region.displayName)\(detectedRegion.serial.map { " (\($0))" } ?? "")."
+            // The folder walk itself (`WorkspaceAutoDetector.scanFolder`'s
+            // recursive `FileManager.enumerator` plus a `resourceValues`
+            // call per entry, and `detectRegionSync`'s own directory
+            // listing) is real, scale-with-folder-size disk I/O — the same
+            // "instantly crashed"-looking freeze this function's own
+            // pre-existing comment below already fixed for the *parsing*
+            // half (loose level files). The scan half was still running
+            // inline on the main actor; moved off it here for the same
+            // reason, mirroring `loadLooseLevelFilesAsync`'s
+            // `Task.detached` shape.
+            isScanning = true
+            statusMessage = "Scanning \(url.lastPathComponent)…"
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let region = Self.detectRegionSync(inFolder: url)
+                let detected = WorkspaceAutoDetector.scanFolder(url)
+                await self?.applyFolderScanResults(url: url, region: region, detected: detected)
             }
-            // "Fatal Crash on File Selection": `.archiveIndex`/`.archiveData`
-            // are cheap (a header + entry-name list, not a full parse) and
-            // stay on `load(_:)`'s existing synchronous path, matching
-            // single-file open. `.levelResource`/`.sceneryResource` loose
-            // files are each a *full* parse — potentially many of them for
-            // a folder pick (an extracted mod folder, a whole disc root),
-            // and running that in a plain `for` loop on the main actor
-            // blocked the UI for however long all of them took combined,
-            // with zero opportunity for AppKit to service events in
-            // between. On this machine that's easily long enough to look
-            // and feel exactly like "the app instantly crashed" even
-            // though every individual parse was already safely wrapped in
-            // `load(_:)`'s own `do`/`catch` — the freeze was real, not a
-            // Swift-level crash, but indistinguishable from one to a user
-            // watching a spinning beachball. Routed through the same
-            // off-main-actor `TaskGroup` shape `scanAllArchives()` already
-            // uses for exactly this reason.
-            let looseLevelFiles = detected.filter { $0.kind == .levelResource || $0.kind == .sceneryResource }
-            let remaining = detected.filter { $0.kind != .levelResource && $0.kind != .sceneryResource }
-            for file in remaining { load(file) }
-            if !looseLevelFiles.isEmpty { loadLooseLevelFilesAsync(looseLevelFiles) }
             return
         }
         // "Modular TT Engine Cross-Compatibility" (roadmap 5.3): a file
@@ -592,6 +585,40 @@ public final class WorkspaceViewModel: ObservableObject {
             return
         }
         load(detected)
+    }
+
+    /// Applies the results of the off-main-actor folder scan `open(url:)`'s
+    /// directory branch starts — the on-main-actor "finish up" half, same
+    /// split `applyLooseLevelFileResults` uses for the loose-file parse
+    /// results below.
+    private func applyFolderScanResults(url: URL, region: SystemCNFInfo?, detected: [DetectedFile]) {
+        isScanning = false
+        detectedRegion = region
+        statusMessage = "Found \(detected.count) recognizable file(s) in \(url.lastPathComponent)."
+        if let detectedRegion, detectedRegion.region != .unknown {
+            statusMessage += " Detected region: \(detectedRegion.region.displayName)\(detectedRegion.serial.map { " (\($0))" } ?? "")."
+        }
+        // "Fatal Crash on File Selection": `.archiveIndex`/`.archiveData`
+        // are cheap (a header + entry-name list, not a full parse) and
+        // stay on `load(_:)`'s existing synchronous path, matching
+        // single-file open. `.levelResource`/`.sceneryResource` loose
+        // files are each a *full* parse — potentially many of them for
+        // a folder pick (an extracted mod folder, a whole disc root),
+        // and running that in a plain `for` loop on the main actor
+        // blocked the UI for however long all of them took combined,
+        // with zero opportunity for AppKit to service events in
+        // between. On this machine that's easily long enough to look
+        // and feel exactly like "the app instantly crashed" even
+        // though every individual parse was already safely wrapped in
+        // `load(_:)`'s own `do`/`catch` — the freeze was real, not a
+        // Swift-level crash, but indistinguishable from one to a user
+        // watching a spinning beachball. Routed through the same
+        // off-main-actor `TaskGroup` shape `scanAllArchives()` already
+        // uses for exactly this reason.
+        let looseLevelFiles = detected.filter { $0.kind == .levelResource || $0.kind == .sceneryResource }
+        let remaining = detected.filter { $0.kind != .levelResource && $0.kind != .sceneryResource }
+        for file in remaining { load(file) }
+        if !looseLevelFiles.isEmpty { loadLooseLevelFilesAsync(looseLevelFiles) }
     }
 
     /// One parsed loose `.RM2`/`.SM2` file's full result — everything

@@ -96,6 +96,57 @@ final class SoundBankWriterTests: XCTestCase {
         XCTAssertEqual(mbData[7], 1)
     }
 
+    /// The MSVp header's size field must reflect the real, just-encoded
+    /// ADPCM byte count — not whatever `entry.size` the caller happened to
+    /// supply beforehand. Deliberately passes a wildly wrong `entrySize`
+    /// (9999) to prove the header isn't just echoing it back: a stale
+    /// header size (this test's exact regression target) would show up
+    /// here as `9999`, not the real payload length.
+    func testMBWriterHeaderSizeReflectsRealEncodedLength() throws {
+        let pcmSamples = [Int16](repeating: 1000, count: 50)
+        let sound = SoundEffectAsset(id: 0, sampleRateHz: UInt16(22050), pcmSamples: pcmSamples)
+        let entry = SoundBankEntry(
+            index: 0,
+            rawKind: SoundBankEntryKind.mono.rawValue,
+            size: 9999, // deliberately wrong — must not end up in the header
+            offset: 0,
+            sampleRateHz: 22050,
+            skip: 0,
+            name: "TEST_MONO",
+            sound: sound
+        )
+
+        let mbData = try MBWriter.encode([entry], interleave: 0)
+        let realPayloadLength = mbData.count - 48 // whole file minus the one 48-byte MSVp header
+
+        // Header layout: magic(4) + version(4) + unused(4) + size(4) — the
+        // size field is bytes 12-15, not immediately after version.
+        let sizeFieldBE = (UInt32(mbData[12]) << 24) | (UInt32(mbData[13]) << 16) | (UInt32(mbData[14]) << 8) | UInt32(mbData[15])
+        XCTAssertEqual(sizeFieldBE, UInt32(realPayloadLength))
+        XCTAssertNotEqual(sizeFieldBE, 9999, "header size field must not be the stale entry.size")
+    }
+
+    /// `SoundBankParser.decodeMonoEntry` reads the sample rate at
+    /// offset+16 genuinely MSB-first ("confirmed against real data" per
+    /// its own doc comment) — this pins the writer to produce bytes that
+    /// round-trip through that exact reader, catching the double
+    /// byte-swap regression (`.bigEndian` value + manual MSB-first
+    /// extraction silently produces little-endian bytes) a sibling test
+    /// for the size field already caught once.
+    func testMBWriterSampleRateIsGenuinelyBigEndian() throws {
+        let sampleRateHz: UInt16 = 0x5622 // 22050 — high and low bytes both nonzero, so a swap is visible
+        let sound = SoundEffectAsset(id: 0, sampleRateHz: sampleRateHz, pcmSamples: [Int16](repeating: 500, count: 20))
+        let entry = SoundBankEntry(
+            index: 0, rawKind: SoundBankEntryKind.mono.rawValue, size: 0, offset: 0,
+            sampleRateHz: UInt32(sampleRateHz), skip: 0, name: "RATE_TEST", sound: sound
+        )
+
+        let mbData = try MBWriter.encode([entry], interleave: 0)
+        // Sample rate lives at header offset 16 (magic 4 + version 4 + unused 4 + size 4).
+        let rateBytes = mbData[(mbData.startIndex + 16)..<(mbData.startIndex + 20)]
+        XCTAssertEqual(Array(rateBytes), [0x00, 0x00, 0x56, 0x22], "expected genuine big-endian (MSB first) bytes, matching SoundBankParser.decodeMonoEntry's own read order")
+    }
+
     func testDataExtensions() {
         // Test that our Data extensions work correctly
         var testData = Data()
