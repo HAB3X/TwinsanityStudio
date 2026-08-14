@@ -1490,6 +1490,13 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     // MARK: - Forge-style selection & gizmo (blueprint 6.1)
 
     private(set) var selectedObjectIndex: Int?
+    /// The currently-selected object's real layer — lets a caller (e.g.
+    /// the "Procedural Brush" scatter UI) show/hide layer-specific
+    /// controls without needing `objects` itself exposed.
+    var selectedObjectLayer: SceneLayer? {
+        guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return nil }
+        return objects[selectedObjectIndex].layer
+    }
     var snapToGrid = true
     var gridSize: Float = 1.0
     /// Rotation snap step, in degrees — the rotate-mode equivalent of
@@ -2417,6 +2424,39 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         default:
             return nil
         }
+    }
+
+    /// "Procedural Brush" (roadmap 8.6 — the real half; the "AgentLab
+    /// Copilot" bytecode-to-English half of that item needs a trained
+    /// local model this build doesn't have and isn't attempted): scatters
+    /// `count` more copies of the selected Instance placement's real
+    /// objectID at randomized positions within `radius` of it (each with
+    /// an independent random Y-axis rotation for natural variation),
+    /// through the exact same real `spawnInstance` pipeline
+    /// `duplicateSelectedObject` already uses — every scattered copy is a
+    /// real new `Instance` record on save, not a purely visual copy. Only
+    /// `.actors` has a real spawn primitive to scatter through (same
+    /// reasoning as `duplicateSelectedObject`'s own layer check); any
+    /// other layer returns an empty array rather than a fabricated one.
+    @discardableResult
+    func scatterAroundSelected(count: Int, radius: Float) -> [Int] {
+        guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex), count > 0, radius > 0 else { return [] }
+        let object = objects[selectedObjectIndex]
+        guard object.layer == .actors else { return [] }
+        let objectID = object.newInstanceObjectID ?? object.sourceNode.flatMap { instanceObjectIDByNodeID[$0.id] }
+        guard let objectID else { return [] }
+
+        var newIndices: [Int] = []
+        for _ in 0..<count {
+            let angle = Float.random(in: 0..<(2 * .pi))
+            let distance = Float.random(in: 0...radius)
+            let offset = SIMD3<Float>(cos(angle) * distance, 0, sin(angle) * distance)
+            guard let newIndex = spawnInstance(objectID: objectID, at: object.worldPosition + offset) else { continue }
+            objects[newIndex].rotation = simd_quatf(angle: Float.random(in: 0..<(2 * .pi)), axis: SIMD3(0, 1, 0))
+            newIndices.append(newIndex)
+        }
+        if let lastIndex = newIndices.last { select(index: lastIndex) }
+        return newIndices
     }
 
     /// "AI Pathfinding & Navmesh Editor" (roadmap 5.1): appends a brand-new

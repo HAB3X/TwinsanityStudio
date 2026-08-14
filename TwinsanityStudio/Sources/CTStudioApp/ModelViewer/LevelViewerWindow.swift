@@ -150,6 +150,10 @@ struct LevelViewerWindow: View {
     /// the renderer itself is a plain class AppKit mutates directly, not an
     /// `ObservableObject`.
     @State private var armedPlacement: (objectID: UInt16, name: String)?
+    /// "Procedural Brush" (roadmap 8.6) — see `scatterSelected`'s doc
+    /// comment.
+    @State private var scatterCount: Double = 8
+    @State private var scatterRadius: Double = 3
     /// "Scene Preview Mode" (roadmap 7.1) — see `scenePreviewModeToggle`'s
     /// doc comment.
     @State private var isScenePreviewMode = false
@@ -801,6 +805,25 @@ struct LevelViewerWindow: View {
                 .help(canDuplicateSelected
                     ? "Duplicate the selected object, with real write-back to disk on save."
                     : "Only Actor/Instance placements and AI waypoints can be duplicated — scenery, triggers, and cameras have no write path back to the file yet.")
+
+                if canScatterSelected {
+                    Divider()
+                    Label("Procedural Brush", systemImage: "wind").font(.caption.bold())
+                    HStack {
+                        Text("Count"); Stepper(value: $scatterCount, in: 1...50) { Text("\(Int(scatterCount))") }
+                    }
+                    HStack {
+                        Text("Radius"); Stepper(value: $scatterRadius, in: 0.5...50, step: 0.5) { Text(String(format: "%.1f", scatterRadius)) }
+                    }
+                    Button {
+                        scatterSelected()
+                    } label: {
+                        Label("Scatter \(Int(scatterCount))…", systemImage: "wind")
+                    }
+                    Text("Set-dresses the level: scatters \(Int(scatterCount)) more real copies of the selected object at random positions/rotations within \(String(format: "%.1f", scatterRadius))m — each one a genuine new Instance record on save, through the same pipeline Duplicate uses.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 Text("Select an object below (or drag one from the Models Hub into the viewport) to transform it with the gizmo or these fields.")
                     .font(.caption2)
@@ -1095,6 +1118,29 @@ struct LevelViewerWindow: View {
         undoManager.setActionName("Duplicate Object")
         Self.registerPlacementUndo(undoManager: undoManager, renderer: renderer, index: newIndex)
         Self.registerAIWaypointPlacementUndo(undoManager: undoManager, renderer: renderer, index: newIndex)
+    }
+
+    /// "Procedural Brush" (roadmap 8.6): only offered for a selected
+    /// Actor/Instance placement — `LevelViewerRenderer.scatterAroundSelected`
+    /// itself already scopes to that layer (the only one with a real spawn
+    /// primitive), this just avoids showing controls that would silently
+    /// no-op for scenery/trigger/camera/AI-waypoint selections.
+    private var canScatterSelected: Bool {
+        guard let renderer, let selectedIndex else { return false }
+        return renderer.canDuplicate(at: selectedIndex) && renderer.selectedObjectLayer == .actors
+    }
+
+    private func scatterSelected() {
+        guard let renderer else { return }
+        let newIndices = renderer.scatterAroundSelected(count: Int(scatterCount), radius: Float(scatterRadius))
+        guard !newIndices.isEmpty else { return }
+        selectedIndex = newIndices.last
+        refreshTransformFields()
+        guard let undoManager else { return }
+        undoManager.setActionName("Scatter \(newIndices.count) Objects")
+        for index in newIndices {
+            Self.registerPlacementUndo(undoManager: undoManager, renderer: renderer, index: index)
+        }
     }
 
     private static func registerPlacementUndo(undoManager: UndoManager, renderer: LevelViewerRenderer, index: Int) {
