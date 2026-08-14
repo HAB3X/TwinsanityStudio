@@ -427,14 +427,15 @@ struct LevelViewerWindow: View {
             } label: {
                 Label("Recipe Book…", systemImage: "wand.and.stars")
             }
-            .disabled(context.instanceMarkers.isEmpty)
-            .help("Reassign which real object each placement in this chunk resolves to.")
+            .disabled(context.instanceMarkers.isEmpty && context.triggers.count < 2)
+            .help("Reassign which real object each placement resolves to, or batch-edit triggers that share the same arguments.")
         }
         .sheet(isPresented: $isRecipeBookPresented) {
             if let referenceNode = referenceNodeForFileOps {
                 RecipeBookView(
                     instanceMarkers: context.instanceMarkers,
                     resolvedInstanceAssets: context.resolvedInstanceAssets,
+                    triggers: context.triggers,
                     referenceNode: referenceNode
                 )
                 .environmentObject(workspace)

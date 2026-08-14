@@ -26,23 +26,42 @@ struct RecipeBookView: View {
     @Environment(\.dismiss) private var dismiss
     let instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)]
     let resolvedInstanceAssets: [UUID: ResolvedModelAsset]
+    /// "Trigger Presets" (roadmap 9, the CrateModLoader-style "toggle a
+    /// preset, it patches every matching real record" pattern, applied to
+    /// `TriggerVolume` the same way `pendingSwaps` already applies it to
+    /// `Instance`). Defaults to `[]` so every existing call site (which
+    /// predates this) keeps compiling unchanged.
+    var triggers: [(node: ChunkNode, trigger: TriggerVolume)] = []
     let referenceNode: ChunkNode
 
     /// `node.id` -> chosen replacement `objectID` (only entries that
     /// differ from the placement's real, on-disk `objectID` end up here).
     @State private var pendingSwaps: [UUID: UInt16] = [:]
+    /// `node.id` -> chosen replacement 4-argument tuple (only entries that
+    /// differ from the trigger's real, on-disk arguments end up here).
+    @State private var pendingTriggerSwaps: [UUID: (UInt16, UInt16, UInt16, UInt16)] = [:]
     @State private var searchText = ""
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            if instanceMarkers.isEmpty {
+            if instanceMarkers.isEmpty && triggerGroups.isEmpty {
                 ContentUnavailableView("No Placements", systemImage: "shippingbox",
-                    description: Text("This chunk has no Instance placements to swap."))
+                    description: Text("This chunk has no Instance placements or shared-signature Trigger groups to work with."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                list
+                // `List` manages its own scrolling and wants to be the
+                // primary flexible-height element; the trigger section is
+                // secondary (usually far fewer rows) and gets its own
+                // bounded `ScrollView` rather than nesting a `List` inside
+                // one, which fights over scroll ownership.
+                if !instanceMarkers.isEmpty { list }
+                if !triggerGroups.isEmpty {
+                    Divider()
+                    ScrollView { triggerPresetsSection }
+                        .frame(maxHeight: instanceMarkers.isEmpty ? .infinity : 220)
+                }
             }
             Divider()
             footer
@@ -109,37 +128,137 @@ struct RecipeBookView: View {
         }
     }
 
+    // MARK: - Trigger Presets
+
+    /// Every group of 2+ triggers that currently share the exact same
+    /// real, on-disk 4-argument signature — mirroring `swapCandidates`'
+    /// discipline for Instance objectIDs: this build has no verified
+    /// *name* for what any `TriggerVolume` argument means (see
+    /// `TriggerArgumentsEditorSheet`'s own doc comment), so a preset here
+    /// isn't "the Classic Explosions hack," it's "make every trigger that
+    /// currently matches this one also match whatever you change it to" —
+    /// a real, mechanical batch operation, not an invented meaning for
+    /// bytes this codebase hasn't confirmed.
+    private var triggerGroups: [(signature: (UInt16, UInt16, UInt16, UInt16), members: [(node: ChunkNode, trigger: TriggerVolume)])] {
+        var bySignature: [String: [(node: ChunkNode, trigger: TriggerVolume)]] = [:]
+        for entry in triggers {
+            let t = entry.trigger
+            bySignature["\(t.arg1),\(t.arg2),\(t.arg3),\(t.arg4)", default: []].append(entry)
+        }
+        return bySignature.values
+            .filter { $0.count > 1 }
+            .map { members in
+                let t = members[0].trigger
+                return ((t.arg1, t.arg2, t.arg3, t.arg4), members)
+            }
+            .sorted { $0.members.count > $1.members.count }
+    }
+
+    private var triggerPresetsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Trigger Presets").font(.headline).padding(.horizontal).padding(.top, 8)
+            Text("Groups of triggers that currently share the exact same 4 argument values — change one and apply it to the whole group at once.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
+            ForEach(Array(triggerGroups.enumerated()), id: \.offset) { _, group in
+                TriggerPresetRow(
+                    group: group,
+                    values: Binding(
+                        get: { pendingTriggerSwaps[group.members[0].node.id] ?? group.signature },
+                        set: { newValue in applyTriggerGroup(group, newValue: newValue) }
+                    )
+                )
+                .padding(.horizontal)
+            }
+        }
+        .padding(.bottom, 8)
+    }
+
+    private func applyTriggerGroup(_ group: (signature: (UInt16, UInt16, UInt16, UInt16), members: [(node: ChunkNode, trigger: TriggerVolume)]), newValue: (UInt16, UInt16, UInt16, UInt16)) {
+        let matchesOriginal = newValue == group.signature
+        for member in group.members {
+            pendingTriggerSwaps[member.node.id] = matchesOriginal ? nil : newValue
+        }
+    }
+
     private var footer: some View {
-        HStack {
-            Text(pendingSwaps.isEmpty ? "No swaps queued." : "\(pendingSwaps.count) swap(s) queued.")
+        let total = pendingSwaps.count + pendingTriggerSwaps.count
+        return HStack {
+            Text(total == 0 ? "No changes queued." : "\(total) change(s) queued.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
             Button("Apply Recipe…") { applyRecipe() }
-                .disabled(pendingSwaps.isEmpty)
+                .disabled(total == 0)
         }
         .padding()
     }
 
     private func applyRecipe() {
-        let edits: [(node: ChunkNode, absoluteOffset: Int, encoded: Data)] = instanceMarkers.compactMap { entry in
+        var edits: [(node: ChunkNode, absoluteOffset: Int, encoded: Data)] = instanceMarkers.compactMap { entry in
             guard let newID = pendingSwaps[entry.node.id] else { return nil }
             let encoded = WorldPlacementWriter.writeInstanceObjectID(newID)
             return (entry.node, entry.node.fileOffset + entry.instance.objectIDFileOffset, encoded)
         }
+        edits += triggers.compactMap { entry in
+            guard let newArgs = pendingTriggerSwaps[entry.node.id] else { return nil }
+            let encoded = WorldPlacementWriter.writeTriggerArguments(newArgs.0, newArgs.1, newArgs.2, newArgs.3)
+            return (entry.node, entry.node.fileOffset + entry.trigger.argsFileOffset, encoded)
+        }
         guard !edits.isEmpty, let patchedBytes = workspace.patchedFileBytes(applyingAbsoluteByteRangePatches: edits) else { return }
         guard let url = ExportPanel.chooseSaveLocation(
             suggestedName: "\(workspace.originalFileName(for: referenceNode) ?? "chunk")_recipe.rm2",
-            message: "Save the edited copy of this file with \(edits.count) object swap(s) applied. The original file on disk is not modified."
+            message: "Save the edited copy of this file with \(edits.count) change(s) applied. The original file on disk is not modified."
         ) else { return }
         do {
             try patchedBytes.write(to: url)
-            workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent) with \(edits.count) object swap(s)."
+            workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent) with \(edits.count) change(s)."
             pendingSwaps.removeAll()
+            pendingTriggerSwaps.removeAll()
             dismiss()
         } catch {
             workspace.lastError = "Save failed: \(error)"
         }
+    }
+}
+
+private struct TriggerPresetRow: View {
+    let group: (signature: (UInt16, UInt16, UInt16, UInt16), members: [(node: ChunkNode, trigger: TriggerVolume)])
+    @Binding var values: (UInt16, UInt16, UInt16, UInt16)
+
+    @State private var a1: String
+    @State private var a2: String
+    @State private var a3: String
+    @State private var a4: String
+
+    init(group: (signature: (UInt16, UInt16, UInt16, UInt16), members: [(node: ChunkNode, trigger: TriggerVolume)]), values: Binding<(UInt16, UInt16, UInt16, UInt16)>) {
+        self.group = group
+        self._values = values
+        _a1 = State(initialValue: "\(values.wrappedValue.0)")
+        _a2 = State(initialValue: "\(values.wrappedValue.1)")
+        _a3 = State(initialValue: "\(values.wrappedValue.2)")
+        _a4 = State(initialValue: "\(values.wrappedValue.3)")
+    }
+
+    var body: some View {
+        HStack {
+            Text("\(group.members.count) triggers @ (\(group.signature.0), \(group.signature.1), \(group.signature.2), \(group.signature.3))")
+                .font(.caption.monospaced())
+            Spacer()
+            ForEach([("A1", $a1), ("A2", $a2), ("A3", $a3), ("A4", $a4)], id: \.0) { label, binding in
+                TextField(label, text: binding)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 48)
+                    .font(.caption.monospaced())
+            }
+            Button("Apply") {
+                guard let v1 = UInt16(a1), let v2 = UInt16(a2), let v3 = UInt16(a3), let v4 = UInt16(a4) else { return }
+                values = (v1, v2, v3, v4)
+            }
+            .controlSize(.small)
+        }
+        .padding(.vertical, 2)
     }
 }
 
