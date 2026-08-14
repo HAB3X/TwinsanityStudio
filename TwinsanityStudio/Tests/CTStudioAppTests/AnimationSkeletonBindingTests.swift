@@ -100,4 +100,56 @@ final class AnimationSkeletonBindingTests: XCTestCase {
         let transform = try XCTUnwrap(bindPose[0])
         XCTAssertEqual(transform.columns.3.x, -5, accuracy: 0.0001, "translation X must be negated on read, matching every other coordinate flip in this port")
     }
+
+    /// Regression for a real, confirmed bug: a joint whose raw on-disk
+    /// rotation row (`matrix[2]`) is the zero vector — observed in a real
+    /// character (`Levels/Earth/Cavern/cavent.rm2`, skeleton id 0) —
+    /// used to build a zero-length (non-normalized) quaternion, whose
+    /// matrix is singular. `bindPoseWorldTransforms` composes every joint's
+    /// world transform through its parent chain, so that one degenerate
+    /// root joint poisoned its child's world transform too, and
+    /// `skinningMatrices`' unconditional `.inverse` turned "singular" into
+    /// NaN for both joints — the entire mesh rendered as nothing the
+    /// instant any animation was selected, regardless of which one (bind
+    /// pose is computed before any per-frame data is even consulted).
+    func testDegenerateRootJointRotationDoesNotProduceNaN() throws {
+        let degenerateRoot = Joint(reactJointID: 0, jointIndex: 0, parentJointIndex: 0, childJointAmount: 1, childJointAmount2: 0, matrix: [
+            SIMD4(0, 0, 0, 1), // [0] translation
+            .zero,
+            .zero,              // [2] degenerate rotation row — the bug
+            .zero,
+            SIMD4(0, 0, 0, 1), // [4] add-rotation
+        ])
+        let child = Joint(reactJointID: 1, jointIndex: 1, parentJointIndex: 0, childJointAmount: 0, childJointAmount2: 0, matrix: [
+            SIMD4(3, 0, 0, 1), // [0] translation (X negated on read -> -3)
+            .zero,
+            SIMD4(0, 0, 0, 1), // [2] identity quaternion — real, valid data
+            .zero,
+            SIMD4(0, 0, 0, 1), // [4] add-rotation
+        ])
+        let skeleton = SkeletonAsset(id: 1, joints: [degenerateRoot, child], exitPoints: [], skinTransforms: [], skinID: 0, blendSkinID: 0, modelLinks: [])
+
+        let bindPose = AnimationSkeletonBinding.bindPoseWorldTransforms(skeleton: skeleton)
+        let rootTransform = try XCTUnwrap(bindPose[0])
+        let childTransform = try XCTUnwrap(bindPose[1])
+
+        for column in [rootTransform.columns.0, rootTransform.columns.1, rootTransform.columns.2, rootTransform.columns.3] {
+            XCTAssertTrue(column.x.isFinite && column.y.isFinite && column.z.isFinite && column.w.isFinite, "degenerate root joint must fall back to identity rotation, not propagate NaN")
+        }
+        for column in [childTransform.columns.0, childTransform.columns.1, childTransform.columns.2, childTransform.columns.3] {
+            XCTAssertTrue(column.x.isFinite && column.y.isFinite && column.z.isFinite && column.w.isFinite, "child of a degenerate joint must not inherit NaN through the parent chain")
+        }
+
+        // The real, load-bearing check: skinningMatrices (which calls
+        // `.inverse` unconditionally on the bind pose) must also stay
+        // finite for both joints — this is the exact computation that
+        // reached the GPU buffer as NaN before the fix.
+        let track = AnimationTrack(jointSettings: [], staticTransforms: [], frames: [AnimFrame(values: [])], componentsPerFrame: 0)
+        let skinning = AnimationSkeletonBinding.skinningMatrices(skeleton: skeleton, track: track, frame: 0)
+        for (_, matrix) in skinning {
+            for column in [matrix.columns.0, matrix.columns.1, matrix.columns.2, matrix.columns.3] {
+                XCTAssertTrue(column.x.isFinite && column.y.isFinite && column.z.isFinite && column.w.isFinite, "skinning matrix must be finite even when the bind pose had a degenerate joint")
+            }
+        }
+    }
 }

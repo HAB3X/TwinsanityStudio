@@ -136,10 +136,40 @@ enum AnimationSkeletonBinding {
         let translationRow = joint.matrix[0]
         let translation = SIMD3<Float>(-translationRow.x, translationRow.y, translationRow.z)
         let rotationRow = joint.matrix[2]
-        let rotation = simd_quatf(vector: SIMD4(-rotationRow.x, rotationRow.y, rotationRow.z, -rotationRow.w))
+        let rotation = Self.safeQuaternion(x: -rotationRow.x, y: rotationRow.y, z: rotationRow.z, w: -rotationRow.w)
         let addRow = joint.matrix[4]
-        let addRotation = simd_quatf(vector: SIMD4(-addRow.x, addRow.y, addRow.z, -addRow.w))
+        let addRotation = Self.safeQuaternion(x: -addRow.x, y: addRow.y, z: addRow.z, w: -addRow.w)
         return (translation, rotation, addRotation)
+    }
+
+    /// Real game data has been observed to carry a joint whose raw on-disk
+    /// rotation row is the zero vector (an unused/auxiliary joint slot,
+    /// never meaningfully authored) — confirmed against a real character
+    /// (`Levels/Earth/Cavern/cavent.rm2`, skeleton id 0) that otherwise
+    /// renders correctly. `simd_quatf(vector:)` doesn't normalize, so a
+    /// near-zero input builds a near-zero-length quaternion; the matrix
+    /// built from it is singular, and — since `bindPoseWorldTransforms`
+    /// composes every joint's world transform through its parent chain —
+    /// that one joint's singular matrix poisons every descendant's world
+    /// transform too, and `skinningMatrices`' unconditional `bind.inverse`
+    /// turns "singular" into "every component NaN" for the whole affected
+    /// subtree: the entire mesh renders as nothing the instant any
+    /// animation is selected (bind pose is computed before any per-frame
+    /// animation data is even consulted, so this doesn't depend on which
+    /// animation or frame). The reference tool's own `ComputeTposeTransform`
+    /// has the identical unconditional `Matrix4.Invert()` with no
+    /// validity check — this isn't a convention the Swift port dropped,
+    /// it's a gap the reference never needed to close for whichever
+    /// characters its own authors happened to test. Falling back to
+    /// identity for a degenerate row keeps that one joint (and, more
+    /// importantly, everything under it) at its parent's transform instead
+    /// of NaN — not byte-perfect for a joint the format never gave usable
+    /// data for, but it keeps the rest of a real, mostly-valid skeleton
+    /// visible instead of blanking the whole model.
+    private static func safeQuaternion(x: Float, y: Float, z: Float, w: Float) -> simd_quatf {
+        let raw = SIMD4<Float>(x, y, z, w)
+        guard simd_length(raw) > 0.0001 else { return simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)) }
+        return simd_quatf(vector: raw)
     }
 
     /// Every joint's bind-pose world transform — `ComputeTposeTransform`'s

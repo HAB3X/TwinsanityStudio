@@ -772,6 +772,21 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
                 if simd_length(skinnedNormal) > 0.0001 {
                     skinnedNormal = simd_normalize(skinnedNormal)
                 }
+                // Defense in depth against a NaN/Inf skinning matrix (e.g.
+                // a joint whose real on-disk bind-pose data is degenerate
+                // — see `AnimationSkeletonBinding.safeQuaternion`'s doc
+                // comment for the specific case this was found from):
+                // `totalWeight` being valid only proves a joint *weight*
+                // was found, not that the matrix it was multiplied through
+                // produced a finite result. Without this, one bad joint's
+                // NaN silently reaches the GPU buffer and the entire mesh
+                // renders as nothing, for every vertex weighted anywhere
+                // in its subtree — not just the one joint that's actually
+                // broken.
+                if !skinnedPosition.x.isFinite || !skinnedPosition.y.isFinite || !skinnedPosition.z.isFinite {
+                    skinnedPosition = v.position
+                    skinnedNormal = v.normal
+                }
             }
             // else: real influence found (skinnedPosition is valid), but
             // the blended normal came out ~zero because the source
