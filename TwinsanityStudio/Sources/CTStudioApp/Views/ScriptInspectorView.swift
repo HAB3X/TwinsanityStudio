@@ -1,12 +1,18 @@
 import SwiftUI
 import CTModels
 
-/// Read-only inspector for a decoded `Script` record — either a
-/// `HeaderScript` ("B.Starter": a priority-ordered pointer to another
-/// script) or a `MainScript` (the real condition/state-machine). See
-/// `ScriptAsset`'s doc comment.
+/// Inspector for a decoded `Script` record — either a `HeaderScript`
+/// ("B.Starter": a priority-ordered pointer to another script) or a
+/// `MainScript` (the real condition/state-machine). See `ScriptAsset`'s
+/// doc comment. Real write-back: "Edit…" opens `ScriptEditorSheet`, which
+/// patches state slots/command arguments/header entries straight into a
+/// copy of this file — see that view's own doc comment for exactly what's
+/// editable and why the rest (structural changes, condition fields) isn't.
 struct ScriptInspectorView: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    let node: ChunkNode
     let script: ScriptAsset
+    @State private var isEditing = false
 
     var body: some View {
         Form {
@@ -16,6 +22,9 @@ struct ScriptInspectorView: View {
                 LabeledContent("Flag", value: script.flag == 0 ? "0 (MainScript)" : "\(script.flag) (HeaderScript)")
                 if !script.trailingBytes.isEmpty {
                     LabeledContent("Trailing Bytes", value: "\(script.trailingBytes.count) (real — see doc comment)")
+                }
+                if workspace.canSaveEdits(for: node) {
+                    Button("Edit…") { isEditing = true }
                 }
             }
 
@@ -27,6 +36,9 @@ struct ScriptInspectorView: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $isEditing) {
+            ScriptEditorSheet(node: node, script: script)
+        }
     }
 }
 

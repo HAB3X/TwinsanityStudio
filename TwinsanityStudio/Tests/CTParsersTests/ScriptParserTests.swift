@@ -46,6 +46,42 @@ final class ScriptParserTests: XCTestCase {
         XCTAssertEqual(cursor.position, w.count)
     }
 
+    /// "Script writer" write-back for `HeaderScript`: `entriesFileOffset`
+    /// must point at entry 0's real bytes, and
+    /// `ScriptWriter.writeHeaderScriptEntry`'s 8 bytes patched at
+    /// `entriesFileOffset + index * 8` must round-trip a reassigned entry
+    /// while leaving every other entry untouched.
+    func testHeaderScriptEntryOffsetRoundTripsThroughWriter() throws {
+        var w = BinaryWriter()
+        w.writeUInt16(1)
+        w.writeUInt8(0)
+        w.writeUInt8(1) // flag != 0 -> HeaderScript
+        w.writeUInt32(2) // pair count
+        w.writeInt32(10); w.writeUInt32(0x1111) // entry 0
+        w.writeInt32(20); w.writeUInt32(0x2222) // entry 1
+
+        let originalBytes = w.data
+        var cursor = BinaryCursor(data: originalBytes)
+        let asset = try ScriptParser.parse(&cursor, recordID: 10, size: w.count, platform: .ps2)
+        guard case .header(let header) = asset.content else { return XCTFail("expected .header") }
+        XCTAssertEqual(header.entries.count, 2)
+
+        var probe = BinaryCursor(data: originalBytes)
+        _ = try probe.seek(to: header.entriesFileOffset)
+        XCTAssertEqual(try probe.readInt32(), 10)
+
+        var patched = originalBytes
+        let entry1Offset = header.entriesFileOffset + 1 * 8
+        patched.replaceSubrange(entry1Offset..<(entry1Offset + 8), with: ScriptWriter.writeHeaderScriptEntry(mainScriptIndex: 99, unkInt2: 0xABCD))
+        var reparseCursor = BinaryCursor(data: patched)
+        let reparsed = try ScriptParser.parse(&reparseCursor, recordID: 10, size: patched.count, platform: .ps2)
+        guard case .header(let reparsedHeader) = reparsed.content else { return XCTFail("expected .header") }
+        XCTAssertEqual(reparsedHeader.entries[0].mainScriptIndex, 10, "entry 0 must be untouched")
+        XCTAssertEqual(reparsedHeader.entries[1].mainScriptIndex, 99)
+        XCTAssertEqual(reparsedHeader.entries[1].unkInt2, 0xABCD)
+        XCTAssertEqual(patched.count, originalBytes.count)
+    }
+
     func testMainScriptSingleStateNoBodyRoundTrips() throws {
         var w = BinaryWriter()
         w.writeUInt16(1) // inlineID
@@ -241,6 +277,47 @@ final class ScriptParserTests: XCTestCase {
         XCTAssertTrue(main.states.isEmpty)
         XCTAssertEqual([UInt8](asset.trailingBytes), leftover)
         XCTAssertEqual(cursor.position, w.count)
+    }
+
+    /// "Script writer" write-back: `scriptIndexOrSlotFileOffset` must point
+    /// at the real bytes, and `ScriptWriter.writeScriptIndexOrSlot`'s 2
+    /// bytes patched there must round-trip a redirected state (the same
+    /// real operation CrateModLoader's own cutscene-skip mods perform)
+    /// while leaving every other field (including the bitfield right
+    /// before it, and the command body right after) untouched.
+    func testScriptIndexOrSlotFileOffsetRoundTripsThroughWriter() throws {
+        var w = BinaryWriter()
+        w.writeUInt16(1)
+        w.writeUInt8(0)
+        w.writeUInt8(0)
+        Self.writeName(&w, "")
+        w.writeInt32(1) // statesAmountRaw
+        w.writeInt32(0) // startUnit
+        w.writeInt16(0x1) // state bitfield: declaredBodyCount = 1, no type1, no next state
+        w.writeInt16(42) // scriptIndexOrSlot
+        w.writeInt32(0) // this state's single, empty ScriptStateBody
+
+        let originalBytes = w.data
+        var cursor = BinaryCursor(data: originalBytes)
+        let asset = try ScriptParser.parse(&cursor, recordID: 9, size: w.count, platform: .ps2)
+        guard case .main(let main) = asset.content else { return XCTFail("expected .main") }
+        let state = main.states[0]
+        XCTAssertEqual(state.scriptIndexOrSlot, 42)
+
+        var probe = BinaryCursor(data: originalBytes)
+        _ = try probe.seek(to: state.scriptIndexOrSlotFileOffset)
+        XCTAssertEqual(try probe.readInt16(), 42)
+
+        var patched = originalBytes
+        let offset = state.scriptIndexOrSlotFileOffset
+        patched.replaceSubrange(offset..<(offset + 2), with: ScriptWriter.writeScriptIndexOrSlot(-1))
+        var reparseCursor = BinaryCursor(data: patched)
+        let reparsed = try ScriptParser.parse(&reparseCursor, recordID: 9, size: patched.count, platform: .ps2)
+        guard case .main(let reparsedMain) = reparsed.content else { return XCTFail("expected .main") }
+        XCTAssertEqual(reparsedMain.states[0].scriptIndexOrSlot, -1)
+        XCTAssertEqual(reparsedMain.states[0].bitfieldRaw, 0x1, "the bitfield right before scriptIndexOrSlot must be untouched")
+        XCTAssertEqual(reparsedMain.states[0].bodies.count, 1, "the body right after scriptIndexOrSlot must be untouched")
+        XCTAssertEqual(patched.count, originalBytes.count)
     }
 
     func testHugeDeclaredHeaderPairCountThrowsInsteadOfOverAllocating() {

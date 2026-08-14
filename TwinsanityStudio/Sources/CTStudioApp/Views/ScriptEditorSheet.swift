@@ -2,22 +2,29 @@ import SwiftUI
 import CTModels
 import CTParsers
 
-/// Full Script Editor — write-back for `ScriptAsset` records (both HeaderScript and MainScript).
-/// Supports editing of:
-/// - HeaderScript: participant entries (object ID, assignment types, localities, statuses, preferences)
-/// - MainScript: name, start unit, state chain manipulation
-/// - ScriptState: SupportType1/motion descriptor editing, body management
-/// - ScriptStateBody: condition editing (percept, parameters, thresholds, NOT gate), command chain editing
-/// - Proper integration with WorkspaceViewModel's patching mechanism
-/// - Safety checks using BinaryCursor.safeReserveCount() for data validation
+/// Script Editor — the entry point into real write-back for `ScriptAsset`
+/// records. Each field this build has a verified, fixed-offset writer for
+/// is edited (and saved as its own edited copy) in one of the two child
+/// sheets below:
+/// - `HeaderScriptEditorSheet`: participant entries (`mainScriptIndex`/
+///   `unkInt2`, `ScriptWriter.writeHeaderScriptEntry`).
+/// - `MainScriptEditorSheet`: each state's `scriptIndexOrSlot`
+///   (`ScriptWriter.writeScriptIndexOrSlot`) and every command's raw
+///   arguments (`AgentLabArgumentEditorSheet`, reused unchanged — a
+///   `Script`'s commands are the same `[AgentLabCommand]` type
+///   `CustomAgent` records already have write-back for).
+///
+/// Not editable: `ScriptCondition`/`SupportType1` fields (no captured file
+/// offset, and no CrateModLoader mod this build ported ever needs to edit
+/// them), and structural changes (adding/removing states, bodies, or
+/// commands) — every write path in this app patches a fixed-size range at
+/// a captured offset, never re-encodes a whole variable-length record.
 struct ScriptEditorSheet: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     let script: ScriptAsset
 
-    @State private var isSaving = false
-    @State private var errorMessage: String?
     @State private var showHeaderEditor = false
     @State private var showMainEditor = false
 
@@ -55,7 +62,7 @@ struct ScriptEditorSheet: View {
                             .disabled(!workspace.canSaveEdits(for: node))
                     }
 
-                case .main(let main):
+                case .main:
                     Section("Main Script") {
                         Button("Edit Main Script…") { showMainEditor = true }
                             .disabled(!workspace.canSaveEdits(for: node))
@@ -64,18 +71,10 @@ struct ScriptEditorSheet: View {
             }
             .formStyle(.grouped)
 
-            if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-            }
-
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                Button(isSaving ? "Saving…" : "Save Edited Copy…") { save() }
+                Button("Close") { dismiss() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(isSaving || !workspace.canSaveEdits(for: node))
             }
         }
         .padding()
@@ -90,21 +89,5 @@ struct ScriptEditorSheet: View {
                 MainScriptEditorSheet(node: node, script: script, mainScript: main)
             }
         }
-    }
-
-    private func save() {
-        // Create a copy of the script with any edits made in the child sheets
-        // For now, we'll just save the original script since editing happens in child sheets
-        // In a more complex implementation, we'd need to track changes across sheets
-        guard let originalData = workspace.rawBytes(for: node) else {
-            errorMessage = "Could not read original file data"
-            return
-        }
-
-        // For now, we're not making direct edits in this sheet - editing happens in child sheets
-        // This save function is primarily for consistency with the pattern
-        // The actual saving is done in the child editor sheets
-
-        errorMessage = "Use the participant or main script editors to make changes, then save from there."
     }
 }

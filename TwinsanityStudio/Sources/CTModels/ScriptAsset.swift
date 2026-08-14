@@ -70,9 +70,15 @@ public struct HeaderScript: Sendable {
     }
 
     public var entries: [Entry]
+    /// Byte offset of `entries[0]`, relative to this `Script` record's own
+    /// start — same capture-once, patch-at-a-fixed-offset reasoning as
+    /// `PlacedInstance.objectIDFileOffset`. Each entry is a fixed 8 bytes
+    /// (`Int32` + `UInt32`), so entry `i` lives at `entriesFileOffset + i * 8`.
+    public var entriesFileOffset: Int
 
-    public init(entries: [Entry]) {
+    public init(entries: [Entry], entriesFileOffset: Int = 0) {
         self.entries = entries
+        self.entriesFileOffset = entriesFileOffset
     }
 
     public enum AssignTypeID: UInt8, Sendable {
@@ -120,12 +126,22 @@ public struct ScriptState: Sendable {
     public var scriptIndexOrSlot: Int16
     public var type1: SupportType1?
     public var bodies: [ScriptStateBody]
+    /// Byte offset of `scriptIndexOrSlot` itself, relative to this
+    /// `Script` record's own start — captured during parse
+    /// (`ScriptParser.readStateChain`), same "capture the real offset
+    /// once, patch a fixed-size range there" pattern as
+    /// `PlacedInstance.objectIDFileOffset`. Lets a `ScriptState` be
+    /// redirected to a different script/slot (the same real operation
+    /// CrateModLoader's own cutscene-skip mods perform) without
+    /// re-encoding the whole variable-length `Script` record.
+    public var scriptIndexOrSlotFileOffset: Int
 
-    public init(bitfieldRaw: Int16, scriptIndexOrSlot: Int16, type1: SupportType1?, bodies: [ScriptStateBody]) {
+    public init(bitfieldRaw: Int16, scriptIndexOrSlot: Int16, type1: SupportType1?, bodies: [ScriptStateBody], scriptIndexOrSlotFileOffset: Int = 0) {
         self.bitfieldRaw = bitfieldRaw
         self.scriptIndexOrSlot = scriptIndexOrSlot
         self.type1 = type1
         self.bodies = bodies
+        self.scriptIndexOrSlotFileOffset = scriptIndexOrSlotFileOffset
     }
 
     public var isSlot: Bool { (bitfieldRaw & 0x1000) != 0 }

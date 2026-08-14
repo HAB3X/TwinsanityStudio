@@ -56,6 +56,7 @@ public enum ScriptParser {
 
     private static func parseHeaderScript(_ cursor: inout BinaryCursor) throws -> HeaderScript {
         let count = try cursor.readUInt32()
+        let entriesFileOffset = cursor.position
         var entries: [HeaderScript.Entry] = []
         entries.reserveCapacity(cursor.safeReserveCount(count, elementSize: 8))
         for _ in 0..<count {
@@ -63,7 +64,7 @@ public enum ScriptParser {
             let unkInt2 = try cursor.readUInt32()
             entries.append(HeaderScript.Entry(mainScriptIndex: mainScriptIndex, unkInt2: unkInt2))
         }
-        return HeaderScript(entries: entries)
+        return HeaderScript(entries: entries, entriesFileOffset: entriesFileOffset)
     }
 
     // MARK: - MainScript
@@ -94,9 +95,10 @@ public enum ScriptParser {
         var result: [ScriptState] = []
         while true {
             let bitfield = try cursor.readInt16()
+            let scriptIndexOrSlotFileOffset = cursor.position
             let scriptIndexOrSlot = try cursor.readInt16()
             let type1: SupportType1? = (bitfield & 0x4000) != 0 ? try parseSupportType1(&cursor) : nil
-            result.append(ScriptState(bitfieldRaw: bitfield, scriptIndexOrSlot: scriptIndexOrSlot, type1: type1, bodies: []))
+            result.append(ScriptState(bitfieldRaw: bitfield, scriptIndexOrSlot: scriptIndexOrSlot, type1: type1, bodies: [], scriptIndexOrSlotFileOffset: scriptIndexOrSlotFileOffset))
             guard (UInt16(bitPattern: bitfield) & 0x8000) != 0 else { break }
         }
         return result
