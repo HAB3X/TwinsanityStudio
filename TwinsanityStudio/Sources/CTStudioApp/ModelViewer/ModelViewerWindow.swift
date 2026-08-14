@@ -31,6 +31,14 @@ struct ModelViewerWindow: View {
     @State private var isDependencyCrateSheetPresented = false
     @State private var showHardwareProfiler = false
 
+    // MARK: - "Procedural Animation Frame Blending" (roadmap 12.2)
+    @State private var isBlendModeActive = false
+    @State private var blendAnimationAID: UInt32?
+    @State private var blendFrameA: Double = 0
+    @State private var blendAnimationBID: UInt32?
+    @State private var blendFrameB: Double = 0
+    @State private var blendT: Double = 0.5
+
     var body: some View {
         HStack(spacing: 0) {
             viewportArea
@@ -49,6 +57,19 @@ struct ModelViewerWindow: View {
         .onChange(of: currentFrame) { _, _ in updateAnimationPose() }
         .onChange(of: showCollisionVolume) { _, _ in updateCollisionVolumeOverlay() }
         .onChange(of: showProceduralOBB) { _, _ in updateProceduralOBBOverlay() }
+        .onChange(of: isBlendModeActive) { _, isActive in
+            if isActive {
+                stopPlayback()
+                updateBlendPose()
+            } else {
+                updateAnimationPose()
+            }
+        }
+        .onChange(of: blendAnimationAID) { _, _ in updateBlendPose() }
+        .onChange(of: blendFrameA) { _, _ in updateBlendPose() }
+        .onChange(of: blendAnimationBID) { _, _ in updateBlendPose() }
+        .onChange(of: blendFrameB) { _, _ in updateBlendPose() }
+        .onChange(of: blendT) { _, _ in updateBlendPose() }
         .sheet(isPresented: $isDependencyCrateSheetPresented) {
             CrateExportSheet(
                 suggestedName: asset.displayName,
@@ -82,6 +103,7 @@ struct ModelViewerWindow: View {
     /// overlay is toggled on; the overlay is a visualization aid on top of
     /// that, not a prerequisite for it.
     private func updateAnimationPose() {
+        guard !isBlendModeActive else { return } // blend mode owns the pose while active — see updateBlendPose()
         guard let skeleton = asset.skeleton else {
             renderer?.skeletonJointWorldPositions = []
             return
@@ -96,6 +118,21 @@ struct ModelViewerWindow: View {
         renderer?.skeletonJointWorldPositions = showSkeletonOverlay
             ? AnimationSkeletonBinding.jointSegments(skeleton: skeleton, track: selectedAnimation.body, frameIndex: frameIndex)
             : []
+    }
+
+    /// "Procedural Animation Frame Blending" (roadmap 12.2): applies the
+    /// real blended pose (`ModelViewerRenderer.applyBlendedSkeletalPose`)
+    /// live as any of the blend controls change. No-ops (leaves whatever
+    /// pose is currently applied) until both sides have a real animation
+    /// and frame chosen — never blends against a fabricated default.
+    private func updateBlendPose() {
+        guard isBlendModeActive, let skeleton = asset.skeleton,
+              let animationA = asset.availableAnimations.first(where: { $0.id == blendAnimationAID }),
+              let animationB = asset.availableAnimations.first(where: { $0.id == blendAnimationBID })
+        else { return }
+        let frameA = min(animationA.body.totalFrames - 1, max(0, Int(blendFrameA)))
+        let frameB = min(animationB.body.totalFrames - 1, max(0, Int(blendFrameB)))
+        renderer?.applyBlendedSkeletalPose(skeleton: skeleton, trackA: animationA.body, frameA: frameA, trackB: animationB.body, frameB: frameB, t: Float(blendT))
     }
 
     @ViewBuilder
@@ -166,6 +203,10 @@ struct ModelViewerWindow: View {
                     Divider()
                 }
                 animationSection
+                if asset.skeleton != nil, asset.availableAnimations.count >= 1 {
+                    Divider()
+                    blendSection
+                }
                 Divider()
                 exportSection
             }
@@ -361,6 +402,57 @@ struct ModelViewerWindow: View {
             Text("Frame \(frameIndex): \(frame.values.count) channel value(s) — see the Animation record's own inspector for the full breakdown.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// "Procedural Animation Frame Blending" (roadmap 12.2): a real,
+    /// live-previewed blend between two independently chosen animations
+    /// (or two points in the same one). Deliberately a live preview only —
+    /// this build has no verified byte-exact `AnimationAsset` writer, so
+    /// "bake the blended frames into a new exportable animation" isn't
+    /// attempted; the real, demonstrable capability is the interpolation
+    /// itself, shown live in the viewport.
+    private var blendSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: $isBlendModeActive) {
+                Label("Blend Two Animations", systemImage: "square.stack.3d.forward.dottedline")
+            }
+            .toggleStyle(.checkbox)
+
+            if isBlendModeActive {
+                Picker("Animation A", selection: $blendAnimationAID) {
+                    Text("None").tag(UInt32?.none)
+                    ForEach(asset.availableAnimations, id: \.id) { animation in
+                        Text("#\(animation.id) (\(animation.body.totalFrames)f)").tag(UInt32?.some(animation.id))
+                    }
+                }
+                if let animationA = asset.availableAnimations.first(where: { $0.id == blendAnimationAID }), animationA.body.totalFrames > 1 {
+                    Slider(value: $blendFrameA, in: 0...Double(animationA.body.totalFrames - 1), step: 1) {
+                        Text("Frame A")
+                    }
+                }
+
+                Picker("Animation B", selection: $blendAnimationBID) {
+                    Text("None").tag(UInt32?.none)
+                    ForEach(asset.availableAnimations, id: \.id) { animation in
+                        Text("#\(animation.id) (\(animation.body.totalFrames)f)").tag(UInt32?.some(animation.id))
+                    }
+                }
+                if let animationB = asset.availableAnimations.first(where: { $0.id == blendAnimationBID }), animationB.body.totalFrames > 1 {
+                    Slider(value: $blendFrameB, in: 0...Double(animationB.body.totalFrames - 1), step: 1) {
+                        Text("Frame B")
+                    }
+                }
+
+                LabeledContent("Blend") { Slider(value: $blendT, in: 0...1) }
+                Text(String(format: "t = %.2f", blendT))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+
+                Text("Real per-joint interpolation (translation/scale linear, rotation via quaternion slerp) between the two chosen frames — live in the viewport, turning it off restores normal playback.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

@@ -651,6 +651,19 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         }
     }
 
+    /// "Procedural Animation Frame Blending" (roadmap 12.2) — same
+    /// deformation path as `applySkeletalPose`, fed
+    /// `AnimationSkeletonBinding.blendedSkinningMatrices` instead of a
+    /// single (track, frame) pair. `trackB`/`frameB` can be a different
+    /// point in the same clip or an entirely different animation.
+    func applyBlendedSkeletalPose(skeleton: SkeletonAsset, trackA: AnimationTrack, frameA: Int, trackB: AnimationTrack, frameB: Int, t: Float) {
+        let skinning = AnimationSkeletonBinding.blendedSkinningMatrices(skeleton: skeleton, trackA: trackA, frameA: frameA, trackB: trackB, frameB: frameB, t: t)
+        for submesh in submeshes {
+            guard !submesh.jointWeights.isEmpty else { continue }
+            Self.skinVertices(submesh: submesh, skinningMatrices: skinning)
+        }
+    }
+
     /// Restores every skinned submesh to its original bind-pose geometry —
     /// called when animation playback stops/resets, or no animation is
     /// selected.

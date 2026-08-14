@@ -201,6 +201,95 @@ enum AnimationSkeletonBinding {
         return result
     }
 
+    /// "Procedural Animation Frame Blending" (roadmap 12.2): every joint's
+    /// *blended* world transform between two independently-chosen
+    /// `(track, frame)` points — the same two points can be adjacent
+    /// frames of one clip (smoothing a choppy loop) or frames from two
+    /// completely different animations (blending a run cycle into a
+    /// custom attack). Mirrors `animatedWorldTransforms`'s exact hierarchy
+    /// walk and `useAddRotation`/`useParentScale` handling; the only
+    /// difference is that each joint's `LocalPose` is itself a blend of
+    /// the two sides (translation/scale linearly interpolated, rotation
+    /// via quaternion slerp — the standard way to interpolate rotations
+    /// without the axis-flip artifacts linear interpolation would cause)
+    /// before being composed into a local transform. `t=0` is pose A,
+    /// `t=1` is pose B. A joint missing from one side's track (but present
+    /// in the other) uses whichever side actually has it — not a
+    /// fabricated blend against a value that doesn't exist.
+    static func blendedWorldTransforms(
+        skeleton: SkeletonAsset,
+        trackA: AnimationTrack, frameA: Int,
+        trackB: AnimationTrack, frameB: Int,
+        t: Float
+    ) -> [UInt32: simd_float4x4] {
+        let clampedT = min(max(t, 0), 1)
+        var result: [UInt32: simd_float4x4] = [:]
+        func walk(_ node: SkeletonTreeNode, parentTransform: simd_float4x4, parentScale: SIMD3<Float>) {
+            let jointIndex = Int(node.joint.jointIndex)
+            let poseA = localPose(track: trackA, jointIndex: jointIndex, frame: frameA)
+            let poseB = localPose(track: trackB, jointIndex: jointIndex, frame: frameB)
+
+            let blended: LocalPose
+            switch (poseA, poseB) {
+            case let (.some(a), .some(b)):
+                blended = LocalPose(
+                    translation: a.translation + (b.translation - a.translation) * clampedT,
+                    scale: a.scale + (b.scale - a.scale) * clampedT,
+                    rotation: simd_slerp(a.rotation, b.rotation, clampedT),
+                    useAddRotation: clampedT < 0.5 ? a.useAddRotation : b.useAddRotation,
+                    useParentScale: clampedT < 0.5 ? a.useParentScale : b.useParentScale
+                )
+            case let (.some(a), .none):
+                blended = a
+            case let (.none, .some(b)):
+                blended = b
+            case (.none, .none):
+                let local = bindPoseLocal(node.joint)
+                let localTransform = simd_float4x4(translation: local.translation) * simd_float4x4(local.rotation)
+                let worldTransform = parentTransform * localTransform
+                result[node.joint.jointIndex] = worldTransform
+                for child in node.children { walk(child, parentTransform: worldTransform, parentScale: parentScale) }
+                return
+            }
+
+            var rotation = blended.rotation
+            if blended.useAddRotation {
+                let addRotation = bindPoseLocal(node.joint).addRotation
+                rotation = addRotation * blended.rotation
+            }
+            var scale = blended.scale
+            if blended.useParentScale {
+                scale = SIMD3(scale.x / max(parentScale.x, 0.0001), scale.y / max(parentScale.y, 0.0001), scale.z / max(parentScale.z, 0.0001))
+            }
+
+            let localTransform = simd_float4x4(translation: blended.translation) * simd_float4x4(rotation) * simd_float4x4(diagonal: SIMD4(scale.x, scale.y, scale.z, 1))
+            let worldTransform = parentTransform * localTransform
+            result[node.joint.jointIndex] = worldTransform
+            for child in node.children { walk(child, parentTransform: worldTransform, parentScale: blended.scale) }
+        }
+        guard let root = skeleton.buildTree() else { return result }
+        walk(root, parentTransform: matrix_identity_float4x4, parentScale: SIMD3(1, 1, 1))
+        return result
+    }
+
+    /// Blended counterpart to `skinningMatrices` — see
+    /// `blendedWorldTransforms`'s doc comment.
+    static func blendedSkinningMatrices(
+        skeleton: SkeletonAsset,
+        trackA: AnimationTrack, frameA: Int,
+        trackB: AnimationTrack, frameB: Int,
+        t: Float
+    ) -> [UInt32: simd_float4x4] {
+        let bindPose = bindPoseWorldTransforms(skeleton: skeleton)
+        let animated = blendedWorldTransforms(skeleton: skeleton, trackA: trackA, frameA: frameA, trackB: trackB, frameB: frameB, t: t)
+        var result: [UInt32: simd_float4x4] = [:]
+        for (jointIndex, bind) in bindPose {
+            guard let animatedTransform = animated[jointIndex] else { continue }
+            result[jointIndex] = animatedTransform * bind.inverse
+        }
+        return result
+    }
+
     /// Final per-joint GPU skinning matrices at `frameIndex` —
     /// `ComputePoseTransform`'s `inverseBindPose * animatedWorldTransform`,
     /// ported: transforms a bind-space vertex into this joint's own local
