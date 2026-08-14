@@ -4,12 +4,16 @@ import CTParsers
 
 /// Write-back editor for a decoded `ParticleData` record — ports
 /// `Editors/ParticlesEditor.cs`'s field set for the scalar fields (every
-/// `numericUpDown`-bound field the reference exposes). The reference's own
-/// 8-entry gradient curves (color/alpha/size/rotation/collision) are
-/// edited there via a dedicated curve-graph control this build doesn't
-/// have yet — shown read-only here rather than as 100+ flat number
-/// fields. List counts (definitions/instances) are fixed by the record's
-/// on-disk size, same constraint as every other editor in this app.
+/// `numericUpDown`-bound field the reference exposes), plus a real
+/// curve-graph editor (`GradientCurveEditor`/`ColorGradientEditor`,
+/// roadmap 10.1) for the reference's own 8-entry gradient curves — color,
+/// alpha, size width/height, rotation, and collision, every one a real,
+/// confirmed field from this codebase's own decoded model. The two
+/// `unkGradient1`/`unkGradient2` curves stay as flat number lists further
+/// down: this codebase has no confirmed name *or* value range for them,
+/// and a graph implies a scale that isn't verified. List counts
+/// (definitions/instances) are fixed by the record's on-disk size, same
+/// constraint as every other editor in this app.
 struct ParticleDataEditorSheet: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.dismiss) private var dismiss
@@ -33,9 +37,6 @@ struct ParticleDataEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Edit Particle Data #\(original.id)").font(.title3.bold())
-            Text("Gradient curves (color/alpha/size/rotation/collision) round-trip unchanged — this build doesn't have a curve editor yet.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
 
             if !particleTypes.isEmpty {
                 Picker("Type", selection: $selectedDefinitionIndex) {
@@ -45,8 +46,9 @@ struct ParticleDataEditorSheet: View {
                 }
                 ScrollView {
                     DefinitionFields(definition: $particleTypes[selectedDefinitionIndex])
+                    CurveFields(definition: $particleTypes[selectedDefinitionIndex])
                 }
-                .frame(maxHeight: 360)
+                .frame(maxHeight: 480)
             }
 
             if !particleInstances.isEmpty {
@@ -166,6 +168,30 @@ private struct DefinitionFields: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// "Particle Curve Graph Editor" (roadmap 10.1) — real graphical editors
+/// for the six confirmed-named 8-entry gradient curves. See this file's
+/// own doc comment for why `unkGradient1`/`unkGradient2` aren't included
+/// here.
+private struct CurveFields: View {
+    @Binding var definition: ParticleSystemDefinition
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Curves").font(.headline)
+            ColorGradientEditor(colorGradient: $definition.colorGradient)
+            GradientCurveEditor(times: $definition.alphaGradientTime, values: $definition.alphaGradientValue, valueLabel: "Alpha", lineColor: .white, fixedRange: 0...255)
+            GradientCurveEditor(times: $definition.sizeWidthTime, values: $definition.sizeWidthValue, valueLabel: "Size Width", lineColor: .cyan)
+            GradientCurveEditor(times: $definition.sizeHeightTime, values: $definition.sizeHeightValue, valueLabel: "Size Height", lineColor: .teal)
+            GradientCurveEditor(
+                times: $definition.rotationTime, values: $definition.rotationValue, valueLabel: "Rotation", lineColor: .orange, fixedRange: 0...65535,
+                valueFormatter: { String(format: "%.0f (%.0f°)", $0, ($0 / 65535) * 360) }
+            )
+            GradientCurveEditor(times: $definition.collisionTime, values: $definition.collisionValue, valueLabel: "Collision Sphere Size", lineColor: .pink)
+        }
+        .padding(.top, 8)
     }
 }
 
