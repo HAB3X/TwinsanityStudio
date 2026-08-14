@@ -1919,7 +1919,7 @@ public final class WorkspaceViewModel: ObservableObject {
             aiPaths += aiPathRecords(inSameFileAs: siblingNode)
         }
 
-        let (resolvedAssets, assetIndex) = await resolvedInstanceAssets(for: instanceMarkers, node: node)
+        let (resolvedAssets, assetIndex) = await resolvedInstanceAssets(for: instanceMarkers, node: node, siblingNode: siblingNode)
         let defaultAssetIndex = await loadSharedDefaultAssetIndexIfNeeded() ?? GraphicsAssetIndex()
         levelViewerContext = LevelViewerContext(
             scenery: scenery,
@@ -2002,8 +2002,20 @@ public final class WorkspaceViewModel: ObservableObject {
     /// `GraphicsAssetIndex` itself (built once, here) so "The Forge
     /// Palette" (Part 4C) can resolve a *newly placed* object's geometry
     /// through the exact same index without rebuilding it.
-    private func resolvedInstanceAssets(for instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)], node: ChunkNode) async -> (assets: [UUID: ResolvedModelAsset], index: GraphicsAssetIndex) {
-        guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return ([:], GraphicsAssetIndex()) }
+    ///
+    /// The index is built from `siblingNode`'s file root when one exists,
+    /// falling back to `node`'s own file root otherwise — real, verified
+    /// data (see `openLevelViewer`'s own doc comment: `hubb.sm2` has zero
+    /// `Instance`/`GameObject` records of its own, `hubb.rm2` has 32) shows
+    /// `GameObject` records structurally live in the *actor* file, not the
+    /// scenery file `node` always is (`openLevelViewer` is "always entered
+    /// from the scenery side"). Building this index from `node` alone was a
+    /// real, previously-silent bug: every level's own `GameObject`s were
+    /// invisible to this resolver, so both the Forge Palette and already-
+    /// placed Instance markers could only ever resolve through the shared
+    /// `Default.rm2` fallback, never this level's own actor data.
+    private func resolvedInstanceAssets(for instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)], node: ChunkNode, siblingNode: ChunkNode?) async -> (assets: [UUID: ResolvedModelAsset], index: GraphicsAssetIndex) {
+        guard let fileRoot = findFileRoot(containing: siblingNode ?? node, in: rootNodes) else { return ([:], GraphicsAssetIndex()) }
         let defaultIndex = await loadSharedDefaultAssetIndexIfNeeded()
         return await Task.detached(priority: .userInitiated) {
             let index = AssetResolver.buildIndex(fileRoot: fileRoot)
