@@ -203,6 +203,7 @@ struct LevelViewerWindow: View {
         }
         .frame(minWidth: 960, minHeight: 620)
         .onAppear {
+            let isDemoCameraCollection = referenceNodeForFileOps.flatMap { workspace.cameraCollectionIsDemo(inSameFileAs: $0) } ?? false
             renderer = LevelViewerRenderer(
                 placements: context.placements,
                 instanceMarkers: context.instanceMarkers,
@@ -212,7 +213,8 @@ struct LevelViewerWindow: View {
                 triggers: context.triggers,
                 cameras: context.cameras,
                 chunkLinks: context.chunkLinks,
-                aiPositions: context.aiPositions
+                aiPositions: context.aiPositions,
+                isDemoCameraCollection: isDemoCameraCollection
             )
             renderer?.snapToGrid = snapToGrid
             renderer?.gridSize = Float(gridSize)
@@ -395,6 +397,9 @@ struct LevelViewerWindow: View {
                     Divider()
                     aiPathsPanel
                 }
+
+                Divider()
+                addTriggerCameraPanel
 
                 Divider()
                 crossEngineDataPanel
@@ -840,18 +845,38 @@ struct LevelViewerWindow: View {
 
             if selectedIndex != nil {
                 transformFieldGroup(title: "Position", x: $positionX, y: $positionY, z: $positionZ, apply: applyPositionFields)
+                Button {
+                    copyViewerPositionToSelected()
+                } label: {
+                    Label("Copy Viewer Position", systemImage: "camera.viewfinder")
+                }
+                .controlSize(.small)
+                .help("Set the selected object's position to the camera's current world-space position — the same convenience the original editor's Position/AIPosition/Instance editors offer.")
                 transformFieldGroup(title: "Rotation °", x: $rotationX, y: $rotationY, z: $rotationZ, apply: applyRotationFields)
                 transformFieldGroup(title: "Scale", x: $scaleX, y: $scaleY, z: $scaleZ, apply: applyScaleFields)
-                Button {
-                    duplicateSelected()
-                } label: {
-                    Label("Duplicate", systemImage: "plus.square.on.square")
+                HStack {
+                    Button {
+                        duplicateSelected()
+                    } label: {
+                        Label("Duplicate", systemImage: "plus.square.on.square")
+                    }
+                    .keyboardShortcut("d", modifiers: .command)
+                    .disabled(!canDuplicateSelected)
+                    .help(canDuplicateSelected
+                        ? "Duplicate the selected object, with real write-back to disk on save."
+                        : "Only Actor/Instance placements, AI waypoints, Triggers, and Cameras can be duplicated — scenery has no write path back to the file yet, and a camera's own spline/path control points duplicate with the whole camera, not individually.")
+
+                    Button(role: .destructive) {
+                        deleteSelected()
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .keyboardShortcut(.delete, modifiers: [])
+                    .disabled(!canDeleteSelected)
+                    .help(canDeleteSelected
+                        ? "Delete the selected object. Undo with ⌘Z; the deletion only persists to disk once you Save Chunk Overrides…"
+                        : "Only Actor/Instance placements, AI waypoints, Triggers, and Cameras can be deleted — scenery has no write path back to the file yet, and a camera's own spline/path control points aren't independently deletable.")
                 }
-                .keyboardShortcut("d", modifiers: .command)
-                .disabled(!canDuplicateSelected)
-                .help(canDuplicateSelected
-                    ? "Duplicate the selected object, with real write-back to disk on save."
-                    : "Only Actor/Instance placements and AI waypoints can be duplicated — scenery, triggers, and cameras have no write path back to the file yet.")
 
                 if canScatterSelected {
                     Divider()
@@ -937,6 +962,106 @@ struct LevelViewerWindow: View {
                 registerAIWaypointPlacementUndo(undoManager: undoManager, renderer: redoTarget, index: newIndex)
             }
         }
+    }
+
+    /// "Add Trigger"/"Add Camera": closes the parity gap the original
+    /// editor's `Menu_AddNew` has for these two record types — real, brand-
+    /// new records inserted via `ChunkSectionInserter` on save, same as
+    /// "Add Waypoint."
+    private var addTriggerCameraPanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Add Objects").font(.headline)
+            Text("Places a brand-new Trigger or Camera at the level's visual center — drag it into position, then Save Chunk Overrides… to make it real.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("Add Trigger") { addTrigger() }
+                Button("Add Camera") { addCamera() }
+            }
+        }
+    }
+
+    private func addTrigger() {
+        guard let renderer, let index = renderer.spawnTrigger() else { return }
+        selectedIndex = index
+        refreshTransformFields()
+        guard let undoManager else { return }
+        undoManager.setActionName("Add Trigger")
+        Self.registerTriggerPlacementUndo(undoManager: undoManager, renderer: renderer, index: index)
+    }
+
+    private func addCamera() {
+        guard let renderer, let index = renderer.spawnCamera() else { return }
+        selectedIndex = index
+        refreshTransformFields()
+        guard let undoManager else { return }
+        undoManager.setActionName("Add Camera")
+        Self.registerCameraPlacementUndo(undoManager: undoManager, renderer: renderer, index: index)
+    }
+
+    private static func registerTriggerPlacementUndo(undoManager: UndoManager, renderer: LevelViewerRenderer, index: Int) {
+        guard let worldPosition = renderer.newTriggerInfo(at: index) else { return }
+        undoManager.registerUndo(withTarget: renderer) { target in
+            target.removeObject(at: index)
+            undoManager.registerUndo(withTarget: target) { redoTarget in
+                let newIndex = redoTarget.spawnTrigger(at: worldPosition) ?? index
+                registerTriggerPlacementUndo(undoManager: undoManager, renderer: redoTarget, index: newIndex)
+            }
+        }
+    }
+
+    private static func registerCameraPlacementUndo(undoManager: UndoManager, renderer: LevelViewerRenderer, index: Int) {
+        guard let worldPosition = renderer.newCameraInfo(at: index) else { return }
+        undoManager.registerUndo(withTarget: renderer) { target in
+            target.removeObject(at: index)
+            undoManager.registerUndo(withTarget: target) { redoTarget in
+                let newIndex = redoTarget.spawnCamera(at: worldPosition) ?? index
+                registerCameraPlacementUndo(undoManager: undoManager, renderer: redoTarget, index: newIndex)
+            }
+        }
+    }
+
+    private var canDeleteSelected: Bool {
+        guard let renderer, let selectedIndex else { return false }
+        return renderer.canDelete(at: selectedIndex)
+    }
+
+    /// Deletes the selected object through `LevelViewerRenderer.deleteObject`
+    /// (real removal from disk on save, for a real record — see that
+    /// function's own doc comment) and registers a recursive undo/redo
+    /// step, same shape as `registerTransformUndo`/`registerPlacementUndo`:
+    /// undo re-inserts the exact removed value via `restoreObject`; redo
+    /// (registered as the undo *of that* restore) deletes it again.
+    private func deleteSelected() {
+        guard let renderer, let index = selectedIndex, let snapshot = renderer.deleteObject(at: index) else { return }
+        selectedIndex = nil
+        refreshTransformFields()
+        guard let undoManager else { return }
+        undoManager.setActionName("Delete Object")
+        Self.registerDeleteUndo(undoManager: undoManager, renderer: renderer, index: index, snapshot: snapshot)
+    }
+
+    private static func registerDeleteUndo(undoManager: UndoManager, renderer: LevelViewerRenderer, index: Int, snapshot: LevelViewerRenderer.RemovedObjectSnapshot) {
+        undoManager.registerUndo(withTarget: renderer) { target in
+            target.restoreObject(snapshot, at: index)
+            undoManager.registerUndo(withTarget: target) { redoTarget in
+                guard let redoSnapshot = redoTarget.deleteObject(at: index) else { return }
+                registerDeleteUndo(undoManager: undoManager, renderer: redoTarget, index: index, snapshot: redoSnapshot)
+            }
+        }
+    }
+
+    /// "Copy Viewer Position": the same convenience the original editor's
+    /// Position/AIPosition/Instance editors offer — grabs the camera's
+    /// current real-world eye position into the selected object's
+    /// position field, through the same undo path every other position
+    /// edit already uses.
+    private func copyViewerPositionToSelected() {
+        guard let renderer, selectedIndex != nil else { return }
+        let previousSnapshot = currentSnapshot()
+        renderer.setSelectedPosition(to: renderer.cameraEyeWorldPosition)
+        refreshTransformFields()
+        registerUndo(from: previousSnapshot)
     }
 
     /// "AI Pathfinding/Navmesh Editor" (roadmap 5.1): the real `AIPath`
@@ -1069,7 +1194,16 @@ struct LevelViewerWindow: View {
         let controlPointEdits = renderer.pendingCameraControlPointOverrides
         let newInstances = renderer.pendingNewInstances
         let newAIPositions = renderer.pendingNewAIPositions
-        guard !edits.isEmpty || !controlPointEdits.isEmpty || !newInstances.isEmpty || !newAIPositions.isEmpty else { return }
+        let newTriggers = renderer.pendingNewTriggers
+        let newCameras = renderer.pendingNewCameras
+        let removedInstanceIDs = renderer.pendingRemovedInstanceIDs
+        let removedTriggerIDs = renderer.pendingRemovedTriggerIDs
+        let removedCameraIDs = renderer.pendingRemovedCameraIDs
+        let removedAIPositionIDs = renderer.pendingRemovedAIPositionIDs
+        guard !edits.isEmpty || !controlPointEdits.isEmpty || !newInstances.isEmpty || !newAIPositions.isEmpty
+            || !newTriggers.isEmpty || !newCameras.isEmpty
+            || !removedInstanceIDs.isEmpty || !removedTriggerIDs.isEmpty || !removedCameraIDs.isEmpty || !removedAIPositionIDs.isEmpty
+        else { return }
 
         let encodedNewInstances = newInstances.map { entry in
             (id: entry.syntheticID, encoded: WorldPlacementWriter.writeNewInstance(
@@ -1083,12 +1217,18 @@ struct LevelViewerWindow: View {
             applyingAbsoluteByteRangePatches: controlPointEdits,
             insertingNewInstances: encodedNewInstances,
             insertingNewAIPositions: newAIPositions,
+            insertingNewTriggers: newTriggers,
+            insertingNewCameras: newCameras,
+            removingInstanceIDs: removedInstanceIDs,
+            removingTriggerIDs: removedTriggerIDs,
+            removingCameraIDs: removedCameraIDs,
+            removingAIPositionIDs: removedAIPositionIDs,
             levelNode: referenceNode
         ) else { return }
 
         guard let url = ExportPanel.chooseSaveLocation(
             suggestedName: "\(workspace.originalFileName(for: referenceNode) ?? "chunk")_edited.rm2",
-            message: "Save the edited copy of this file, with every Instance/AI Waypoint/Camera control point's current position applied and every newly placed object/waypoint added. The original file on disk is not modified."
+            message: "Save the edited copy of this file, with every Instance/AI Waypoint/Camera control point's current position applied, every newly placed object/waypoint/trigger/camera added, and every deleted object removed. The original file on disk is not modified."
         ) else { return }
         Task {
             do {
@@ -1099,6 +1239,10 @@ struct LevelViewerWindow: View {
                 if !controlPointEdits.isEmpty { parts.append("\(controlPointEdits.count) camera control point(s)") }
                 if !newInstances.isEmpty { parts.append("\(newInstances.count) newly placed object(s)") }
                 if !newAIPositions.isEmpty { parts.append("\(newAIPositions.count) newly placed waypoint(s)") }
+                if !newTriggers.isEmpty { parts.append("\(newTriggers.count) newly placed trigger(s)") }
+                if !newCameras.isEmpty { parts.append("\(newCameras.count) newly placed camera(s)") }
+                let removedTotal = removedInstanceIDs.count + removedTriggerIDs.count + removedCameraIDs.count + removedAIPositionIDs.count
+                if removedTotal > 0 { parts.append("\(removedTotal) deleted object(s)") }
                 summary += " with " + parts.joined(separator: " and ") + ". The original file was not modified."
                 workspace.statusMessage = summary
             } catch {

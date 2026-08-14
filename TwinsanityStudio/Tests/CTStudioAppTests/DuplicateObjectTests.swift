@@ -55,4 +55,29 @@ final class DuplicateObjectTests: XCTestCase {
         let renderer = try makeRenderer()
         XCTAssertNil(renderer.duplicateSelectedObject())
     }
+
+    func testDuplicatingATriggerSpawnsARealSecondTrigger() throws {
+        let renderer = try makeRenderer()
+        let originalIndex = try XCTUnwrap(renderer.spawnTrigger(at: SIMD3<Float>(1, 0, 1)))
+        renderer.select(index: originalIndex)
+        XCTAssertTrue(renderer.canDuplicate(at: originalIndex))
+
+        let countBefore = renderer.objectCount
+        let duplicateIndex = try XCTUnwrap(renderer.duplicateSelectedObject())
+        XCTAssertEqual(renderer.objectCount, countBefore + 1)
+        XCTAssertNotEqual(duplicateIndex, originalIndex)
+        XCTAssertNotNil(renderer.newTriggerInfo(at: duplicateIndex), "the duplicate must be a real, newly-synthesized Trigger, not a visual-only copy")
+    }
+
+    func testDuplicatingACameraSpawnsARealSecondCamera() throws {
+        let renderer = try makeRenderer()
+        let originalIndex = try XCTUnwrap(renderer.spawnCamera(at: SIMD3<Float>(2, 0, 2)))
+        renderer.select(index: originalIndex)
+        XCTAssertTrue(renderer.canDuplicate(at: originalIndex))
+
+        let countBefore = renderer.objectCount
+        let duplicateIndex = try XCTUnwrap(renderer.duplicateSelectedObject())
+        XCTAssertEqual(renderer.objectCount, countBefore + 1)
+        XCTAssertNotNil(renderer.newCameraInfo(at: duplicateIndex))
+    }
 }

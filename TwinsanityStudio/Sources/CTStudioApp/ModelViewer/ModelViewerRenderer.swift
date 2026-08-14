@@ -1404,6 +1404,15 @@ private struct GPULevelObject {
     /// into the file at `sourceNode.fileOffset + this` without touching
     /// anything else in the variable-length Camera record.
     var cameraControlPointFileOffset: Int?
+    /// "Add Trigger"/"Add Camera": non-nil only for a Trigger/Camera
+    /// placed this session via `spawnTrigger`/`spawnCamera` — a locally-
+    /// generated ID that doesn't collide with any real Trigger/Camera
+    /// already in this level, mirroring `syntheticInstanceID`/
+    /// `syntheticAIPositionID`'s role for their own record types. `nil`
+    /// for a real, on-disk Trigger/Camera (those use `sourceNode`
+    /// instead — there is no on-disk record yet to point at for these).
+    var syntheticTriggerID: UInt32?
+    var syntheticCameraID: UInt32?
 }
 
 /// Which transform the gizmo currently edits — the W/E/R hotkeys switch
@@ -1593,6 +1602,23 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// `ResolvedModelAsset.id`'s own doc comment for the same "these are
     /// different on-disk ID spaces" reasoning).
     private var nextSyntheticAIPositionID: UInt32 = 1
+    /// Same idea as `nextSyntheticAIPositionID`, for Triggers/Cameras
+    /// added this session via `spawnTrigger`/`spawnCamera` — "Add
+    /// Trigger"/"Add Camera" closing the parity gap the original editor's
+    /// `Menu_AddNew` has for these two record types (not just Instances/
+    /// AI-waypoints).
+    private var nextSyntheticTriggerID: UInt32 = 1
+    private var nextSyntheticCameraID: UInt32 = 1
+    /// Whether the destination `.camera` collection is the Demo layout —
+    /// `WorldPlacementWriter.writeNewCamera(isDemo:)` needs to match it
+    /// (`Camera.cs`'s own `ParentType == SectionType.CameraDemo` check
+    /// omits `UnkShort`/`UnkByte` entirely). Set from `WorkspaceViewModel.
+    /// cameraCollectionIsDemo(inSameFileAs:)` at construction time;
+    /// `false` (non-Demo) when there's no existing Camera collection to
+    /// match yet — the same "no collection to add into" case `spawnCamera`
+    /// can't do anything about until the level already has at least one
+    /// real Camera, matching `cameraCollectionNode`'s own limitation.
+    private let isDemoCameraCollection: Bool
 
     init?(
         placements: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)],
@@ -1603,15 +1629,19 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         triggers: [(node: ChunkNode, trigger: TriggerVolume)] = [],
         cameras: [(node: ChunkNode, camera: PlacedCamera)] = [],
         chunkLinks: [(node: ChunkNode, link: ChunkLink)] = [],
-        aiPositions: [(node: ChunkNode, marker: AIPositionMarker)] = []
+        aiPositions: [(node: ChunkNode, marker: AIPositionMarker)] = [],
+        isDemoCameraCollection: Bool = false
     ) {
         guard let context = ModelViewerGPUContext.shared else { return nil }
         self.context = context
         self.assetIndex = assetIndex
         self.defaultAssetIndex = defaultAssetIndex
+        self.isDemoCameraCollection = isDemoCameraCollection
         super.init()
         nextSyntheticInstanceID = (instanceMarkers.map(\.instance.id).max() ?? 0) + 1
         nextSyntheticAIPositionID = (aiPositions.map(\.marker.id).max() ?? 0) + 1
+        nextSyntheticTriggerID = (triggers.map(\.trigger.id).max() ?? 0) + 1
+        nextSyntheticCameraID = (cameras.map(\.camera.id).max() ?? 0) + 1
         upload(placements: placements, instanceMarkers: instanceMarkers, resolvedInstanceAssets: resolvedInstanceAssets, triggers: triggers, cameras: cameras, chunkLinks: chunkLinks, aiPositions: aiPositions)
     }
 
@@ -2417,6 +2447,8 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             return object.newInstanceObjectID != nil || (object.sourceNode.flatMap { instanceObjectIDByNodeID[$0.id] } != nil)
         case .aiWaypoints:
             return true
+        case .triggers, .cameras:
+            return object.cameraControlPointFileOffset == nil
         default:
             return false
         }
@@ -2424,14 +2456,21 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
 
     /// "Unrestricted Chunk Free-Edit Mode": duplicate the selected object
     /// a short offset from its current position, through the exact same
-    /// real spawn+write-back pipeline `spawnInstance`/`spawnAIWaypoint`
-    /// already give the Forge Palette — the duplicate becomes a real new
-    /// record on save, not a purely visual copy nobody can persist.
-    /// Actors and AI waypoints are the only layers with a real spawn
-    /// primitive to duplicate through; scenery/trigger/camera placements
-    /// still have no write path of any kind (long-standing, unchanged by
-    /// this), so duplicating them isn't offered — `nil`, not a fabricated
-    /// copy that would silently vanish on save.
+    /// real spawn+write-back pipeline `spawnInstance`/`spawnAIWaypoint`/
+    /// `spawnTrigger`/`spawnCamera` already give the Forge Palette/"Add
+    /// Trigger"/"Add Camera" — the duplicate becomes a real new record on
+    /// save, not a purely visual copy nobody can persist. Scenery
+    /// placements still have no write path of any kind (long-standing,
+    /// unchanged by this), so duplicating them isn't offered — `nil`, not
+    /// a fabricated copy that would silently vanish on save.
+    ///
+    /// Trigger/Camera duplicates spawn with the reference tool's own
+    /// default size/rotation (same as a fresh "Add Trigger"/"Add Camera"),
+    /// not an exact copy of the source's real dimensions — this build
+    /// doesn't thread a selected Trigger/Camera's `size`/`rotationQuaternion`
+    /// into `GPULevelObject`, only its position. Still a real, useful
+    /// duplicate (a new record of the same kind, positioned nearby, fully
+    /// editable before saving), just not a byte-exact clone.
     @discardableResult
     func duplicateSelectedObject() -> Int? {
         guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return nil }
@@ -2445,6 +2484,12 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         case .aiWaypoints:
             let rawNodeType = object.newAIWaypointRawNodeType ?? object.originalAIWaypointRawNodeType ?? 0
             return spawnAIWaypoint(at: offsetPosition, rawNodeType: rawNodeType)
+        case .triggers:
+            guard object.cameraControlPointFileOffset == nil else { return nil }
+            return spawnTrigger(at: offsetPosition)
+        case .cameras:
+            guard object.cameraControlPointFileOffset == nil else { return nil }
+            return spawnCamera(at: offsetPosition)
         default:
             return nil
         }
@@ -2508,6 +2553,164 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         let newIndex = objects.count - 1
         select(index: newIndex)
         return newIndex
+    }
+
+    /// "Add Trigger": appends a brand-new Trigger marker at `worldPosition`
+    /// (defaulting to the level's own visual center) with a synthetic ID —
+    /// closes the parity gap the original editor's `Menu_AddNew` has for
+    /// Trigger records (not just Instances/AI-waypoints). Renders exactly
+    /// like an existing Trigger — an empty-submesh, `.triggers`-layer
+    /// wireframe box the draw loop already builds for every Trigger,
+    /// selected/editable/movable the same way.
+    @discardableResult
+    func spawnTrigger(at worldPosition: SIMD3<Float>? = nil) -> Int? {
+        let worldPosition = worldPosition ?? boundsCenter
+        let syntheticID = nextSyntheticTriggerID
+        nextSyntheticTriggerID += 1
+        objects.append(GPULevelObject(
+            worldPosition: worldPosition,
+            displayName: "New Trigger #\(syntheticID)",
+            submeshes: [],
+            layer: .triggers,
+            syntheticTriggerID: syntheticID
+        ))
+        let newIndex = objects.count - 1
+        select(index: newIndex)
+        return newIndex
+    }
+
+    /// "Add Camera": same role as `spawnTrigger`, for Camera records.
+    @discardableResult
+    func spawnCamera(at worldPosition: SIMD3<Float>? = nil) -> Int? {
+        let worldPosition = worldPosition ?? boundsCenter
+        let syntheticID = nextSyntheticCameraID
+        nextSyntheticCameraID += 1
+        objects.append(GPULevelObject(
+            worldPosition: worldPosition,
+            displayName: "New Camera #\(syntheticID)",
+            submeshes: [],
+            layer: .cameras,
+            syntheticCameraID: syntheticID
+        ))
+        let newIndex = objects.count - 1
+        select(index: newIndex)
+        return newIndex
+    }
+
+    /// Same role as `newInstanceInfo`, for `spawnTrigger`'s undo path.
+    func newTriggerInfo(at index: Int) -> SIMD3<Float>? {
+        guard objects.indices.contains(index), objects[index].syntheticTriggerID != nil else { return nil }
+        return objects[index].worldPosition
+    }
+
+    /// Same role as `newInstanceInfo`, for `spawnCamera`'s undo path.
+    func newCameraInfo(at index: Int) -> SIMD3<Float>? {
+        guard objects.indices.contains(index), objects[index].syntheticCameraID != nil else { return nil }
+        return objects[index].worldPosition
+    }
+
+    /// Opaque snapshot of a just-removed object, letting `LevelViewerWindow`'s
+    /// undo registration restore it exactly via `restoreObject(_:at:)`
+    /// without this file needing to expose `GPULevelObject` itself outside
+    /// its own translation unit — same "rebuild from a stable value, not a
+    /// captured reference" posture `registerPlacementUndo` already uses,
+    /// just carrying the whole removed value instead of primitive fields
+    /// (a `GPULevelObject` is a plain value type, trivially safe to hold
+    /// onto and reinsert later, submeshes included, with no reconstruction
+    /// needed).
+    struct RemovedObjectSnapshot {
+        fileprivate let object: GPULevelObject
+        fileprivate let wasRealRecord: Bool
+    }
+
+    /// Whether `deleteObject(at:)` would do anything for the object at
+    /// `index` right now — mirrors `canDuplicate(at:)`'s "let the UI
+    /// disable/explain the button up front" role. True for every
+    /// Instance/Trigger/Camera/AI-waypoint, whether a real on-disk record
+    /// or something placed this session — the original editor's
+    /// `ItemController` gives every record type universal Remove, and this
+    /// build's "delete" now genuinely persists for all four (see
+    /// `ChunkSectionInserter.removingRecord`). False for scenery (no write
+    /// path of any kind), cross-engine markers, and a camera's own spline/
+    /// path control-point markers — deleting a control point isn't
+    /// "delete this camera," and inserting/removing individual control
+    /// points still isn't supported, only moving an existing one.
+    func canDelete(at index: Int) -> Bool {
+        guard objects.indices.contains(index) else { return false }
+        let object = objects[index]
+        guard object.cameraControlPointFileOffset == nil else { return false }
+        switch object.layer {
+        case .actors, .aiWaypoints, .triggers, .cameras:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Removes the object at `index`, returning a snapshot `restoreObject`
+    /// can use to put it back exactly. When the removed object came from
+    /// a real, on-disk record (not a same-session placement), its record
+    /// ID is also recorded in `removedRealRecordIDs` so `saveLevelOverrides()`
+    /// can pass it through to `ChunkSectionInserter.removingRecord` — a
+    /// same-session placement being deleted needs no such tracking, it
+    /// simply never appears in `pendingNew*` at save time.
+    @discardableResult
+    func deleteObject(at index: Int) -> RemovedObjectSnapshot? {
+        guard canDelete(at: index) else { return nil }
+        let object = objects[index]
+        let isSessionPlacement = object.newInstanceObjectID != nil || object.newAIWaypointRawNodeType != nil || object.syntheticTriggerID != nil || object.syntheticCameraID != nil
+        let wasRealRecord = !isSessionPlacement && object.sourceNode != nil
+        if wasRealRecord, let node = object.sourceNode {
+            removedRealRecordIDs.append((layer: object.layer, id: node.recordID))
+        }
+        removeObject(at: index)
+        return RemovedObjectSnapshot(object: object, wasRealRecord: wasRealRecord)
+    }
+
+    /// The undo counterpart to `deleteObject` — re-inserts the removed
+    /// object exactly as it was, at (as close as still possible to) its
+    /// original index, and un-marks it for on-disk removal if it was a
+    /// real record.
+    func restoreObject(_ snapshot: RemovedObjectSnapshot, at index: Int) {
+        let insertIndex = min(max(0, index), objects.count)
+        objects.insert(snapshot.object, at: insertIndex)
+        if snapshot.wasRealRecord, let node = snapshot.object.sourceNode,
+           let removeAt = removedRealRecordIDs.firstIndex(where: { $0.layer == snapshot.object.layer && $0.id == node.recordID }) {
+            removedRealRecordIDs.remove(at: removeAt)
+        }
+        select(index: insertIndex)
+    }
+
+    /// Every real, on-disk record deleted this session, by layer — the
+    /// deletion counterpart to `pendingNewInstances`/etc. `saveLevelOverrides()`
+    /// reads these into `WorkspaceViewModel.patchedFileBytes`'s
+    /// `removingInstanceIDs`/`removingTriggerIDs`/`removingCameraIDs`/
+    /// `removingAIPositionIDs` parameters.
+    private var removedRealRecordIDs: [(layer: SceneLayer, id: UInt32)] = []
+    var pendingRemovedInstanceIDs: [UInt32] { removedRealRecordIDs.filter { $0.layer == .actors }.map(\.id) }
+    var pendingRemovedTriggerIDs: [UInt32] { removedRealRecordIDs.filter { $0.layer == .triggers }.map(\.id) }
+    var pendingRemovedCameraIDs: [UInt32] { removedRealRecordIDs.filter { $0.layer == .cameras }.map(\.id) }
+    var pendingRemovedAIPositionIDs: [UInt32] { removedRealRecordIDs.filter { $0.layer == .aiWaypoints }.map(\.id) }
+
+    /// Every Trigger placed this session via `spawnTrigger`, ready to hand
+    /// to `WorkspaceViewModel.patchedFileBytes`'s `insertingNewTriggers` —
+    /// the Trigger counterpart to `pendingNewInstances`.
+    var pendingNewTriggers: [(id: UInt32, encoded: Data)] {
+        objects.compactMap { object in
+            guard let syntheticID = object.syntheticTriggerID else { return nil }
+            let encoded = WorldPlacementWriter.writeNewTrigger(position: SIMD4(object.worldPosition, 1))
+            return (syntheticID, encoded)
+        }
+    }
+
+    /// Every Camera placed this session via `spawnCamera`, ready to hand
+    /// to `WorkspaceViewModel.patchedFileBytes`'s `insertingNewCameras`.
+    var pendingNewCameras: [(id: UInt32, encoded: Data)] {
+        objects.compactMap { object in
+            guard let syntheticID = object.syntheticCameraID else { return nil }
+            let encoded = WorldPlacementWriter.writeNewCamera(position: SIMD4(object.worldPosition, 1), isDemo: isDemoCameraCollection)
+            return (syntheticID, encoded)
+        }
     }
 
     /// Same role as `newInstanceInfo`, for `spawnAIWaypoint`'s undo path.
