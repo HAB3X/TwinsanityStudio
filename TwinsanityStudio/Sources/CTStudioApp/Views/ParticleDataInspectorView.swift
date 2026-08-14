@@ -60,6 +60,9 @@ struct ParticleDataInspectorView: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $isEditing) {
+            ParticleDataEditorSheet(node: node, particleData: particleData)
+        }
     }
 }
 
