@@ -915,14 +915,17 @@ public final class WorkspaceViewModel: ObservableObject {
     /// take tens of seconds; the UI stays responsive and `isScanning` drives
     /// a progress indicator instead of freezing during the scan.
     ///
-    /// Split into a serial I/O phase and a parallel CPU phase per archive:
-    /// `BDArchiveReader` reuses one open file handle and isn't safe for
-    /// concurrent reads (see its own doc comment), so every candidate
-    /// entry's bytes are pulled up front on one thread — but chunk-tree
-    /// parsing, geometry/texture decode, and asset resolution are pure
-    /// functions over each entry's own independent `Data`, so that half
-    /// fans out across every core via a `TaskGroup` instead of running one
-    /// file at a time.
+    /// Bounded, sliding-window concurrency: at most `maxConcurrent` entries'
+    /// raw bytes + parse products are ever resident at once, refilled one at
+    /// a time as each finishes — not "read every candidate entry's bytes for
+    /// the whole archive into RAM up front, then parse," which is real
+    /// memory-spike risk on a large archive (hundreds of multi-MB level
+    /// files all held in memory simultaneously before a single one starts
+    /// parsing). `BDArchiveReader` reuses one open file handle and isn't
+    /// safe for concurrent reads from a single instance (see its own doc
+    /// comment) — worked around here by giving each concurrent task its own
+    /// reader (an independent `FileHandle` over the same read-only `.BD`
+    /// file) rather than serializing all reads through one shared instance.
     public func scanAllArchives() {
         guard !isScanning else { return }
         let targets = archiveIndexByRootID.map { ($0.key, $0.value) }
@@ -937,6 +940,14 @@ public final class WorkspaceViewModel: ObservableObject {
         scanProgress = (0, totalCandidates)
         statusMessage = "Scanning \(totalCandidates) level file(s) across \(targets.count) archive(s)…"
 
+        // Extra concurrency past the core count doesn't speed up CPU-bound
+        // parsing, it just means more entries' raw bytes + parse products
+        // resident in memory at once — capped here, floor 2 so a
+        // single-core-visible sandbox still parallelizes I/O against CPU
+        // work, ceiling 8 so a many-core machine doesn't hold dozens of
+        // large level files in memory simultaneously for no benefit.
+        let maxConcurrent = max(2, min(ProcessInfo.processInfo.activeProcessorCount, 8))
+
         scanTask = Task.detached(priority: .userInitiated) { [weak self] in
             var resultsByRoot: [UUID: [String: ChunkNode]] = [:]
             var resolvedModels: [ResolvedModelAsset] = []
@@ -947,27 +958,39 @@ public final class WorkspaceViewModel: ObservableObject {
 
             for (rootID, index) in targets {
                 guard !Task.isCancelled else { break }
-                guard let reader = try? BDArchiveReader(index: index) else { continue }
-                var pendingEntries: [(name: String, data: Data, kind: TwinsFileKind)] = []
-                for entry in index.entries where Self.isChunkFileName(entry.name) {
-                    guard let data = try? reader.read(entry) else { continue }
-                    pendingEntries.append((entry.name, data, Self.fileKind(forEntryNamed: entry.name)))
-                }
+                let chunkEntries = index.entries.filter { Self.isChunkFileName($0.name) }
 
-                let parsed = await withTaskGroup(of: ParsedEntryResult?.self) { group in
-                    for pending in pendingEntries {
+                let parsed = await withTaskGroup(of: ParsedEntryResult?.self) { group -> [ParsedEntryResult] in
+                    var collected: [ParsedEntryResult] = []
+                    collected.reserveCapacity(chunkEntries.count)
+                    var iterator = chunkEntries.makeIterator()
+
+                    // Sliding window: never more than `maxConcurrent` tasks
+                    // in flight — each holding just its own entry's raw
+                    // bytes, not the whole archive's.
+                    func addNext() {
+                        guard let entry = iterator.next() else { return }
                         group.addTask {
-                            guard let node = try? Self.mainTreeDriver(forExtension: (pending.name as NSString).pathExtension).parseChunkFile(data: pending.data, fileKind: pending.kind, fileName: pending.name) else { return nil }
-                            let models = Self.resolveModels(inFileRoot: node, sourceLabel: pending.name)
-                            let entryOrphans = AssetResolver.scanForOrphans(fileRoot: node, sourceLabel: pending.name)
-                            let entryTextures = Self.collectTextures(inFileRoot: node, sourceLabel: pending.name)
-                            let entryLevels = Self.collectLevels(inFileRoot: node, sourceLabel: pending.name)
-                            return ParsedEntryResult(name: pending.name, node: node, models: models, orphans: entryOrphans, textures: entryTextures, levels: entryLevels)
+                            // Own reader per task (see this function's own
+                            // doc comment on BDArchiveReader thread-safety)
+                            // — opened fresh per entry rather than reused,
+                            // since tasks in this group run concurrently
+                            // and complete in any order.
+                            guard let reader = try? BDArchiveReader(index: index),
+                                  let data = try? reader.read(entry)
+                            else { return nil }
+                            let kind = Self.fileKind(forEntryNamed: entry.name)
+                            guard let node = try? Self.mainTreeDriver(forExtension: (entry.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: kind, fileName: entry.name) else { return nil }
+                            let models = Self.resolveModels(inFileRoot: node, sourceLabel: entry.name)
+                            let entryOrphans = AssetResolver.scanForOrphans(fileRoot: node, sourceLabel: entry.name)
+                            let entryTextures = Self.collectTextures(inFileRoot: node, sourceLabel: entry.name)
+                            let entryLevels = Self.collectLevels(inFileRoot: node, sourceLabel: entry.name)
+                            return ParsedEntryResult(name: entry.name, node: node, models: models, orphans: entryOrphans, textures: entryTextures, levels: entryLevels)
                         }
                     }
-                    var collected: [ParsedEntryResult] = []
-                    collected.reserveCapacity(pendingEntries.count)
-                    for await result in group {
+
+                    for _ in 0..<maxConcurrent { addNext() }
+                    while let result = await group.next() {
                         completedCount += 1
                         // Throttled: a MainActor hop per file would add
                         // real overhead for a scan of thousands of files —
@@ -979,6 +1002,7 @@ public final class WorkspaceViewModel: ObservableObject {
                             await MainActor.run { self?.scanProgress = progress }
                         }
                         if let result { collected.append(result) }
+                        addNext()
                     }
                     return collected
                 }
