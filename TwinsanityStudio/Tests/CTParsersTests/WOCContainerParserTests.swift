@@ -100,6 +100,22 @@ final class WOCContainerParserTests: XCTestCase {
         XCTAssertEqual(names, ["target_red", "target_red_a", "target_white", "target_white_a", "cannon"])
     }
 
+    func testRealMS00RecordWidthIsConsistentAcrossLevels() throws {
+        let samples: [(path: String, expectedCount: Int)] = [
+            ("A/AIRSHIP/AIRSHIP.GSC", 57),
+            ("A/FARM/FARM.GSC", 69),
+            ("A/CASTLE_C/CASTLE_C.GSC", 89),
+        ]
+        for sample in samples {
+            let decoded = try loadAndDecompressRealGSC(sample.path)
+            let file = try WOCContainerParser.parse(decoded)
+            let ms00 = try XCTUnwrap(file.sections.first { $0.tag == "MS00" }, "no MS00 in \(sample.path)")
+            let (records, width) = try WOCContainerParser.parseMeshSet(ms00.payload)
+            XCTAssertEqual(records.count, sample.expectedCount, "record count for \(sample.path)")
+            XCTAssertEqual(width, 464, "record width for \(sample.path)")
+        }
+    }
+
     func testRealCastleCGSCSectionChainCoversWholeFile() throws {
         let decoded = try loadAndDecompressRealGSC("A/CASTLE_C/CASTLE_C.GSC")
         let file = try WOCContainerParser.parse(decoded)

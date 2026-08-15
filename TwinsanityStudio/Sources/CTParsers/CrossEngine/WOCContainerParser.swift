@@ -133,6 +133,39 @@ public enum WOCContainerParser {
         return (names, trailer)
     }
 
+    /// Decodes an `MS00` section's payload as a fixed-width record table:
+    /// `count:UInt32LE` + `reserved:UInt32LE` + `count` records of a
+    /// constant width. Confirmed across 4 real files of very different
+    /// sizes (57/69/89/154 records) that `(payload.count - 8)` divides
+    /// `count` **exactly**, and always to the same width: 464 bytes.
+    ///
+    /// The internal layout of a single 464-byte record is not decoded --
+    /// most records are almost entirely zero-filled, with the first ~288
+    /// bytes consistently zero and a small non-zero region starting
+    /// around byte 288, containing what look like plausible transform-ish
+    /// float values (e.g. a `(0.5, 0.5, 0.5)` triplet and a couple of
+    /// exact `1.0`s were seen at consistent offsets within one sample
+    /// record) -- but this is an observation from a single record, not a
+    /// cross-record-verified field layout, so records are returned as raw
+    /// bytes rather than a guessed struct.
+    public static func parseMeshSet(_ payload: Data) throws -> (records: [Data], recordWidth: Int) {
+        let bytes = [UInt8](payload)
+        guard bytes.count >= 8 else { throw ParseError.truncated }
+        let count = Int(leUInt32(bytes, 0))
+        let remaining = bytes.count - 8
+        guard count > 0, remaining % count == 0 else {
+            return ([], 0)
+        }
+        let width = remaining / count
+        var records: [Data] = []
+        records.reserveCapacity(count)
+        for i in 0..<count {
+            let start = 8 + i * width
+            records.append(Data(bytes[start..<(start + width)]))
+        }
+        return (records, width)
+    }
+
     // MARK: - helpers
 
     private static func leUInt32(_ b: [UInt8], _ o: Int) -> UInt32 {
