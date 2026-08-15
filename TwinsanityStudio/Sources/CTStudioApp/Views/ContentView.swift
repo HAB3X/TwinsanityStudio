@@ -141,6 +141,12 @@ struct ContentView: View {
                     } label: {
                         Label("Wrath of Cortex Levels", systemImage: "globe.americas.fill")
                     }
+                    Button {
+                        wocWorkspace.isSoundBrowserPresented = true
+                    } label: {
+                        Label("Wrath of Cortex Sounds", systemImage: "waveform")
+                    }
+                    .disabled(wocWorkspace.soundArchiveURL == nil)
                 } label: {
                     Label("Library", systemImage: "books.vertical.fill")
                 }
@@ -250,6 +256,11 @@ struct ContentView: View {
         .sheet(isPresented: $wocWorkspace.isLevelsHubPresented) {
             WOCLevelsHubView()
                 .environmentObject(wocWorkspace)
+        }
+        .sheet(isPresented: $wocWorkspace.isSoundBrowserPresented) {
+            if let soundArchiveURL = wocWorkspace.soundArchiveURL {
+                WOCSoundBrowserView(archiveURL: soundArchiveURL)
+            }
         }
         .sheet(isPresented: $workspace.isSoundBanksHubPresented) {
             SoundBanksHubView()

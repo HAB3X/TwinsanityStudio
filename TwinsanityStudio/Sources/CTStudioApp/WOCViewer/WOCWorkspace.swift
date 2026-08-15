@@ -35,6 +35,22 @@ public final class WOCWorkspace: ObservableObject {
     @Published public private(set) var isScanning = false
     @Published public var statusMessage: String?
     @Published public var isLevelsHubPresented = false
+    @Published public var isSoundBrowserPresented = false
+
+    /// `SFX.DAT` lives at the disc's top level, a sibling of `LEVELS/` --
+    /// not inside it. Checked both directly under `rootURL` (root chosen
+    /// as the disc mount itself) and under its parent (root chosen as the
+    /// `LEVELS/` folder directly, per `chooseRoot()`'s prompt) so either
+    /// choice `WOCLevelsHubView`'s picker allows also finds the archive.
+    public var soundArchiveURL: URL? {
+        guard let rootURL else { return nil }
+        let fm = FileManager.default
+        let direct = rootURL.appendingPathComponent("SFX.DAT")
+        if fm.fileExists(atPath: direct.path) { return direct }
+        let sibling = rootURL.deletingLastPathComponent().appendingPathComponent("SFX.DAT")
+        if fm.fileExists(atPath: sibling.path) { return sibling }
+        return nil
+    }
 
     /// Drives `WOCViewerWindowHost` exactly the way `WorkspaceViewModel.
     /// modelViewerAsset` etc. drive their own `Window` scenes -- nil ↔
