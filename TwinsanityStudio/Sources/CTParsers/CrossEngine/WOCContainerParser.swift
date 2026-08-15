@@ -53,8 +53,9 @@ import Foundation
 ///   464-byte records (exact division verified universally across the
 ///   full 54-file corpus, zero exceptions). Record internals not decoded.
 /// - `IABL` -- see ``parseAttributeBlock(_:)``. Same framing, confirmed
-///   fixed 96-byte records across 3 files. Sibling `ALIB` was explicitly
-///   tested and ruled out as fixed-width (different widths per file).
+///   fixed 96-byte records across all 24 files in the full corpus that
+///   have it, zero exceptions. Sibling `ALIB` was explicitly tested and
+///   ruled out as fixed-width (different widths per file).
 /// - `INST` (placed object instances) -- see ``parseInstances(_:)`` and
 ///   ``Instance``. The 80-byte records are real 4x4 world transforms
 ///   (`w == 1.0` universally, translations plot into recognizable real
@@ -382,9 +383,10 @@ public enum WOCContainerParser {
     /// Decodes an `IABL` ("Instance Attribute BLock"?) section's payload
     /// the same way as ``parseMeshSet(_:)``: `count:UInt32LE` +
     /// `reserved:UInt32LE` + `count` fixed-width records. Confirmed
-    /// cross-file: the width is **96 bytes** in all 3 real files checked
-    /// (`FARM.GSC` 21 records, `HUB.GSC` 33, `CASTLE_C.GSC` 163 -- exact
-    /// division every time, not approximate).
+    /// cross-file: the width is **96 bytes** in every one of the 24 files
+    /// in the full 54-file corpus that have `IABL` (originally checked on
+    /// 3, re-verified against all 24 -- zero exceptions, exact division
+    /// every time, not approximate).
     ///
     /// Record internals not decoded, but worth noting for a future
     /// session: records are mostly zero with a small non-zero region
