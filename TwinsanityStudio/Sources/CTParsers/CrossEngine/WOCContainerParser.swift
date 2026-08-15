@@ -95,10 +95,17 @@ import Foundation
 ///   highest-value target: its per-entry format holds real embedded mesh
 ///   geometry (a 16-byte vertex quadword pattern was confirmed and
 ///   visually verified -- see ``parseVertexQuadwords(_:byteOffset:count:)``),
-///   and its `count` is now confirmed (54-file sweep) to be exactly the
-///   number of distinct objects `INST` instances reference -- but entry
-///   *boundaries* within `OBJ0` are still unsolved (no offset table or
-///   self-length-prefix found).
+///   its `count` is confirmed (54-file sweep) to be exactly the number of
+///   distinct objects `INST` instances reference, and a finer-grained
+///   "chunk" framing inside it is confirmed for at least one file (see
+///   ``obj0ChunkLength(_:markerOffset:)``) -- but entry *boundaries*
+///   (`OBJ0`'s own per-object count) are still unsolved. `TAS0` (13 of 54
+///   files have it): a `count:u32 + reserved:u32` header divides cleanly
+///   to the SAME width -- 48 bytes -- in 5 of those 13 files (counts
+///   1/1/2/2/3, all landing on 48 exactly), but the other 8 files give
+///   inconsistent widths (44, 96, 112, or no clean division at all), so
+///   this is a real partial lead, not a confirmed universal record size --
+///   left undecoded rather than implemented on a 5/13 hit rate.
 ///
 /// Every section not listed above as decoded is exposed as raw
 /// ``WOCSection/payload`` bytes rather than guessed at.
