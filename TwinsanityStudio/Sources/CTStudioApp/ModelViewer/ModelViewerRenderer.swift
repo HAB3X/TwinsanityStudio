@@ -1533,6 +1533,14 @@ protocol GizmoInteractiveRenderer: OrbitCameraRenderer {
     /// the same category of screen-space technique this file's gizmo hit
     /// test already uses. `nil` if nothing visible is close enough.
     func pickObject(at point: CGPoint, viewSize: CGSize) -> Int?
+    /// "Hover highlight" (Level Editor overhaul, Phase 3): the same
+    /// screen-space closest-point test `pickObject` uses, but called from
+    /// `mouseMoved` — every frame the cursor moves, not just on click —
+    /// and with no selection side effect. Updates the renderer's own
+    /// hover-outline buffer as a side effect so `draw(in:)` can draw it;
+    /// the return value just lets a caller avoid redundant work.
+    @discardableResult
+    func hoverObject(at point: CGPoint, viewSize: CGSize) -> Int?
 }
 
 /// "Scenery/Level Assembly": draws every resolved placement from a
@@ -1583,7 +1591,14 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// "Level Editor Overhaul": every layer visible by default — the mode
     /// toggle/checkbox panel narrows this down, never the initial state.
     var layerVisibility: Set<SceneLayer> = Set(SceneLayer.allCases) {
-        didSet { rebuildOverlayBuffer() }
+        didSet {
+            rebuildOverlayBuffer()
+            // A layer hidden while its object is mid-hover shouldn't leave
+            // a stale outline around something no longer visible.
+            if let hoveredObjectIndex, objects.indices.contains(hoveredObjectIndex), !layerVisibility.contains(objects[hoveredObjectIndex].layer) {
+                self.hoveredObjectIndex = nil
+            }
+        }
     }
     /// "Scene Preview Mode" (roadmap 7.1): real `Trigger.id`s the camera is
     /// currently "inside" per `triggerContains` — see that function's doc
@@ -1594,6 +1609,23 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     private static let activeTriggerColor = SIMD3<Float>(1.0, 0.25, 0.15)
     private var overlayLineBuffer: MTLBuffer?
     private var overlayLineVertexCount = 0
+    /// "Hover highlight" (Level Editor overhaul, Phase 3): whatever object
+    /// `hoverObject(at:viewSize:)` last found under the cursor, tracked
+    /// separately from `selectedObjectIndex` — hover follows the mouse
+    /// continuously, selection only changes on click. Kept in its own tiny
+    /// buffer (`hoverLineBuffer`) rather than folded into `overlayLineBuffer`
+    /// since this one rebuilds on every mouse-moved event, not just on
+    /// selection/edit changes.
+    private(set) var hoveredObjectIndex: Int? {
+        didSet {
+            guard oldValue != hoveredObjectIndex else { return }
+            rebuildHoverBuffer()
+        }
+    }
+    private var hoverLineBuffer: MTLBuffer?
+    private var hoverLineVertexCount = 0
+    /// Testability hook — mirrors `hasCollisionFill`.
+    var hasHoverOutline: Bool { hoverLineBuffer != nil && hoverLineVertexCount > 0 }
     /// "Chunk-Based Architecture" (Part 2): the translucent fill for every
     /// visible boundary wall — separate from `overlayLineBuffer` because
     /// it draws as triangles through `translucentQuadPipelineState`, not
@@ -2264,6 +2296,9 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     func select(index: Int?) {
         selectedObjectIndex = index.flatMap { objects.indices.contains($0) ? $0 : nil }
         rebuildGizmoBuffer()
+        // Selecting the object currently under the cursor already gets a
+        // gizmo — the separate hover outline would be visual redundancy.
+        if hoveredObjectIndex == selectedObjectIndex { rebuildHoverBuffer() }
     }
 
     /// "Level Events" panel: selects whichever object was built from
@@ -3165,6 +3200,11 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                 encoder.setVertexBuffer(crossEngineLineBuffer, offset: 0, index: 0)
                 encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: crossEngineLineVertexCount)
             }
+            // "Hover highlight" (Level Editor overhaul, Phase 3).
+            if let hoverLineBuffer, hoverLineVertexCount > 0 {
+                encoder.setVertexBuffer(hoverLineBuffer, offset: 0, index: 0)
+                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: hoverLineVertexCount)
+            }
         }
 
         // "Chunk-Based Architecture" (Part 2): the translucent boundary-
@@ -3360,6 +3400,67 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             }
         }
         return best?.index
+    }
+
+    /// "Hover highlight" (Level Editor overhaul, Phase 3): identical
+    /// closest-projected-point test to `pickObject`, called from
+    /// `mouseMoved` on every cursor move rather than from `mouseDown` —
+    /// updates `hoveredObjectIndex` (which rebuilds the outline buffer via
+    /// its own `didSet`) instead of changing selection.
+    @discardableResult
+    func hoverObject(at point: CGPoint, viewSize: CGSize) -> Int? {
+        let viewProjection = currentViewProjection(viewSize: viewSize)
+        var best: (index: Int, distance: CGFloat)?
+        for (index, object) in objects.enumerated() where layerVisibility.contains(object.layer) {
+            guard let screen = Self.project(object.worldPosition, viewProjection: viewProjection, viewSize: viewSize) else { continue }
+            let d = hypot(point.x - screen.x, point.y - screen.y)
+            if d < 22, (best == nil || d < best!.distance) {
+                best = (index, d)
+            }
+        }
+        hoveredObjectIndex = best?.index
+        return hoveredObjectIndex
+    }
+
+    /// Rebuilds `hoverLineBuffer` — a single axis-aligned wireframe box
+    /// sized from the hovered object's `boundingRadius` (a sphere radius,
+    /// not an oriented extent, so unlike `rebuildOverlayBuffer`'s
+    /// trigger/camera boxes this one doesn't rotate with the object;
+    /// adequate for "something is here," which is all a hover cue needs
+    /// to convey). Cleared entirely when nothing's hovered, or when the
+    /// hovered object is already the selection (already has a gizmo —
+    /// drawing both would be redundant).
+    private func rebuildHoverBuffer() {
+        guard let hoveredObjectIndex, objects.indices.contains(hoveredObjectIndex), hoveredObjectIndex != selectedObjectIndex else {
+            hoverLineBuffer = nil
+            hoverLineVertexCount = 0
+            return
+        }
+        let object = objects[hoveredObjectIndex]
+        let hoverColor = SIMD3<Float>(0.95, 0.95, 0.95)
+        let half = SIMD3<Float>(repeating: max(object.boundingRadius, 0.15))
+        var floats: [Float] = []
+        func appendVertex(_ position: SIMD3<Float>, _ color: SIMD3<Float>) {
+            floats.append(contentsOf: [position.x, position.y, position.z, color.x, color.y, color.z])
+        }
+        let localCorners: [SIMD3<Float>] = [
+            SIMD3(-half.x, -half.y, -half.z), SIMD3(half.x, -half.y, -half.z),
+            SIMD3(half.x, half.y, -half.z), SIMD3(-half.x, half.y, -half.z),
+            SIMD3(-half.x, -half.y, half.z), SIMD3(half.x, -half.y, half.z),
+            SIMD3(half.x, half.y, half.z), SIMD3(-half.x, half.y, half.z)
+        ]
+        let corners = localCorners.map { object.worldPosition + $0 }
+        let edges: [(Int, Int)] = [
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4), (1, 5), (2, 6), (3, 7)
+        ]
+        for (a, b) in edges {
+            appendVertex(corners[a], hoverColor)
+            appendVertex(corners[b], hoverColor)
+        }
+        hoverLineVertexCount = floats.count / 6
+        hoverLineBuffer = device.makeBuffer(bytes: floats, length: floats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
     }
 
     /// Standard screen-space axis-constrained drag: project the selected

@@ -101,4 +101,48 @@ final class SpawnAndDeleteTests: XCTestCase {
         XCTAssertEqual(renderer.selectedObjectIndex, index)
         XCTAssertEqual(renderer.newCameraInfo(at: index), SIMD3<Float>(9, 9, 9))
     }
+
+    /// "Hover highlight" (Phase 3): a fresh renderer's default orbit looks
+    /// straight at `boundsCenter` (world origin here, since there's no
+    /// scenery to derive bounds from) — an object spawned there projects
+    /// to dead-center of any viewport, giving a deterministic screen point
+    /// to drive `hoverObject`/`pickObject` from without needing to expose
+    /// the renderer's private view/projection math to the test.
+    func testHoverObjectMatchesPickObjectAndProducesADrawableOutline() throws {
+        let renderer = try makeRenderer()
+        let index = try XCTUnwrap(renderer.spawnCamera(at: SIMD3<Float>(0, 0, 0)))
+        renderer.select(index: nil)
+        let viewSize = CGSize(width: 800, height: 600)
+        let center = CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
+        XCTAssertEqual(renderer.pickObject(at: center, viewSize: viewSize), index, "hover and click picking must agree on the same object")
+        XCTAssertFalse(renderer.hasHoverOutline)
+        XCTAssertEqual(renderer.hoverObject(at: center, viewSize: viewSize), index)
+        XCTAssertTrue(renderer.hasHoverOutline, "hovering an unselected object should produce a drawable outline")
+    }
+
+    func testHoverOutlineClearsWhenTheHoveredObjectBecomesSelected() throws {
+        // The gizmo is already a selection indicator — drawing a second
+        // outline around the same object would be redundant.
+        let renderer = try makeRenderer()
+        let index = try XCTUnwrap(renderer.spawnCamera(at: SIMD3<Float>(0, 0, 0)))
+        renderer.select(index: nil)
+        let viewSize = CGSize(width: 800, height: 600)
+        let center = CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
+        _ = renderer.hoverObject(at: center, viewSize: viewSize)
+        XCTAssertTrue(renderer.hasHoverOutline)
+        renderer.select(index: index)
+        XCTAssertFalse(renderer.hasHoverOutline)
+    }
+
+    func testHoverOutlineClearsWhenCursorMovesAwayFromEveryObject() throws {
+        let renderer = try makeRenderer()
+        _ = try XCTUnwrap(renderer.spawnCamera(at: SIMD3<Float>(0, 0, 0)))
+        renderer.select(index: nil)
+        let viewSize = CGSize(width: 800, height: 600)
+        let center = CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
+        XCTAssertNotNil(renderer.hoverObject(at: center, viewSize: viewSize))
+        XCTAssertTrue(renderer.hasHoverOutline)
+        XCTAssertNil(renderer.hoverObject(at: CGPoint(x: 2, y: 2), viewSize: viewSize), "the far corner shouldn't be within picking range of the origin-projected object")
+        XCTAssertFalse(renderer.hasHoverOutline)
+    }
 }

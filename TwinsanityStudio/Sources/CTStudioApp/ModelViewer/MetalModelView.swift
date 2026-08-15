@@ -109,6 +109,40 @@ final class InteractiveMTKView: MTKView {
 
     override var acceptsFirstResponder: Bool { true }
 
+    /// "Hover highlight" (Level Editor overhaul, Phase 3): a plain
+    /// `NSView` gets no `mouseMoved` events at all until something asks
+    /// its window to deliver them — `acceptsMouseMovedEvents` alone isn't
+    /// enough either without a tracking area, since AppKit only routes
+    /// `mouseMoved` to views actually inside one.
+    private var hoverTrackingArea: NSTrackingArea?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.acceptsMouseMovedEvents = true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    /// See `GizmoInteractiveRenderer.hoverObject`'s doc comment — this is
+    /// purely a visual side effect on the renderer, no SwiftUI callback
+    /// needed the way `onObjectPicked`/`onObjectPlaced` are for clicks,
+    /// since nothing outside the 3D view needs to know what's hovered.
+    override func mouseMoved(with event: NSEvent) {
+        guard let gizmoRenderer = renderer as? GizmoInteractiveRenderer else {
+            super.mouseMoved(with: event)
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        gizmoRenderer.hoverObject(at: point, viewSize: bounds.size)
+        needsDisplay = true
+    }
+
     /// Clicking away from this view (or the window losing key focus)
     /// doesn't reliably deliver `keyUp` for whatever WASD/EQ keys were
     /// down at the time — without this, a held key could get "stuck,"
