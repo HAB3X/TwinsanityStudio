@@ -376,6 +376,82 @@ public enum WOCContainerParser {
         try parseMeshSet(payload) // identical framing -- count(u32) + reserved(u32) + count fixed records
     }
 
+    /// A single record from a `SPEC` section: byte-for-byte the same
+    /// 80-byte layout as `INST`'s records (4x4 transform + 4-field tail),
+    /// but referencing `INST`, not `OBJ0` -- see ``parseSpecRecords(_:)``.
+    public struct SpecRecord {
+        public let matrix: (Float, Float, Float, Float,
+                             Float, Float, Float, Float,
+                             Float, Float, Float, Float,
+                             Float, Float, Float, Float)
+        /// Confirmed (checked every record in all 7 real files, not a
+        /// sample): a valid index into the sibling `INST` section's own
+        /// instance array, strictly increasing across `SPEC`'s record
+        /// list (no duplicates, ascending order), and this record's
+        /// `matrix` is byte-for-byte identical to
+        /// `INST[referencedInstanceIndex]`'s matrix every time. `SPEC`
+        /// reads as a curated pointer-list into `INST` -- e.g. in
+        /// `AIRSHIP.GSC` it references instances `[34,35,36,37,38]` of
+        /// 41 total. What selection criterion picks these specific
+        /// instances is not visible in any decoded field yet.
+        public let referencedInstanceIndex: UInt32
+        /// Monotonically non-decreasing across the record list in every
+        /// file checked, starting near 0 -- reads like a cumulative
+        /// running count/offset into some other, not-yet-located
+        /// per-instance sub-list (per-record deltas are fairly regular
+        /// within a file but vary by file, e.g. mostly +7/+8 in one file,
+        /// +9/+10/+11 in another). Checked and ruled out as an index into
+        /// `SST0`, `MS00`, `IABL`, or `NTBL`. Genuinely unresolved.
+        public let cumulativeOffset: UInt32
+        /// Ruled out as a meaningful index or float: values are a mix of
+        /// small plausible-looking integers and a narrow recurring band
+        /// (~329,000,000-330,400,000 as `Int32`) consistent with a
+        /// leftover/uninitialized heap pointer written to disk, not
+        /// intentional per-record data. Exposed raw rather than
+        /// interpreted.
+        public let unknownTail3: UInt32
+        public let unknownTail4: UInt32
+
+        public var translation: SIMD3<Float> { SIMD3(matrix.12, matrix.13, matrix.14) }
+    }
+
+    /// Decodes a `SPEC` section's payload: `count:UInt32LE` +
+    /// `reserved:UInt32LE` (confirmed `0` in all 7 files checked) +
+    /// `count` fixed-width 80-byte records -- `payload.count == 8 +
+    /// count*80` exactly (not just an even division) in all 7 files
+    /// checked. Same on-disk record shape as `INST`
+    /// (``parseInstances(_:)``), but see ``SpecRecord`` for why the
+    /// fields mean something different here.
+    public static func parseSpecRecords(_ payload: Data) throws -> [SpecRecord] {
+        let bytes = [UInt8](payload)
+        guard bytes.count >= 8 else { throw ParseError.truncated }
+        let count = Int(leUInt32(bytes, 0))
+        let remaining = bytes.count - 8
+        guard count > 0, remaining % count == 0, remaining / count == 80 else { return [] }
+
+        var records: [SpecRecord] = []
+        records.reserveCapacity(count)
+        for i in 0..<count {
+            let start = 8 + i * 80
+            var floats = [Float](repeating: 0, count: 16)
+            for f in 0..<16 { floats[f] = leFloat32(bytes, start + f * 4) }
+            let tailStart = start + 64
+            let referencedInstanceIndex = leUInt32(bytes, tailStart)
+            let cumulativeOffset = leUInt32(bytes, tailStart + 4)
+            let unknownTail3 = leUInt32(bytes, tailStart + 8)
+            let unknownTail4 = leUInt32(bytes, tailStart + 12)
+            records.append(SpecRecord(
+                matrix: (floats[0], floats[1], floats[2], floats[3],
+                         floats[4], floats[5], floats[6], floats[7],
+                         floats[8], floats[9], floats[10], floats[11],
+                         floats[12], floats[13], floats[14], floats[15]),
+                referencedInstanceIndex: referencedInstanceIndex, cumulativeOffset: cumulativeOffset,
+                unknownTail3: unknownTail3, unknownTail4: unknownTail4
+            ))
+        }
+        return records
+    }
+
     // MARK: - helpers
 
     private static func leFloat32(_ b: [UInt8], _ o: Int) -> Float {

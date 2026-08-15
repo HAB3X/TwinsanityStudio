@@ -206,6 +206,44 @@ final class WOCContainerParserTests: XCTestCase {
         }
     }
 
+    /// Confirmed by an independent spot-check before shipping (this
+    /// project's discipline: verify even agent-reported findings): `SPEC`
+    /// is a curated, strictly-ascending pointer-list into `INST`, and each
+    /// `SPEC` record's transform matrix is byte-for-byte identical to the
+    /// `INST` record it references.
+    func testRealSPECReferencesINSTWithByteIdenticalMatrices() throws {
+        let samples = ["A/AIRSHIP/AIRSHIP.GSC", "A/FARM/FARM.GSC", "A/JUNGLE_A/JUNGLE_A.GSC"]
+        for path in samples {
+            let decoded = try loadAndDecompressRealGSC(path)
+            let file = try WOCContainerParser.parse(decoded)
+            let spec = try XCTUnwrap(file.sections.first { $0.tag == "SPEC" }, "no SPEC in \(path)")
+            let inst = try XCTUnwrap(file.sections.first { $0.tag == "INST" }, "no INST in \(path)")
+            let specRecords = try WOCContainerParser.parseSpecRecords(spec.payload)
+            let instances = try WOCContainerParser.parseInstances(inst.payload)
+            XCTAssertFalse(specRecords.isEmpty, "expected nonempty SPEC in \(path)")
+
+            var previousIndex: Int64 = -1
+            for record in specRecords {
+                let refIndex = Int(record.referencedInstanceIndex)
+                XCTAssertGreaterThan(Int64(refIndex), previousIndex, "SPEC referencedInstanceIndex should be strictly increasing in \(path)")
+                previousIndex = Int64(refIndex)
+                XCTAssertLessThan(refIndex, instances.count, "SPEC should reference a valid INST index in \(path)")
+                let referenced = instances[refIndex]
+                XCTAssertTrue(matricesEqual(record.matrix, referenced.matrix), "SPEC record's matrix should byte-match INST[\(refIndex)] in \(path)")
+            }
+        }
+    }
+
+    private func matricesEqual(
+        _ a: (Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float),
+        _ b: (Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float)
+    ) -> Bool {
+        a.0 == b.0 && a.1 == b.1 && a.2 == b.2 && a.3 == b.3 &&
+        a.4 == b.4 && a.5 == b.5 && a.6 == b.6 && a.7 == b.7 &&
+        a.8 == b.8 && a.9 == b.9 && a.10 == b.10 && a.11 == b.11 &&
+        a.12 == b.12 && a.13 == b.13 && a.14 == b.14 && a.15 == b.15
+    }
+
     func testRealCastleCGSCSectionChainCoversWholeFile() throws {
         let decoded = try loadAndDecompressRealGSC("A/CASTLE_C/CASTLE_C.GSC")
         let file = try WOCContainerParser.parse(decoded)
