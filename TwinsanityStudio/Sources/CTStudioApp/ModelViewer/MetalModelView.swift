@@ -200,7 +200,44 @@ final class InteractiveMTKView: MTKView {
     /// schemes share letters (W/E already meant translate/rotate mode),
     /// so free-camera mode takes over those keys entirely rather than
     /// trying to make one keystroke serve two conflicting purposes.
+    /// "Keyboard nudging" (QoL): Left/Right/Up/Down move the selection
+    /// along world X/Z (screen-relative-enough for a top-down-ish level
+    /// editor to feel intuitive without needing to derive true camera-
+    /// relative axes); holding Shift swaps Down/Up to move along Y
+    /// instead, so all three axes are keyboard-reachable without a
+    /// separate mode. Uses `keyCode` (not `charactersIgnoringModifiers`,
+    /// which arrow keys don't map to ordinary characters through) — the
+    /// standard macOS virtual key codes for the arrow cluster.
+    private static let leftArrowKeyCode: UInt16 = 123
+    private static let rightArrowKeyCode: UInt16 = 124
+    private static let downArrowKeyCode: UInt16 = 125
+    private static let upArrowKeyCode: UInt16 = 126
+
+    private func handleArrowKeyNudge(_ event: NSEvent) -> Bool {
+        guard let gizmoRenderer = renderer as? GizmoInteractiveRenderer else { return false }
+        let shift = event.modifierFlags.contains(.shift)
+        let direction: SIMD3<Float>
+        switch event.keyCode {
+        case Self.leftArrowKeyCode: direction = SIMD3(-1, 0, 0)
+        case Self.rightArrowKeyCode: direction = SIMD3(1, 0, 0)
+        case Self.upArrowKeyCode: direction = shift ? SIMD3(0, 1, 0) : SIMD3(0, 0, -1)
+        case Self.downArrowKeyCode: direction = shift ? SIMD3(0, -1, 0) : SIMD3(0, 0, 1)
+        default: return false
+        }
+        // Reuses the exact same "snapshot before, register undo after"
+        // pair the SwiftUI side already wires up for gizmo drags — see
+        // `LevelViewerWindow`'s `onGizmoDragStarted`/`onGizmoDragEnded`,
+        // which read generically off whatever's currently selected rather
+        // than anything drag-specific, so they work unchanged here too.
+        onGizmoDragStarted?()
+        gizmoRenderer.nudgeSelectedPosition(worldDirection: direction)
+        onGizmoDragEnded?()
+        needsDisplay = true
+        return true
+    }
+
     override func keyDown(with event: NSEvent) {
+        if handleArrowKeyNudge(event) { return }
         guard let key = event.charactersIgnoringModifiers?.lowercased() else {
             super.keyDown(with: event)
             return

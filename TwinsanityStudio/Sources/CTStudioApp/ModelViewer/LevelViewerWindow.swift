@@ -191,7 +191,13 @@ struct LevelViewerWindow: View {
     @State private var isLevelEventsExpanded = false
     @State private var isAIPathsExpanded = false
     @State private var viewMode: LevelViewMode = .populated
-    @State private var layerVisibility: Set<SceneLayer> = Set(SceneLayer.allCases)
+    /// Collision starts hidden — real, opaque ground-floor fill is useful
+    /// for confirming a level's actual walkable surface, but as a default
+    /// it visually dominates every other layer and most editing work
+    /// doesn't need it. Toggle it back on any time from the Terrain panel;
+    /// the "Fully Populated" preset also still includes it, since that
+    /// button is an explicit "show me everything" request.
+    @State private var layerVisibility: Set<SceneLayer> = Set(SceneLayer.allCases).subtracting([.collision])
     /// "Halo Reach Forge / Minecraft"-style mode rail — see
     /// `LevelEditorMode`'s own doc comment.
     @State private var editorMode: LevelEditorMode = .select
@@ -349,7 +355,7 @@ struct LevelViewerWindow: View {
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6))
                         .padding(10)
                     } else {
-                        Text("Drag to orbit · Scroll to zoom · Drag a handle to \(gizmoMode == .translate ? "move" : gizmoMode == .rotate ? "rotate" : "scale") the selection · W/E/R to switch · F to frame")
+                        Text("Drag to orbit · Scroll to zoom · Drag a handle or use arrow keys to \(gizmoMode == .translate ? "move" : gizmoMode == .rotate ? "rotate" : "scale") the selection · W/E/R to switch · F to frame")
                             .font(.caption)
                             .padding(6)
                             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6))
@@ -603,6 +609,8 @@ struct LevelViewerWindow: View {
                 controlLegendRow("Drag", "Orbit the camera")
                 controlLegendRow("Scroll", "Zoom (or fly speed, in Free Camera)")
                 controlLegendRow("W / E / R", "Move / Rotate / Scale gizmo")
+                controlLegendRow("Arrow keys", "Nudge the selection along X/Z")
+                controlLegendRow("⇧ + ↑ / ↓", "Nudge the selection along Y")
                 controlLegendRow("F", "Frame the current selection")
                 controlLegendRow("⌘D", "Duplicate the selected object")
                 controlLegendRow("Delete", "Delete the selected object")

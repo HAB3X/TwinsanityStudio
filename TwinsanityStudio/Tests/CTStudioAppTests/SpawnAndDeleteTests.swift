@@ -128,6 +128,41 @@ final class SpawnAndDeleteTests: XCTestCase {
         XCTAssertLessThan(simd_distance(redisplayedPosition, worldPosition), 0.0001)
     }
 
+    /// "Keyboard nudging" (QoL): arrow-key movement should snap to the same
+    /// grid a gizmo drag would, and be a no-op with nothing selected
+    /// (matches every other selection-scoped mutator in this renderer).
+    func testNudgeSelectedPositionMovesByGridStepAlongTheGivenAxis() throws {
+        let renderer = try makeRenderer()
+        renderer.gridSize = 2.0
+        renderer.snapToGrid = true
+        let index = try XCTUnwrap(renderer.spawnTrigger(at: SIMD3<Float>(10, 0, 10)))
+
+        renderer.nudgeSelectedPosition(worldDirection: SIMD3(1, 0, 0))
+        XCTAssertEqual(renderer.newTriggerInfo(at: index), SIMD3<Float>(12, 0, 10))
+
+        renderer.nudgeSelectedPosition(worldDirection: SIMD3(0, 1, 0))
+        XCTAssertEqual(renderer.newTriggerInfo(at: index), SIMD3<Float>(12, 2, 10))
+
+        renderer.nudgeSelectedPosition(worldDirection: SIMD3(0, 0, -1))
+        XCTAssertEqual(renderer.newTriggerInfo(at: index), SIMD3<Float>(12, 2, 8))
+    }
+
+    func testNudgeSelectedPositionUsesSmallFixedStepWithSnapOff() throws {
+        let renderer = try makeRenderer()
+        renderer.snapToGrid = false
+        _ = try XCTUnwrap(renderer.spawnTrigger(at: .zero))
+        renderer.nudgeSelectedPosition(worldDirection: SIMD3(1, 0, 0))
+        let index = try XCTUnwrap(renderer.selectedObjectIndex)
+        let position = try XCTUnwrap(renderer.newTriggerInfo(at: index))
+        XCTAssertLessThan(simd_distance(position, SIMD3<Float>(0.25, 0, 0)), 0.0001)
+    }
+
+    func testNudgeSelectedPositionIsNoOpWithNothingSelected() throws {
+        let renderer = try makeRenderer()
+        renderer.nudgeSelectedPosition(worldDirection: SIMD3(1, 0, 0)) // must not crash
+        XCTAssertNil(renderer.selectedObjectIndex)
+    }
+
     func testSpawnedCameraSurvivesSaveReparseRoundTripAtTheSameWorldPosition() throws {
         let renderer = try makeRenderer()
         let worldPosition = SIMD3<Float>(-8, 2, 15)

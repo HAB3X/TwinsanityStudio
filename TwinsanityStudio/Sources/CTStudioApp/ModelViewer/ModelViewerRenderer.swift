@@ -1567,6 +1567,14 @@ protocol GizmoInteractiveRenderer: OrbitCameraRenderer {
     /// the return value just lets a caller avoid redundant work.
     @discardableResult
     func hoverObject(at point: CGPoint, viewSize: CGSize) -> Int?
+    /// "Keyboard nudging" (QoL): moves the current selection one step
+    /// along a world-space axis — arrow keys for X/Z, a modifier for Y —
+    /// as an alternative to grabbing a gizmo handle with the mouse.
+    /// `worldDirection` is a unit-ish axis vector (e.g. `(1,0,0)`); the
+    /// actual step size is the renderer's own grid size when snap-to-grid
+    /// is on, or a small fixed default otherwise — the same convention a
+    /// gizmo drag already snaps to. No-op with nothing selected.
+    func nudgeSelectedPosition(worldDirection: SIMD3<Float>)
 }
 
 /// "Scenery/Level Assembly": draws every resolved placement from a
@@ -2359,6 +2367,20 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     func setSelectedPosition(to newPosition: SIMD3<Float>) {
         guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return }
         objects[selectedObjectIndex].worldPosition = newPosition
+        rebuildGizmoBuffer()
+    }
+
+    /// "Keyboard nudging" (QoL): moves the selection one step along a
+    /// world-space axis — see `GizmoInteractiveRenderer.
+    /// nudgeSelectedPosition`'s own doc comment. Step size matches
+    /// whatever a gizmo drag would snap to (`gridSize` with snap on),
+    /// falling back to a small fixed step with snap off, so nudging feels
+    /// consistent with dragging rather than like a separate, finer-grained
+    /// tool.
+    func nudgeSelectedPosition(worldDirection: SIMD3<Float>) {
+        guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return }
+        let step = snapToGrid ? gridSize : 0.25
+        objects[selectedObjectIndex].worldPosition += worldDirection * step
         rebuildGizmoBuffer()
     }
 
@@ -3398,7 +3420,11 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                 let tip = origin + axis.unitVector * gizmoArmLength
                 guard let tipScreen = Self.project(tip, viewProjection: viewProjection, viewSize: viewSize) else { continue }
                 let d = Self.distance(from: point, toSegmentFrom: originScreen, to: tipScreen)
-                if d < 14, (best == nil || d < best!.distance) {
+                // "Easier to click" (QoL): widened from 14pt — a thin 3D
+                // arrow is a genuinely small target, and this is a pure
+                // hit-test tolerance with no visual change, so widening it
+                // doesn't make the gizmo look different, just more forgiving.
+                if d < 22, (best == nil || d < best!.distance) {
                     best = (axis, d)
                 }
             }
@@ -3418,7 +3444,9 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                     }
                     if let previousScreen {
                         let d = Self.distance(from: point, toSegmentFrom: previousScreen, to: screen)
-                        if d < 10, (best == nil || d < best!.distance) {
+                        // "Easier to click" (QoL): widened from 10pt — see
+                        // the matching comment on the translate/scale case.
+                        if d < 16, (best == nil || d < best!.distance) {
                             best = (axis, d)
                         }
                     }
