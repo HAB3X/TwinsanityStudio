@@ -520,6 +520,23 @@ public enum WOCContainerParser {
     /// `sizePlus == size + 0xC4` and `width*height*bytesPerPixel == size`
     /// both held exactly for every one of the 201 checked entries -- not
     /// approximate, not "most of the time".
+    ///
+    /// Follow-up on the `E3HUB.GSC` exception: its `TRXPOS`/`TRXREG`/
+    /// `TRXDIR` register triplet (word offsets 29/33/37 within the
+    /// 172-byte header -- i.e. the SAME header shape) is genuinely
+    /// present and its width/height fields still read as real,
+    /// power-of-2-ish texture dimensions (64x64, 128x128, 256x256, etc.)
+    /// -- so the header itself is not different in this file. What
+    /// differs is the *trailer* immediately before it: for roughly 2 of
+    /// every 3 candidate entries found, all 5 trailer words are exactly
+    /// zero (no `sizePlus`/`size`/`marker` at all) rather than populated;
+    /// for the rest, the words there are non-zero but don't satisfy
+    /// `sizePlus == size + 0xC4` at this offset either. Not resolved --
+    /// tried and abandoned rather than guessed at further: this could be
+    /// a genuinely different trailer encoding for compact/unpadded
+    /// textures, or the true header start in this file sits at a
+    /// slightly different fixed offset from the register triplet than in
+    /// the other 6 files. Left for a future session with a fresh angle.
     public static func parseTextureEntry(_ payload: Data, trailerOffset: Int) throws -> TextureEntry {
         let bytes = [UInt8](payload)
         guard trailerOffset >= 0, trailerOffset + 20 + 172 <= bytes.count else { throw ParseError.truncated }
@@ -601,6 +618,41 @@ public enum WOCContainerParser {
         let blob = Data(bytes[8..<(8 + blobLength)])
         let trailer = Data(bytes[(8 + blobLength)...])
         return (firstField, blob, trailer)
+    }
+
+    /// Given the byte offset (within an `OBJ0` payload) of the recurring
+    /// 4-byte marker `0x6C010056` (bytes `56 00 01 6C`) that sits inside
+    /// every mesh "chunk" header found so far, returns that chunk's total
+    /// byte length. CONFIRMED formula: `chunkLength == lengthField + 128`,
+    /// where `lengthField` is the `UInt32LE` sitting exactly 20 bytes
+    /// before the marker. Independently re-verified (not just trusting
+    /// the source that found this): walking `AIRSHIP.GSC`'s entire `OBJ0`
+    /// payload with this rule, using this marker to locate each
+    /// successive chunk, consumes exactly 100% of its bytes (398344/398344,
+    /// 222 chunks, zero drift).
+    ///
+    /// **This decodes one chunk, not the whole file.** A naive "scan
+    /// forward for the next occurrence of the marker" walk works cleanly
+    /// on some files (confirmed 100% on `AIRSHIP.GSC`, 99.99% on
+    /// `FARM.GSC`) but a bare substring search is not safe in general --
+    /// re-running the same naive approach on `CASTLE_C.GSC`/`HUB.GSC`
+    /// produced a runaway result (a false-positive marker match inside
+    /// unrelated data caused the "chunk length" to jump to a nonsense
+    /// value and the walk diverged completely, consuming over 100x the
+    /// real payload size). A real multi-chunk walker needs a validated
+    /// search (e.g. bounding `chunkLength` to a sane range, or confirming
+    /// the *next* chunk's own header looks plausible before trusting a
+    /// jump) that hasn't been built yet -- left for a future session
+    /// rather than shipped half-working. Also still unknown: these
+    /// "chunks" are a finer granularity than `OBJ0`'s own per-object
+    /// entries (e.g. `AIRSHIP.GSC` has 222 chunks but only 41 `OBJ0`
+    /// entries per its own leading count field) -- how chunks group into
+    /// entries is unsolved.
+    public static func obj0ChunkLength(_ payload: Data, markerOffset: Int) throws -> Int {
+        let bytes = [UInt8](payload)
+        let lengthFieldOffset = markerOffset - 20
+        guard lengthFieldOffset >= 0, lengthFieldOffset + 4 <= bytes.count else { throw ParseError.truncated }
+        return Int(leUInt32(bytes, lengthFieldOffset)) + 128
     }
 
     // MARK: - helpers

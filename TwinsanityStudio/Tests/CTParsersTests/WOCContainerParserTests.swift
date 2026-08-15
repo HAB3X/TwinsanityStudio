@@ -285,6 +285,35 @@ final class WOCContainerParserTests: XCTestCase {
         XCTAssertEqual(echoedLength, sst0.length, "SST0 trailer should echo its own section length")
     }
 
+    /// Real-data regression for `obj0ChunkLength`: walking AIRSHIP.GSC's
+    /// entire OBJ0 payload with the confirmed `chunkLength == lengthField
+    /// + 128` formula, locating each chunk by scanning forward for the
+    /// recurring `0x6C010056` marker, consumes the payload EXACTLY --
+    /// 222 chunks, zero drift. (This exact naive-scan walk is known NOT
+    /// to be safe on other files -- see `obj0ChunkLength`'s doc comment --
+    /// so this test intentionally only covers the one file where it's
+    /// confirmed clean, rather than a broader sweep that would fail.)
+    func testRealOBJ0ChunkWalkCoversAirshipExactly() throws {
+        let decoded = try loadAndDecompressRealGSC("A/AIRSHIP/AIRSHIP.GSC")
+        let file = try WOCContainerParser.parse(decoded)
+        let obj0 = try XCTUnwrap(file.sections.first { $0.tag == "OBJ0" })
+        let payload = obj0.payload
+        let marker = Data([0x56, 0x00, 0x01, 0x6C])
+
+        var offset = 8
+        var chunkCount = 0
+        while offset < payload.count {
+            guard let markerRange = payload.range(of: marker, in: offset..<payload.count) else { break }
+            let chunkLength = try WOCContainerParser.obj0ChunkLength(payload, markerOffset: markerRange.lowerBound - payload.startIndex)
+            XCTAssertGreaterThan(chunkLength, 0)
+            offset += chunkLength
+            chunkCount += 1
+        }
+
+        XCTAssertEqual(offset, payload.count, "chunk walk should consume the entire OBJ0 payload exactly")
+        XCTAssertEqual(chunkCount, 222)
+    }
+
     func testRealCastleCGSCSectionChainCoversWholeFile() throws {
         let decoded = try loadAndDecompressRealGSC("A/CASTLE_C/CASTLE_C.GSC")
         let file = try WOCContainerParser.parse(decoded)
