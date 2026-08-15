@@ -244,6 +244,33 @@ final class WOCContainerParserTests: XCTestCase {
         a.12 == b.12 && a.13 == b.13 && a.14 == b.14 && a.15 == b.15
     }
 
+    /// `TST0` turned out to be a completely different kind of structure
+    /// from every other section: a serialized PS2 Graphics Synthesizer
+    /// texture-upload command stream, not a record table. This pins the
+    /// first real texture entry found in `AIRSHIP.GSC` by the scan.
+    func testRealTST0FirstTextureEntry() throws {
+        let decoded = try loadAndDecompressRealGSC("A/AIRSHIP/AIRSHIP.GSC")
+        let file = try WOCContainerParser.parse(decoded)
+        let tst0 = try XCTUnwrap(file.sections.first { $0.tag == "TST0" })
+        let entries = WOCContainerParser.scanTextureEntries(tst0.payload)
+
+        // The scan is a heuristic (documented as such), not guaranteed to
+        // find every texture the section's leading count field declares --
+        // but every entry it DOES find must be internally consistent.
+        XCTAssertFalse(entries.isEmpty)
+        for entry in entries {
+            XCTAssertGreaterThan(entry.width, 0)
+            XCTAssertGreaterThan(entry.height, 0)
+            XCTAssertEqual(entry.texelDataRange.count, entry.width * entry.height * entry.bytesPerPixel)
+        }
+
+        let first = entries[0]
+        XCTAssertEqual(first.width, 128)
+        XCTAssertEqual(first.height, 64)
+        XCTAssertEqual(first.bytesPerPixel, 4)
+        XCTAssertEqual(first.texelDataRange.count, 32768)
+    }
+
     func testRealCastleCGSCSectionChainCoversWholeFile() throws {
         let decoded = try loadAndDecompressRealGSC("A/CASTLE_C/CASTLE_C.GSC")
         let file = try WOCContainerParser.parse(decoded)

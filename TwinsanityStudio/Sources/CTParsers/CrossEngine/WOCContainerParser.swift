@@ -452,6 +452,102 @@ public enum WOCContainerParser {
         return records
     }
 
+    /// A single texture upload found inside a `TST0` section. `TST0` turns
+    /// out not to be a record table at all -- see ``scanTextureEntries(_:)``.
+    public struct TextureEntry {
+        /// Byte offset (within the `TST0` payload) of this entry's 20-byte
+        /// trailer (`sizePlus`, `size`, `fmtA`, `fmtB`, `marker==76`).
+        public let trailerOffset: Int
+        public let width: Int
+        public let height: Int
+        /// `1` for indexed/paletted textures (`fmtA == fmtB` in the
+        /// trailer) or `4` for direct-color RGBA (`fmtA == 2*fmtB`) --
+        /// confirmed via `width*height*bytesPerPixel == size` holding
+        /// exactly for every entry checked.
+        public let bytesPerPixel: Int
+        /// Byte range of this entry's raw texel data within the `TST0`
+        /// payload (not decoded further -- still packed in whatever PS2 GS
+        /// pixel layout the game used, e.g. indexed textures need their
+        /// CLUT/palette to interpret, which is not yet located).
+        public let texelDataRange: Range<Int>
+    }
+
+    /// Decodes one texture entry given the byte offset of its 20-byte
+    /// trailer within a `TST0` payload. `TST0` is **not** a fixed-width
+    /// record table (confirmed: `(payload.count-8)` does not divide its
+    /// leading count field evenly in any file checked) -- it is a
+    /// serialized stream of raw PS2 Graphics Synthesizer texture-upload
+    /// command packets (`BITBLTBUF`/`TRXPOS`/`TRXREG`/`TRXDIR` GS register
+    /// writes, the standard PS2 "upload image to VRAM" sequence), each
+    /// followed by its raw texel bytes.
+    ///
+    /// Per-entry layout, all CONFIRMED across 201 real texture entries in
+    /// 6 of 7 files checked (100% match, zero exceptions -- the 7th file,
+    /// `E3HUB.GSC`, uses a variant without the padding this decoder
+    /// anchors on; see ``scanTextureEntries(_:)``):
+    /// ```
+    /// [[0x0CD filler, 32 or 80 bytes]]
+    /// trailer (20 bytes): sizePlus:u32 size:u32 fmtA:u32 fmtB:u32 marker:u32(==76)
+    /// header (172 bytes): fixed GS-register block; only these fields are decoded:
+    ///     word19 (byte 76):  GIFtag-like value; low 15 bits == NLOOP == size/16 + 5
+    ///     word31 (byte 124): width (pixels)
+    ///     word32 (byte 128): height (pixels)
+    /// texelData: `size` bytes immediately after the header
+    /// ```
+    /// `sizePlus == size + 0xC4` and `width*height*bytesPerPixel == size`
+    /// both held exactly for every one of the 201 checked entries -- not
+    /// approximate, not "most of the time".
+    public static func parseTextureEntry(_ payload: Data, trailerOffset: Int) throws -> TextureEntry {
+        let bytes = [UInt8](payload)
+        guard trailerOffset >= 0, trailerOffset + 20 + 172 <= bytes.count else { throw ParseError.truncated }
+        let sizePlus = leUInt32(bytes, trailerOffset)
+        let size = Int(leUInt32(bytes, trailerOffset + 4))
+        let fmtA = leUInt32(bytes, trailerOffset + 8)
+        let fmtB = leUInt32(bytes, trailerOffset + 12)
+        guard sizePlus == UInt32(size) + 0xC4 else { throw ParseError.truncated }
+
+        let headerStart = trailerOffset + 20
+        let width = Int(leUInt32(bytes, headerStart + 124))
+        let height = Int(leUInt32(bytes, headerStart + 128))
+        let bytesPerPixel = fmtA == fmtB ? 1 : 4
+
+        let texelStart = headerStart + 172
+        guard texelStart + size <= bytes.count else { throw ParseError.truncated }
+        return TextureEntry(trailerOffset: trailerOffset, width: width, height: height,
+                             bytesPerPixel: bytesPerPixel, texelDataRange: texelStart..<(texelStart + size))
+    }
+
+    /// Scans a `TST0` payload for texture entries by searching for the
+    /// `marker == 76` trailer signature at 4-byte-aligned offsets and
+    /// validating each candidate via ``parseTextureEntry(_:trailerOffset:)``.
+    ///
+    /// **This is a heuristic scan, not a guaranteed-complete parser** --
+    /// on the real `AIRSHIP.GSC` sample it found only 16 of the 42
+    /// textures the section's own leading count field declares. The
+    /// likely reason (not yet confirmed): some entries -- plausibly
+    /// paletted textures with a companion CLUT/palette upload -- carry an
+    /// extra register block this scan doesn't recognize, so it skips past
+    /// them. A register-triplet count check in a separate file found more
+    /// `TRXPOS`/`TRXREG`/`TRXDIR` triplets than `2 x declared count` in
+    /// some files, consistent with that idea, but unconfirmed. Use this
+    /// for "here are some real, individually-validated textures", not for
+    /// "here is every texture in the file".
+    public static func scanTextureEntries(_ payload: Data) -> [TextureEntry] {
+        let bytes = [UInt8](payload)
+        var entries: [TextureEntry] = []
+        var offset = 16 // past the 16-byte TST0 header (count, reserved, word2, word3)
+        while offset + 4 <= bytes.count {
+            if leUInt32(bytes, offset) == 76, offset >= 16 {
+                let trailerOffset = offset - 16
+                if let entry = try? parseTextureEntry(payload, trailerOffset: trailerOffset) {
+                    entries.append(entry)
+                }
+            }
+            offset += 4
+        }
+        return entries
+    }
+
     // MARK: - helpers
 
     private static func leFloat32(_ b: [UInt8], _ o: Int) -> Float {
