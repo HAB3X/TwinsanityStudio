@@ -17,12 +17,38 @@ public enum WOCTextureDecoder {
     /// DMA source buffer for the upload transfer, and the GS hardware's
     /// own internal swizzle addressing only applies once the data is
     /// actually resident in VRAM -- it's invisible at this (pre-upload)
-    /// layer. Confirmed two ways: (1) a naive row-major decode of a real
-    /// 256x256 entry immediately shows a recognizable skull-and-crossbones
-    /// icon; (2) the real, standard PS2 PSMCT32 page/block swizzle was
-    /// explicitly tried and made adjacent-pixel spatial coherence *worse*
-    /// (a quantified check, not just "looks wrong"), ruling it out rather
-    /// than leaving it untested.
+    /// layer.
+    ///
+    /// Verified twice, independently, across two rounds of this session:
+    /// (1) a naive row-major decode of a real 256x256 entry immediately
+    /// shows a recognizable skull-and-crossbones icon, and adjacent-pixel
+    /// spatial coherence is *worse* under the real PSMCT32 page/block
+    /// swizzle than under plain row-major (quantified, not just "looks
+    /// wrong"); (2) a dedicated follow-up investigation, triggered by a
+    /// visible banding artifact and an apparently-implausible per-pixel
+    /// channel sample, exhaustively tried every plausible alternative --
+    /// all 8 RGBA/BGRA/ARGB/etc. channel orders, the real PCSX2
+    /// `columnTable32` swizzle, Morton/Z-order, tile-contiguous file
+    /// layout, 16-bit sub-pixel interleaving, all 24 within-quadword pixel
+    /// permutations, and +/-8 byte offset misalignment -- and none beat
+    /// plain row-major RGBA8888 on a real pairwise-pixel-dissimilarity
+    /// metric; several made it measurably worse. That same follow-up also
+    /// found the disconfirming per-pixel sample that triggered it
+    /// (`R=11 G=86 B=0`-style values in a 256x256 entry's first 10 pixels)
+    /// doesn't hold up as full-image statistics (R=142.6 G=142.0 B=149.3
+    /// mean, reasonably balanced) -- it was real, but from a
+    /// dark/green-tinted corner of that specific image, not evidence of a
+    /// channel bug.
+    ///
+    /// One real, still-unexplained residual: some direct-color textures
+    /// (confirmed on a 256x256 real entry) show a faint, position-
+    /// dependent (not simply row- or byte-periodic) brightness/alpha
+    /// banding with a roughly 32-column period, that survived every
+    /// hypothesis above. Left as an open, documented gap rather than
+    /// "fixed" by a change that isn't actually justified by evidence --
+    /// possibly genuine dithering baked into the original art, possibly a
+    /// value-level (not positional) encoding detail out of scope of what
+    /// was investigated.
     public static func decodeDirectColor(_ texelData: Data, width: Int, height: Int) -> [UInt8] {
         Array(texelData.prefix(width * height * 4))
     }
