@@ -954,8 +954,14 @@ struct LevelViewerWindow: View {
                 workspace.lastError = "\(result.fileName) resolved but has no scenery placements to show."
                 return
             }
+            // "Coordinate-System Overhaul": `chunkMatrix`'s translation row
+            // is raw on-disk data, same as every other position this build
+            // decodes — needs the same world-space X mirror
+            // `result.placements` already got via the (now-corrected)
+            // `SceneryModelPlacement.worldTransform`, or a stitched
+            // neighbor lands offset in the wrong direction along X.
             let offset = link.chunkMatrix.count > 3
-                ? SIMD3(link.chunkMatrix[3].x, link.chunkMatrix[3].y, link.chunkMatrix[3].z)
+                ? ModelViewerRenderer.mirroredWorldPosition(SIMD3(link.chunkMatrix[3].x, link.chunkMatrix[3].y, link.chunkMatrix[3].z))
                 : SIMD3<Float>.zero
             let added = renderer?.stitchChunk(placements: result.placements, worldOffset: offset) ?? 0
             stitchedLinkIDs.insert(link.id)
