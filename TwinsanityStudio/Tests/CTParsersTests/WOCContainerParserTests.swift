@@ -116,6 +116,28 @@ final class WOCContainerParserTests: XCTestCase {
         }
     }
 
+    func testRealINSTInstancesHaveSelfConsistentIndicesAndPlausibleTransforms() throws {
+        let samples: [(path: String, expectedCount: Int)] = [
+            ("A/AIRSHIP/AIRSHIP.GSC", 41),
+            ("A/FARM/FARM.GSC", 523),
+        ]
+        for sample in samples {
+            let decoded = try loadAndDecompressRealGSC(sample.path)
+            let file = try WOCContainerParser.parse(decoded)
+            let inst = try XCTUnwrap(file.sections.first { $0.tag == "INST" }, "no INST in \(sample.path)")
+            let instances = try WOCContainerParser.parseInstances(inst.payload)
+            XCTAssertEqual(instances.count, sample.expectedCount, "instance count for \(sample.path)")
+            for (i, instance) in instances.enumerated() {
+                XCTAssertEqual(instance.index, UInt32(i), "instance \(i) index field should equal its own array position, for \(sample.path)")
+                XCTAssertEqual(instance.matrix.15, 1.0, "homogeneous w should be 1.0 for instance \(i) in \(sample.path)")
+                XCTAssertEqual(instance.unknownTail2, 0, "unknownTail2 for \(sample.path) instance \(i)")
+            }
+            // unknownTail1 is NOT always zero (verified: don't assert it is) --
+            // it's zero for the vast majority of real instances but a real
+            // minority carry a nonzero, pointer-shaped value.
+        }
+    }
+
     func testRealCastleCGSCSectionChainCoversWholeFile() throws {
         let decoded = try loadAndDecompressRealGSC("A/CASTLE_C/CASTLE_C.GSC")
         let file = try WOCContainerParser.parse(decoded)

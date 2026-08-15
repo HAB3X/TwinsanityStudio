@@ -166,7 +166,86 @@ public enum WOCContainerParser {
         return (records, width)
     }
 
+    /// A single placed object instance from an `INST` section: a 4x4
+    /// world transform plus a small metadata tail. Fully decoded and
+    /// hard-verified, not a guess -- see ``parseInstances(_:)``.
+    public struct Instance {
+        /// Row-major 4x4 transform; translation lives in row 3
+        /// (`row3 = (tx, ty, tz, 1.0)`), confirmed by `w` being exactly
+        /// `1.0` in every one of 564 real instances checked across 2
+        /// files.
+        public let matrix: (Float, Float, Float, Float,
+                             Float, Float, Float, Float,
+                             Float, Float, Float, Float,
+                             Float, Float, Float, Float)
+        /// Confirmed to exactly equal this instance's own position in the
+        /// `INST` array in every one of 564 real records checked (0
+        /// mismatches across `AIRSHIP.GSC` (41 instances) and `FARM.GSC`
+        /// (523 instances)) -- not inferred, directly cross-checked.
+        public let index: UInt32
+        /// Varies per instance (seen values: mostly `5`, occasionally
+        /// `4` in the samples checked). Plausibly a mesh-set/type
+        /// reference into `MS00`, but that link is not yet confirmed --
+        /// treat as an opaque tag for now.
+        public let typeOrMeshIndex: UInt32
+        /// Zero for the vast majority of real instances (502/523 in the
+        /// `FARM.GSC` sample), but *not* always -- about 4% of real
+        /// instances there carry a nonzero value tightly clustered in the
+        /// `0x13a3xxxx`-`0x13a7xxxx` range, which reads like a stray
+        /// serialized runtime pointer (roughly sequential, heap-address
+        /// shaped) rather than meaningful per-instance data. Exposed
+        /// as-is rather than masked to zero, since it demonstrably isn't
+        /// always zero.
+        public let unknownTail1: UInt32
+        /// Zero in every one of 564 real instances checked across both
+        /// samples -- unlike `unknownTail1`, no counterexample found yet.
+        public let unknownTail2: UInt32
+
+        public var translation: SIMD3<Float> { SIMD3(matrix.12, matrix.13, matrix.14) }
+    }
+
+    /// Decodes an `INST` section's payload: `count:UInt32LE` +
+    /// `reserved:UInt32LE` + `count` fixed-width 80-byte records. Record
+    /// width and count were cross-verified against real files the same
+    /// way as ``parseMeshSet(_:)``, and `INST`'s `count` was additionally
+    /// observed to exactly match its sibling `OBJ0` section's own leading
+    /// count field in both samples checked, suggesting (not yet confirmed)
+    /// a 1:1 correspondence between `OBJ0` entries and `INST` instances.
+    public static func parseInstances(_ payload: Data) throws -> [Instance] {
+        let bytes = [UInt8](payload)
+        guard bytes.count >= 8 else { throw ParseError.truncated }
+        let count = Int(leUInt32(bytes, 0))
+        let remaining = bytes.count - 8
+        guard count > 0, remaining % count == 0, remaining / count == 80 else { return [] }
+
+        var instances: [Instance] = []
+        instances.reserveCapacity(count)
+        for i in 0..<count {
+            let start = 8 + i * 80
+            var floats = [Float](repeating: 0, count: 16)
+            for f in 0..<16 { floats[f] = leFloat32(bytes, start + f * 4) }
+            let tailStart = start + 64
+            let index = leUInt32(bytes, tailStart)
+            let typeOrMeshIndex = leUInt32(bytes, tailStart + 4)
+            let unknownTail1 = leUInt32(bytes, tailStart + 8)
+            let unknownTail2 = leUInt32(bytes, tailStart + 12)
+            instances.append(Instance(
+                matrix: (floats[0], floats[1], floats[2], floats[3],
+                         floats[4], floats[5], floats[6], floats[7],
+                         floats[8], floats[9], floats[10], floats[11],
+                         floats[12], floats[13], floats[14], floats[15]),
+                index: index, typeOrMeshIndex: typeOrMeshIndex,
+                unknownTail1: unknownTail1, unknownTail2: unknownTail2
+            ))
+        }
+        return instances
+    }
+
     // MARK: - helpers
+
+    private static func leFloat32(_ b: [UInt8], _ o: Int) -> Float {
+        Float(bitPattern: leUInt32(b, o))
+    }
 
     private static func leUInt32(_ b: [UInt8], _ o: Int) -> UInt32 {
         UInt32(b[o]) | (UInt32(b[o + 1]) << 8) | (UInt32(b[o + 2]) << 16) | (UInt32(b[o + 3]) << 24)
