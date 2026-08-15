@@ -1,6 +1,8 @@
 import XCTest
 import simd
+@testable import CTCore
 @testable import CTModels
+@testable import CTParsers
 @testable import CTStudioApp
 
 /// "Add Trigger"/"Add Camera" (closing the parity gap the original
@@ -100,6 +102,44 @@ final class SpawnAndDeleteTests: XCTestCase {
         renderer.restoreObject(snapshot, at: index)
         XCTAssertEqual(renderer.selectedObjectIndex, index)
         XCTAssertEqual(renderer.newCameraInfo(at: index), SIMD3<Float>(9, 9, 9))
+    }
+
+    /// "Coordinate-System Overhaul": end-to-end proof that a Trigger/Camera
+    /// placed at a given *world* (viewport-displayed) position survives a
+    /// real save → re-parse round trip and lands back at that same world
+    /// position — not just that `pendingNewTrigger`/`pendingNewCamera`
+    /// returns *some* raw bytes. Goes through the exact same
+    /// `WorldPlacementWriter`/`WorldPlacementParser` pair a real save uses,
+    /// then re-applies the renderer's own display-space mirror
+    /// (`ModelViewerRenderer.mirroredWorldPosition`) to the freshly-decoded
+    /// raw position, the same conversion `upload(...)` would apply when the
+    /// saved file is reopened.
+    func testSpawnedTriggerSurvivesSaveReparseRoundTripAtTheSameWorldPosition() throws {
+        let renderer = try makeRenderer()
+        let worldPosition = SIMD3<Float>(12, -4, 30)
+        _ = try XCTUnwrap(renderer.spawnTrigger(at: worldPosition))
+        let encoded = try XCTUnwrap(renderer.pendingNewTriggers.first?.encoded)
+
+        var cursor = BinaryCursor(data: encoded)
+        let decoded = try WorldPlacementParser.parseTrigger(&cursor, recordID: 999)
+        let rawPosition = SIMD3<Float>(decoded.position.x, decoded.position.y, decoded.position.z)
+        let redisplayedPosition = ModelViewerRenderer.mirroredWorldPosition(rawPosition)
+
+        XCTAssertLessThan(simd_distance(redisplayedPosition, worldPosition), 0.0001)
+    }
+
+    func testSpawnedCameraSurvivesSaveReparseRoundTripAtTheSameWorldPosition() throws {
+        let renderer = try makeRenderer()
+        let worldPosition = SIMD3<Float>(-8, 2, 15)
+        _ = try XCTUnwrap(renderer.spawnCamera(at: worldPosition))
+        let encoded = try XCTUnwrap(renderer.pendingNewCameras.first?.encoded)
+
+        var cursor = BinaryCursor(data: encoded)
+        let decoded = try WorldPlacementParser.parseCamera(&cursor, recordID: 999, isDemo: false)
+        let rawPosition = SIMD3<Float>(decoded.position.x, decoded.position.y, decoded.position.z)
+        let redisplayedPosition = ModelViewerRenderer.mirroredWorldPosition(rawPosition)
+
+        XCTAssertLessThan(simd_distance(redisplayedPosition, worldPosition), 0.0001)
     }
 
     /// "Hover highlight" (Phase 3): a fresh renderer's default orbit looks

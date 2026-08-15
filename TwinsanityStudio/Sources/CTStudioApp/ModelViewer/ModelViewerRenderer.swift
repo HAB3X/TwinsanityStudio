@@ -1122,6 +1122,23 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         distanceMultiplier = 2.4
     }
 
+    /// "Coordinate-System Overhaul": the reference tool's viewers negate
+    /// world-space X for every coordinate they load — scenery (via
+    /// `SceneryModelPlacement.worldTransform`, already handled), collision
+    /// vertices (`LoadColTree`'s `v.X = -v.X`, already handled in
+    /// `upload(collisionMesh:)`/`rebuildCollisionFillBuffer`), and every
+    /// Instance/Trigger/Camera/AIPosition/ChunkLink-wall position
+    /// (`LoadInstances`/`LoadPositions`'s `pos.X = -pos.X`). This is that
+    /// same mirror, applied at the render boundary — raw decoded positions
+    /// stay untouched (so save/write-back keeps working unchanged); this
+    /// is what converts one to the other. Self-inverse (applying it twice
+    /// returns the original), so it's also what a write-back call site
+    /// needs to convert an edited *world* position back to *raw* before
+    /// encoding.
+    static func mirroredWorldPosition(_ raw: SIMD3<Float>) -> SIMD3<Float> {
+        SIMD3(-raw.x, raw.y, raw.z)
+    }
+
     /// Deterministic, stable color for a raw collision `surfaceID` — golden-
     /// ratio hue stepping so adjacent IDs land far apart on the color wheel
     /// rather than as a monotonic gradient (which would make neighboring
@@ -1834,7 +1851,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             // needing to thread `PlacedInstance` itself through
             // `GPULevelObject` just for this one use.
             instanceObjectIDByNodeID[node.id] = instance.objectID
-            let worldPosition = SIMD3(instance.position.x, instance.position.y, instance.position.z)
+            let worldPosition = ModelViewerRenderer.mirroredWorldPosition(SIMD3(instance.position.x, instance.position.y, instance.position.z))
             // "Comprehensive Instance Population" (Part 4B): real geometry
             // when this build could resolve one (GameObject -> GraphicsInfo
             // -> skinned mesh or rigid model-link parts), the amber
@@ -1864,7 +1881,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         }
 
         for (node, trigger) in triggers {
-            let worldPosition = SIMD3(trigger.position.x, trigger.position.y, trigger.position.z)
+            let worldPosition = ModelViewerRenderer.mirroredWorldPosition(SIMD3(trigger.position.x, trigger.position.y, trigger.position.z))
             levelObjects.append(GPULevelObject(
                 worldPosition: worldPosition,
                 rotation: simd_quatf(vector: trigger.rotationQuaternion),
@@ -1877,7 +1894,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         }
 
         for (node, camera) in cameras {
-            let worldPosition = SIMD3(camera.position.x, camera.position.y, camera.position.z)
+            let worldPosition = ModelViewerRenderer.mirroredWorldPosition(SIMD3(camera.position.x, camera.position.y, camera.position.z))
             levelObjects.append(GPULevelObject(
                 worldPosition: worldPosition,
                 rotation: simd_quatf(vector: camera.rotationQuaternion),
@@ -1899,7 +1916,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             // matching how `originalAIWaypointRawNodeType` etc. key off
             // their owning record.
             for (pointIndex, point) in Self.splineControlPoints(for: camera).enumerated() {
-                let pointPosition = SIMD3(point.vector.x, point.vector.y, point.vector.z)
+                let pointPosition = ModelViewerRenderer.mirroredWorldPosition(SIMD3(point.vector.x, point.vector.y, point.vector.z))
                 levelObjects.append(GPULevelObject(
                     worldPosition: pointPosition,
                     displayName: "Camera #\(camera.id) control point \(pointIndex)",
@@ -1919,7 +1936,8 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         // via `rebuildOverlayBuffer`'s translucent-plane pass.
         for (node, link) in chunkLinks {
             guard let wall = link.loadWall, !wall.isEmpty else { continue }
-            let centroid = wall.reduce(SIMD3<Float>.zero) { $0 + SIMD3($1.x, $1.y, $1.z) } / Float(wall.count)
+            let rawCentroid = wall.reduce(SIMD3<Float>.zero) { $0 + SIMD3($1.x, $1.y, $1.z) } / Float(wall.count)
+            let centroid = ModelViewerRenderer.mirroredWorldPosition(rawCentroid)
             levelObjects.append(GPULevelObject(
                 worldPosition: centroid,
                 displayName: "Chunk Link #\(link.id): \(link.path)",
@@ -1940,7 +1958,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         // waypoint's own byte-exact re-encode is `pendingAIWaypointOverrides`
         // below, via the real `WorldPlacementWriter.writeAIPosition`.
         for (node, marker) in aiPositions {
-            let worldPosition = SIMD3(marker.position.x, marker.position.y, marker.position.z)
+            let worldPosition = ModelViewerRenderer.mirroredWorldPosition(SIMD3(marker.position.x, marker.position.y, marker.position.z))
             levelObjects.append(GPULevelObject(
                 worldPosition: worldPosition,
                 displayName: "AI Waypoint #\(marker.id) (\(marker.nodeType?.displayName ?? "type \(marker.rawNodeType)"))",
@@ -2087,7 +2105,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
 
         if layerVisibility.contains(.triggers) {
             for (_, trigger) in triggers {
-                let position = SIMD3(trigger.position.x, trigger.position.y, trigger.position.z)
+                let position = ModelViewerRenderer.mirroredWorldPosition(SIMD3(trigger.position.x, trigger.position.y, trigger.position.z))
                 let size = SIMD3(max(trigger.size.x, 0.1), max(trigger.size.y, 0.1), max(trigger.size.z, 0.1))
                 // "Scene Preview Mode" (roadmap 7.1): a real, live geometric
                 // containment test — see `cameraEyeWorldPosition`'s doc
@@ -2100,10 +2118,10 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         }
         if layerVisibility.contains(.cameras) {
             for (_, camera) in cameras {
-                let position = SIMD3(camera.position.x, camera.position.y, camera.position.z)
+                let position = ModelViewerRenderer.mirroredWorldPosition(SIMD3(camera.position.x, camera.position.y, camera.position.z))
                 let size = SIMD3(max(camera.size.x, 0.1), max(camera.size.y, 0.1), max(camera.size.z, 0.1))
                 appendBox(position: position, size: size, rotation: simd_quatf(vector: camera.rotationQuaternion), color: cameraColor)
-                let controlPoints = Self.splineControlPoints(for: camera).map { SIMD3($0.vector.x, $0.vector.y, $0.vector.z) }
+                let controlPoints = Self.splineControlPoints(for: camera).map { ModelViewerRenderer.mirroredWorldPosition(SIMD3($0.vector.x, $0.vector.y, $0.vector.z)) }
                 // "Interactive Spline & Camera Path Visualizer" (roadmap
                 // 6.3): a small marker box at every real control point,
                 // not just the connecting polyline — this is what actually
@@ -2129,7 +2147,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         let aiWaypointColor = SIMD3<Float>(0.4, 0.9, 0.65)
         if layerVisibility.contains(.aiWaypoints) {
             for (_, marker) in aiPositions {
-                let position = SIMD3(marker.position.x, marker.position.y, marker.position.z)
+                let position = ModelViewerRenderer.mirroredWorldPosition(SIMD3(marker.position.x, marker.position.y, marker.position.z))
                 appendBox(position: position, size: SIMD3(repeating: 0.35), rotation: simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), color: aiWaypointColor)
             }
         }
@@ -2147,7 +2165,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         if layerVisibility.contains(.chunkBoundaries) {
             for (_, link) in chunkLinks {
                 guard let wall = link.loadWall, wall.count == 4 else { continue }
-                let corners = wall.map { SIMD3($0.x, $0.y, $0.z) }
+                let corners = wall.map { ModelViewerRenderer.mirroredWorldPosition(SIMD3($0.x, $0.y, $0.z)) }
                 appendVertex(corners[0], wallColor); appendVertex(corners[1], wallColor)
                 appendVertex(corners[1], wallColor); appendVertex(corners[2], wallColor)
                 appendVertex(corners[2], wallColor); appendVertex(corners[3], wallColor)
@@ -2254,7 +2272,12 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                 PlacedInstance.rawAngle(fromDegrees: degrees.y),
                 PlacedInstance.rawAngle(fromDegrees: degrees.z)
             )
-            let position = SIMD4(object.worldPosition.x, object.worldPosition.y, object.worldPosition.z, object.originalPositionW)
+            // "Coordinate-System Overhaul": `object.worldPosition` is the
+            // mirrored *display* position (see `mirroredWorldPosition`'s
+            // doc comment) — un-mirror (self-inverse) back to raw before
+            // encoding, or a dragged Instance would save at the wrong X.
+            let rawPosition = ModelViewerRenderer.mirroredWorldPosition(object.worldPosition)
+            let position = SIMD4(rawPosition.x, rawPosition.y, rawPosition.z, object.originalPositionW)
             let encoded = WorldPlacementWriter.writeInstanceTransform(position: position, rotationRaw: rotationRaw, comRotationRaw: object.comRotationRaw)
             return (node, encoded)
         }
@@ -2850,7 +2873,9 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     var pendingNewTriggers: [(id: UInt32, encoded: Data)] {
         objects.compactMap { object in
             guard let syntheticID = object.syntheticTriggerID else { return nil }
-            let encoded = WorldPlacementWriter.writeNewTrigger(position: SIMD4(object.worldPosition, 1))
+            // "Coordinate-System Overhaul": un-mirror back to raw before
+            // encoding — see `pendingLevelOverrides`'s matching comment.
+            let encoded = WorldPlacementWriter.writeNewTrigger(position: SIMD4(ModelViewerRenderer.mirroredWorldPosition(object.worldPosition), 1))
             return (syntheticID, encoded)
         }
     }
@@ -2860,7 +2885,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     var pendingNewCameras: [(id: UInt32, encoded: Data)] {
         objects.compactMap { object in
             guard let syntheticID = object.syntheticCameraID else { return nil }
-            let encoded = WorldPlacementWriter.writeNewCamera(position: SIMD4(object.worldPosition, 1), isDemo: isDemoCameraCollection)
+            let encoded = WorldPlacementWriter.writeNewCamera(position: SIMD4(ModelViewerRenderer.mirroredWorldPosition(object.worldPosition), 1), isDemo: isDemoCameraCollection)
             return (syntheticID, encoded)
         }
     }
@@ -2893,7 +2918,11 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     var pendingNewInstances: [(objectID: UInt16, syntheticID: UInt32, position: SIMD3<Float>, rotationDegrees: SIMD3<Float>)] {
         objects.compactMap { object in
             guard let objectID = object.newInstanceObjectID, let syntheticID = object.syntheticInstanceID else { return nil }
-            return (objectID, syntheticID, object.worldPosition, Self.eulerDegrees(from: object.rotation))
+            // "Coordinate-System Overhaul": `position` here feeds straight
+            // into `WorldPlacementWriter.writeNewInstance` at the call site
+            // (`LevelViewerWindow.saveLevelOverrides`) with no further
+            // conversion, so it has to already be raw/on-disk space.
+            return (objectID, syntheticID, ModelViewerRenderer.mirroredWorldPosition(object.worldPosition), Self.eulerDegrees(from: object.rotation))
         }
     }
 
@@ -2909,7 +2938,8 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             guard object.layer == .aiWaypoints, let node = object.sourceNode,
                   let rawNodeType = object.originalAIWaypointRawNodeType
             else { return nil }
-            let position = SIMD4(object.worldPosition.x, object.worldPosition.y, object.worldPosition.z, object.originalPositionW)
+            let rawPosition = ModelViewerRenderer.mirroredWorldPosition(object.worldPosition)
+            let position = SIMD4(rawPosition.x, rawPosition.y, rawPosition.z, object.originalPositionW)
             let encoded = WorldPlacementWriter.writeAIPosition(position: position, rawNodeType: rawNodeType)
             return (node, encoded)
         }
@@ -2928,7 +2958,8 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             guard object.layer == .cameras, let node = object.sourceNode,
                   let relativeOffset = object.cameraControlPointFileOffset
             else { return nil }
-            let vector = SIMD4(object.worldPosition.x, object.worldPosition.y, object.worldPosition.z, object.originalPositionW)
+            let rawPosition = ModelViewerRenderer.mirroredWorldPosition(object.worldPosition)
+            let vector = SIMD4(rawPosition.x, rawPosition.y, rawPosition.z, object.originalPositionW)
             let encoded = WorldPlacementWriter.writeCameraControlPoint(vector)
             return (node, node.fileOffset + relativeOffset, encoded)
         }
@@ -2941,7 +2972,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     var pendingNewAIPositions: [(id: UInt32, encoded: Data)] {
         objects.compactMap { object in
             guard let rawNodeType = object.newAIWaypointRawNodeType, let syntheticID = object.syntheticAIPositionID else { return nil }
-            let encoded = WorldPlacementWriter.writeAIPosition(position: SIMD4(object.worldPosition, 1), rawNodeType: rawNodeType)
+            let encoded = WorldPlacementWriter.writeAIPosition(position: SIMD4(ModelViewerRenderer.mirroredWorldPosition(object.worldPosition), 1), rawNodeType: rawNodeType)
             return (syntheticID, encoded)
         }
     }

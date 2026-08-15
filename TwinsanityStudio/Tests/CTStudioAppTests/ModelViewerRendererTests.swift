@@ -226,7 +226,13 @@ final class ModelViewerRendererTests: XCTestCase {
         let pending = renderer.pendingNewInstances
         XCTAssertEqual(pending.count, 1)
         XCTAssertEqual(pending[0].objectID, 42)
-        XCTAssertEqual(pending[0].position, SIMD3<Float>(5, 1, -3))
+        // "Coordinate-System Overhaul": `spawnInstance(at:)` takes a world/
+        // display-space position (5,1,-3) — the same space the viewport
+        // shows everything in — but `pendingNewInstances` hands back the
+        // *raw* on-disk position ready for `WorldPlacementWriter`, which is
+        // the X-mirrored value. Re-decoding (5,1,-3) is what a real load
+        // would show for this record once saved.
+        XCTAssertEqual(pending[0].position, SIMD3<Float>(-5, 1, -3))
     }
 
     /// The undo-reachable half: removing a just-placed object must both
