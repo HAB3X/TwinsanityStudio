@@ -140,4 +140,66 @@ final class ScanCacheTests: XCTestCase {
         XCTAssertEqual(roundTrippedSubmesh.jointIndices, jointIndices)
         XCTAssertEqual(roundTrippedSubmesh.jointWeights, jointWeights)
     }
+
+    /// Second, real reproduction of the exact same root cause (see the test
+    /// above's doc comment): fixing `MeshSubmesh.jointIndices`/
+    /// `jointWeights` alone did not fix the incident — the *same* 2.3GB
+    /// `ScanCache` hang reproduced immediately afterward, this time from
+    /// `AnimationTrack.frames`/`jointSettings`/`staticTransforms`
+    /// (`AnimationAsset.swift`) and `Joint`/`ExitPoint`/`SkinTransform`/
+    /// `GraphicsInfoCollisionData` (`SkeletonAsset.swift`), all still on the
+    /// naive synthesized `Codable` for their array fields. The multiplier
+    /// here is worse than the joint-weight case: `ResolvedModelAsset.
+    /// availableAnimations` redundantly copies *every* animation in a file
+    /// onto *each* resolved skinned character in that file, so a file with
+    /// several skinned characters and many animations multiplies the
+    /// per-animation cost by the character count. This models that real
+    /// shape — several resolved characters each carrying the same full
+    /// animation list — not just one isolated `AnimationAsset`.
+    func testSkeletonAndAnimationDataRoundTripsWithoutCodableBloatAcrossMultipleCharacters() throws {
+        let frameCount = 200
+        let componentsPerFrame = 24
+        let body = AnimationTrack(
+            jointSettings: (0..<8).map { AnimJointSettings(flags: UInt16($0), transformationChoice: 0, transformationIndex: UInt16($0), animatedTransformIndex: UInt16($0)) },
+            staticTransforms: (0..<8).map { AnimStaticTransform(stored: Int16($0 * 100)) },
+            frames: (0..<frameCount).map { f in AnimFrame(values: (0..<componentsPerFrame).map { Int16((f + $0) % 4096) }) },
+            componentsPerFrame: componentsPerFrame
+        )
+        let facial = AnimationTrack(jointSettings: [], staticTransforms: [], frames: [], componentsPerFrame: 0)
+        let animations = (0..<10).map { AnimationAsset(id: UInt32($0), body: body, facial: facial) }
+
+        let joints = (0..<30).map { i -> Joint in
+            let row = SIMD4<Float>(Float(i), Float(i) * 2, Float(i) * 3, 1)
+            return Joint(reactJointID: UInt32(i), jointIndex: UInt32(i), parentJointIndex: UInt32(max(0, i - 1)), childJointAmount: 0, childJointAmount2: 0, matrix: Array(repeating: row, count: 5))
+        }
+        let skeleton = SkeletonAsset(id: 1, joints: joints, exitPoints: [], skinTransforms: joints.map { SkinTransform(matrix: Array(repeating: $0.matrix[0], count: 4)) }, skinID: 1, blendSkinID: 0, modelLinks: [])
+
+        // Several resolved characters in the same file, each redundantly
+        // carrying the full animation list — the actual real-world shape.
+        let characters = (0..<8).map { i in
+            ResolvedModelAsset(recordID: UInt32(i), displayName: "Character \(i)", mesh: MeshAsset(id: UInt32(i), isSkinned: true, submeshes: []), submeshMaterials: [], skeleton: skeleton, availableAnimations: animations)
+        }
+
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        let encoded = try encoder.encode(ScanCachePayload(modelsHub: characters, orphanedContent: []))
+
+        // Flat lower bound: frame values alone, once per unique animation
+        // (not multiplied by character count, since a correct fix's cost
+        // should scale with real distinct data, not with how many times a
+        // reference to it gets redundantly serialized... though even this
+        // generous a bound would have been blown through by orders of
+        // magnitude under the naive per-element Codable path this regresses.
+        let flatFrameBytes = animations.count * frameCount * componentsPerFrame * MemoryLayout<Int16>.stride
+        XCTAssertLessThan(encoded.count, flatFrameBytes * characters.count, "encoded size ballooned — the array-of-struct Codable bloat is back in AnimationAsset/SkeletonAsset")
+
+        let decoded = try PropertyListDecoder().decode(ScanCachePayload.self, from: encoded)
+        XCTAssertEqual(decoded.modelsHub.count, characters.count)
+        let roundTripped = try XCTUnwrap(decoded.modelsHub.first)
+        XCTAssertEqual(roundTripped.availableAnimations.count, animations.count)
+        XCTAssertEqual(roundTripped.availableAnimations.first?.body.frames.map(\.values), body.frames.map(\.values))
+        XCTAssertEqual(roundTripped.availableAnimations.first?.body.jointSettings.map(\.flags), body.jointSettings.map(\.flags))
+        XCTAssertEqual(roundTripped.availableAnimations.first?.body.staticTransforms.map(\.stored), body.staticTransforms.map(\.stored))
+        XCTAssertEqual(roundTripped.skeleton?.joints.map(\.matrix), joints.map(\.matrix))
+    }
 }

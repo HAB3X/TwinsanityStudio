@@ -1,4 +1,21 @@
+import Foundation
 import simd
+
+/// Shared by every `Codable` conformance in this file that flattens a
+/// `[SIMD4<Float>]` matrix to `Data` — see `Joint`'s own doc comment for
+/// why. A single named helper (rather than inlining the `stride`/`map`
+/// expression at each call site) also sidesteps a real Swift type-checker
+/// timeout the inline form hits here.
+private func unflattenVector4Array(_ raw: [Float]) -> [SIMD4<Float>] {
+    var result: [SIMD4<Float>] = []
+    result.reserveCapacity(raw.count / 4)
+    var i = 0
+    while i + 4 <= raw.count {
+        result.append(SIMD4(raw[i], raw[i + 1], raw[i + 2], raw[i + 3]))
+        i += 4
+    }
+    return result
+}
 
 /// A single skeleton joint. Note this is **matrix-based, not quaternion +
 /// translation** — `matrix` holds 5 raw XYZW rows as stored on disk
@@ -24,6 +41,38 @@ public struct Joint: Sendable, Identifiable, Codable {
         self.childJointAmount2 = childJointAmount2
         self.matrix = matrix
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case reactJointID, jointIndex, parentJointIndex, childJointAmount, childJointAmount2, matrix
+    }
+
+    /// Custom `Codable` — same "ScanCache Codable perf gotcha" this
+    /// project's already fixed twice elsewhere (`MeshSubmesh`,
+    /// `AnimationTrack`): `[SIMD4<Float>]` under synthesized `Codable`
+    /// wraps every row in its own container. `matrix` is always a handful
+    /// of rows, so the *scalar* `UInt32` fields stay plain `Codable` —
+    /// only the array needs flattening.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        reactJointID = try container.decode(UInt32.self, forKey: .reactJointID)
+        jointIndex = try container.decode(UInt32.self, forKey: .jointIndex)
+        parentJointIndex = try container.decode(UInt32.self, forKey: .parentJointIndex)
+        childJointAmount = try container.decode(UInt32.self, forKey: .childJointAmount)
+        childJointAmount2 = try container.decode(UInt32.self, forKey: .childJointAmount2)
+        let raw = try container.decode(Data.self, forKey: .matrix).withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        matrix = unflattenVector4Array(raw)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(reactJointID, forKey: .reactJointID)
+        try container.encode(jointIndex, forKey: .jointIndex)
+        try container.encode(parentJointIndex, forKey: .parentJointIndex)
+        try container.encode(childJointAmount, forKey: .childJointAmount)
+        try container.encode(childJointAmount2, forKey: .childJointAmount2)
+        let flat = matrix.flatMap { [$0.x, $0.y, $0.z, $0.w] }
+        try container.encode(flat.withUnsafeBufferPointer { Data(buffer: $0) }, forKey: .matrix)
+    }
 }
 
 public struct ExitPoint: Sendable, Identifiable, Codable {
@@ -36,6 +85,27 @@ public struct ExitPoint: Sendable, Identifiable, Codable {
         self.parentJointIndex = parentJointIndex
         self.matrix = matrix
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, parentJointIndex, matrix
+    }
+
+    /// Same fix as `Joint`'s own Codable — see that type's doc comment.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UInt32.self, forKey: .id)
+        parentJointIndex = try container.decode(UInt32.self, forKey: .parentJointIndex)
+        let raw = try container.decode(Data.self, forKey: .matrix).withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        matrix = unflattenVector4Array(raw)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(parentJointIndex, forKey: .parentJointIndex)
+        let flat = matrix.flatMap { [$0.x, $0.y, $0.z, $0.w] }
+        try container.encode(flat.withUnsafeBufferPointer { Data(buffer: $0) }, forKey: .matrix)
+    }
 }
 
 /// Column-major skinning transform per joint (`GraphicsInfo.SkinTransform`).
@@ -44,6 +114,23 @@ public struct SkinTransform: Sendable, Codable {
 
     public init(matrix: [SIMD4<Float>]) {
         self.matrix = matrix
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case matrix
+    }
+
+    /// Same fix as `Joint`'s own Codable — see that type's doc comment.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = try container.decode(Data.self, forKey: .matrix).withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        matrix = unflattenVector4Array(raw)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        let flat = matrix.flatMap { [$0.x, $0.y, $0.z, $0.w] }
+        try container.encode(flat.withUnsafeBufferPointer { Data(buffer: $0) }, forKey: .matrix)
     }
 }
 
@@ -83,6 +170,25 @@ public struct GraphicsInfoCollisionData: Sendable, Codable {
     public init(header: [UInt16], positions: [SIMD4<Float>]) {
         self.header = header
         self.positions = positions
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case header, positions
+    }
+
+    /// Same fix as `Joint`'s own Codable — see that type's doc comment.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        header = try container.decode(Data.self, forKey: .header).withUnsafeBytes { Array($0.bindMemory(to: UInt16.self)) }
+        let raw = try container.decode(Data.self, forKey: .positions).withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        positions = unflattenVector4Array(raw)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(header.withUnsafeBufferPointer { Data(buffer: $0) }, forKey: .header)
+        let flat = positions.flatMap { [$0.x, $0.y, $0.z, $0.w] }
+        try container.encode(flat.withUnsafeBufferPointer { Data(buffer: $0) }, forKey: .positions)
     }
 }
 

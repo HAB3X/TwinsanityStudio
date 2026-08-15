@@ -82,6 +82,78 @@ public struct AnimationTrack: Sendable, Codable {
     }
 
     public var totalFrames: Int { frames.count }
+
+    private enum CodingKeys: String, CodingKey {
+        case jointSettings, staticTransforms, frameValues, componentsPerFrame
+    }
+
+    /// Custom `Codable`, same reasoning and pattern as `MeshSubmesh`'s (see
+    /// that type's own doc comment): the synthesized conformance wraps
+    /// every one of potentially hundreds of `AnimFrame`s — each itself an
+    /// unkeyed container of dozens of `Int16` channel values — in its own
+    /// container, and `jointSettings`/`staticTransforms` get the same
+    /// per-element treatment. At full-archive-scan scale, with every
+    /// resolved skinned character redundantly carrying a full copy of
+    /// *every* animation in its file (`ResolvedModelAsset.
+    /// availableAnimations`), this reproduced the exact "ScanCache balloons
+    /// to gigabytes, decoding it back hangs the app" incident a first
+    /// Codable-bloat fix (`MeshSubmesh`'s joint weights) had already fixed
+    /// once for a different field — a second, larger instance of the same
+    /// root cause, not a new bug. `frames` flattens to one `Data` blob of
+    /// `frameCount * componentsPerFrame` `Int16` values (row-major, one
+    /// frame's values contiguous) since every frame has exactly
+    /// `componentsPerFrame` values; frame count is recovered from the
+    /// blob's own byte length on decode.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        componentsPerFrame = try container.decode(Int.self, forKey: .componentsPerFrame)
+
+        let jointSettingsRaw = try container.decode(Data.self, forKey: .jointSettings).withUnsafeBytes { Array($0.bindMemory(to: UInt16.self)) }
+        var decodedJointSettings: [AnimJointSettings] = []
+        decodedJointSettings.reserveCapacity(jointSettingsRaw.count / 4)
+        for i in 0..<(jointSettingsRaw.count / 4) {
+            decodedJointSettings.append(AnimJointSettings(
+                flags: jointSettingsRaw[i * 4],
+                transformationChoice: jointSettingsRaw[i * 4 + 1],
+                transformationIndex: jointSettingsRaw[i * 4 + 2],
+                animatedTransformIndex: jointSettingsRaw[i * 4 + 3]
+            ))
+        }
+        jointSettings = decodedJointSettings
+
+        let staticRaw = try container.decode(Data.self, forKey: .staticTransforms).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+        staticTransforms = staticRaw.map { AnimStaticTransform(stored: $0) }
+
+        let frameValuesRaw = try container.decode(Data.self, forKey: .frameValues).withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+        var decodedFrames: [AnimFrame] = []
+        if componentsPerFrame > 0 {
+            decodedFrames.reserveCapacity(frameValuesRaw.count / componentsPerFrame)
+            var index = 0
+            while index + componentsPerFrame <= frameValuesRaw.count {
+                decodedFrames.append(AnimFrame(values: Array(frameValuesRaw[index..<(index + componentsPerFrame)])))
+                index += componentsPerFrame
+            }
+        }
+        frames = decodedFrames
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(componentsPerFrame, forKey: .componentsPerFrame)
+
+        var jointSettingsFlat: [UInt16] = []
+        jointSettingsFlat.reserveCapacity(jointSettings.count * 4)
+        for j in jointSettings { jointSettingsFlat.append(contentsOf: [j.flags, j.transformationChoice, j.transformationIndex, j.animatedTransformIndex]) }
+        try container.encode(jointSettingsFlat.withUnsafeBufferPointer { Data(buffer: $0) }, forKey: .jointSettings)
+
+        let staticFlat = staticTransforms.map(\.stored)
+        try container.encode(staticFlat.withUnsafeBufferPointer { Data(buffer: $0) }, forKey: .staticTransforms)
+
+        var frameValuesFlat: [Int16] = []
+        frameValuesFlat.reserveCapacity(frames.count * componentsPerFrame)
+        for frame in frames { frameValuesFlat.append(contentsOf: frame.values) }
+        try container.encode(frameValuesFlat.withUnsafeBufferPointer { Data(buffer: $0) }, forKey: .frameValues)
+    }
 }
 
 /// A fully decoded `Animation` record: body + facial tracks.
