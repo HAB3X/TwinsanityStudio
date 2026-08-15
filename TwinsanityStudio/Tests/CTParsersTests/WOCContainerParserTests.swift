@@ -165,6 +165,21 @@ final class WOCContainerParserTests: XCTestCase {
         XCTAssertEqual(quadwords[2].position.z, 0.09045087, accuracy: 0.0001)
     }
 
+    func testRealIABLRecordWidthIsConsistentAcrossLevels() throws {
+        let samples: [(path: String, expectedCount: Int)] = [
+            ("A/FARM/FARM.GSC", 21),
+            ("A/CASTLE_C/CASTLE_C.GSC", 163),
+        ]
+        for sample in samples {
+            let decoded = try loadAndDecompressRealGSC(sample.path)
+            let file = try WOCContainerParser.parse(decoded)
+            let iabl = try XCTUnwrap(file.sections.first { $0.tag == "IABL" }, "no IABL in \(sample.path)")
+            let (records, width) = try WOCContainerParser.parseAttributeBlock(iabl.payload)
+            XCTAssertEqual(records.count, sample.expectedCount, "record count for \(sample.path)")
+            XCTAssertEqual(width, 96, "record width for \(sample.path)")
+        }
+    }
+
     func testRealCastleCGSCSectionChainCoversWholeFile() throws {
         let decoded = try loadAndDecompressRealGSC("A/CASTLE_C/CASTLE_C.GSC")
         let file = try WOCContainerParser.parse(decoded)

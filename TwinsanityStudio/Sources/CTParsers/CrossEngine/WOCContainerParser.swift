@@ -319,6 +319,34 @@ public enum WOCContainerParser {
         return result
     }
 
+    /// Decodes an `IABL` ("Instance Attribute BLock"?) section's payload
+    /// the same way as ``parseMeshSet(_:)``: `count:UInt32LE` +
+    /// `reserved:UInt32LE` + `count` fixed-width records. Confirmed
+    /// cross-file: the width is **96 bytes** in all 3 real files checked
+    /// (`FARM.GSC` 21 records, `HUB.GSC` 33, `CASTLE_C.GSC` 163 -- exact
+    /// division every time, not approximate).
+    ///
+    /// Record internals not decoded, but worth noting for a future
+    /// session: records are mostly zero with a small non-zero region
+    /// starting around byte 64, containing a varying float that read as
+    /// exact values like `0.3`/`0.5` in the samples checked (plausibly a
+    /// per-object radius or scale), two constant exact `1.0`s nearby, and
+    /// a small varying integer in the last 4 bytes -- an attribute-block
+    /// shape consistent with the section's name, but not verified enough
+    /// to commit to field offsets.
+    ///
+    /// **Ruled out, not just unattempted:** the sibling `ALIB` section
+    /// ("ATTRIBUTE LIBrary"?) looked at first like the same fixed-width
+    /// pattern (its leading count field divided its payload evenly in 2 of
+    /// 3 files checked), but the resulting width was *different* between
+    /// those two files (1456 in `FARM.GSC`, 5242 in `HUB.GSC`) and didn't
+    /// divide evenly at all in the third (`CASTLE_C.GSC`) -- so `ALIB` is
+    /// NOT a simple fixed-width record table, and no parser is provided
+    /// for it here to avoid a future session re-deriving the same dead end.
+    public static func parseAttributeBlock(_ payload: Data) throws -> (records: [Data], recordWidth: Int) {
+        try parseMeshSet(payload) // identical framing -- count(u32) + reserved(u32) + count fixed records
+    }
+
     // MARK: - helpers
 
     private static func leFloat32(_ b: [UInt8], _ o: Int) -> Float {
