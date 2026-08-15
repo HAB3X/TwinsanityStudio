@@ -163,6 +163,48 @@ final class SpawnAndDeleteTests: XCTestCase {
         XCTAssertNil(renderer.selectedObjectIndex)
     }
 
+    /// "Vertex Magnet-Snapping": dragging a piece close to another
+    /// placement's position on the same axis should snap into exact
+    /// alignment with it, catching spacing a grid snap alone can't (a
+    /// neighbor placed at a non-grid-aligned coordinate).
+    func testMagnetSnappedPositionAlignsWithANearbyNeighborOnTheDraggedAxis() throws {
+        let renderer = try makeRenderer()
+        let neighborIndex = try XCTUnwrap(renderer.spawnTrigger(at: SIMD3<Float>(10.37, 0, 0)))
+        let draggedIndex = try XCTUnwrap(renderer.spawnTrigger(at: SIMD3<Float>(0, 0, 0)))
+        XCTAssertNotEqual(neighborIndex, draggedIndex)
+
+        // Close to the neighbor's X (within magnetSnapThreshold) but not
+        // exactly on it -- should snap to the neighbor's real X value.
+        let candidate = SIMD3<Float>(10.5, 3, 7)
+        let snapped = renderer.magnetSnappedPosition(candidate, excluding: draggedIndex, axis: .x)
+        XCTAssertEqual(snapped.x, 10.37, accuracy: 0.0001)
+        // Only the dragged axis snaps -- Y/Z pass through unchanged.
+        XCTAssertEqual(snapped.y, 3, accuracy: 0.0001)
+        XCTAssertEqual(snapped.z, 7, accuracy: 0.0001)
+    }
+
+    func testMagnetSnappedPositionPassesThroughUnchangedWhenNoNeighborIsClose() throws {
+        let renderer = try makeRenderer()
+        let neighborIndex = try XCTUnwrap(renderer.spawnTrigger(at: SIMD3<Float>(100, 0, 0)))
+        let draggedIndex = try XCTUnwrap(renderer.spawnTrigger(at: SIMD3<Float>(0, 0, 0)))
+        XCTAssertNotEqual(neighborIndex, draggedIndex)
+
+        let candidate = SIMD3<Float>(5, 0, 0)
+        let snapped = renderer.magnetSnappedPosition(candidate, excluding: draggedIndex, axis: .x)
+        XCTAssertEqual(snapped, candidate, "far outside magnetSnapThreshold -- should not snap")
+    }
+
+    func testMagnetSnappedPositionPicksTheClosestNeighborWhenMultipleAreInRange() throws {
+        let renderer = try makeRenderer()
+        _ = try XCTUnwrap(renderer.spawnTrigger(at: SIMD3<Float>(10.0, 0, 0)))
+        _ = try XCTUnwrap(renderer.spawnTrigger(at: SIMD3<Float>(10.2, 0, 0)))
+        let draggedIndex = try XCTUnwrap(renderer.spawnTrigger(at: SIMD3<Float>(0, 0, 0)))
+
+        let candidate = SIMD3<Float>(10.25, 0, 0)
+        let snapped = renderer.magnetSnappedPosition(candidate, excluding: draggedIndex, axis: .x)
+        XCTAssertEqual(snapped.x, 10.2, accuracy: 0.0001, "should snap to whichever in-range neighbor is nearest, not just the first one found")
+    }
+
     func testSpawnedCameraSurvivesSaveReparseRoundTripAtTheSameWorldPosition() throws {
         let renderer = try makeRenderer()
         let worldPosition = SIMD3<Float>(-8, 2, 15)

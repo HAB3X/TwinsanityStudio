@@ -80,6 +80,32 @@ final class InteractiveMTKView: MTKView {
     /// — lets the SwiftUI side select it and register the matching Undo
     /// step, same reasoning as `onObjectPicked`.
     var onObjectPlaced: ((Int) -> Void)?
+    /// "Numbered Hotbar (1-9)": fired with the pressed slot number (1-9)
+    /// when a digit key is pressed outside Free Camera mode — lets the
+    /// SwiftUI side arm whatever's pinned to that slot for placement, the
+    /// same as clicking it in the Forge Palette.
+    var onHotbarSlotPressed: ((Int) -> Void)?
+    /// "Radial Marking Menu (hold Q)": fired once when Q goes down (view-
+    /// point coordinates, same space `mouseMoved`/gizmo hit-testing use) —
+    /// the SwiftUI side owns the actual menu geometry/actions and shows an
+    /// overlay centered there.
+    var onMarkingMenuBegan: ((CGPoint) -> Void)?
+    /// Fired on every mouse-moved event while the marking menu is held —
+    /// the SwiftUI side re-derives which slice is under the cursor from
+    /// this and the point `onMarkingMenuBegan` reported.
+    var onMarkingMenuMoved: ((CGPoint) -> Void)?
+    /// Fired when Q is released — the SwiftUI side executes whatever slice
+    /// was last highlighted (if any) and dismisses the overlay.
+    var onMarkingMenuEnded: (() -> Void)?
+    /// True for the duration of a held Q press — while active, `mouseMoved`
+    /// drives the marking menu instead of the normal hover-highlight, and
+    /// `mouseDown` is swallowed so a stray click while choosing a slice
+    /// can't also grab a gizmo handle or pick an object underneath it.
+    private var isMarkingMenuActive = false
+    /// Updated on every `mouseMoved`/`mouseDown`/`mouseDragged` — `keyDown`
+    /// has no mouse-position of its own, so this is what anchors the
+    /// marking menu to wherever the cursor actually is when Q goes down.
+    private var lastMouseLocation: CGPoint = .zero
 
     /// Non-nil for the duration of a drag that grabbed a gizmo arrow on
     /// `mouseDown` — while set, `mouseDragged` moves the selected object
@@ -134,11 +160,17 @@ final class InteractiveMTKView: MTKView {
     /// needed the way `onObjectPicked`/`onObjectPlaced` are for clicks,
     /// since nothing outside the 3D view needs to know what's hovered.
     override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        lastMouseLocation = point
+        if isMarkingMenuActive {
+            onMarkingMenuMoved?(point)
+            needsDisplay = true
+            return
+        }
         guard let gizmoRenderer = renderer as? GizmoInteractiveRenderer else {
             super.mouseMoved(with: event)
             return
         }
-        let point = convert(event.locationInWindow, from: nil)
         gizmoRenderer.hoverObject(at: point, viewSize: bounds.size)
         needsDisplay = true
     }
@@ -153,12 +185,28 @@ final class InteractiveMTKView: MTKView {
             heldMovementKeys.removeAll()
             updateFreeCameraInputDirection()
         }
+        // "Radial Marking Menu": losing focus mid-hold shouldn't leave the
+        // overlay stuck open forever with no key left to release (same
+        // reasoning as the held-movement-keys reset above) -- same
+        // "commit whatever's currently highlighted" path a normal Q
+        // release takes, since there's no dedicated "cancel without
+        // acting" signal and this is a rare edge case (losing focus while
+        // mid-gesture), not the common dismissal path.
+        if isMarkingMenuActive {
+            isMarkingMenuActive = false
+            onMarkingMenuEnded?()
+        }
         return super.resignFirstResponder()
     }
 
     override func mouseDown(with event: NSEvent) {
+        // "Radial Marking Menu": a click while choosing a slice shouldn't
+        // also grab a gizmo handle or pick/deselect whatever's underneath
+        // the menu overlay.
+        guard !isMarkingMenuActive else { return }
         draggingGizmoAxis = nil
         let point = convert(event.locationInWindow, from: nil)
+        lastMouseLocation = point
 
         // "The Forge Palette": an armed placement takes over the click
         // entirely — no gizmo grab, no orbit, no picking, just "put the
@@ -236,8 +284,40 @@ final class InteractiveMTKView: MTKView {
         return true
     }
 
+    /// "Numbered Hotbar (1-9)": digit keys arm whatever's pinned to that
+    /// slot, same as clicking it in the Forge Palette — gated off during
+    /// Free Camera flight (no placement UI to arm while flying) and to
+    /// levels only (`PlacementInteractiveRenderer`; the standalone model
+    /// viewer has no palette/hotbar concept).
+    private func handleHotbarKeyPress(_ event: NSEvent) -> Bool {
+        guard renderer is PlacementInteractiveRenderer else { return false }
+        if let freeCameraRenderer = renderer as? FreeCameraRenderer, freeCameraRenderer.isFreeCameraMode { return false }
+        guard let key = event.charactersIgnoringModifiers, key.count == 1, let digit = Int(key), (1...9).contains(digit) else { return false }
+        onHotbarSlotPressed?(digit)
+        needsDisplay = true
+        return true
+    }
+
+    /// "Radial Marking Menu (hold Q)": gated off during Free Camera flight,
+    /// where Q already means descend — the two never conflict since
+    /// free-camera mode's own `keyDown` branch (below) returns before this
+    /// runs. Repeats are swallowed (the menu is already open, nothing to
+    /// re-trigger); `isARepeat` on the very first press is always false so
+    /// this still fires normally on a real key-down.
+    private func handleMarkingMenuKeyDown(_ event: NSEvent) -> Bool {
+        guard event.charactersIgnoringModifiers?.lowercased() == "q" else { return false }
+        if let freeCameraRenderer = renderer as? FreeCameraRenderer, freeCameraRenderer.isFreeCameraMode { return false }
+        guard !event.isARepeat else { return true }
+        isMarkingMenuActive = true
+        onMarkingMenuBegan?(lastMouseLocation)
+        needsDisplay = true
+        return true
+    }
+
     override func keyDown(with event: NSEvent) {
         if handleArrowKeyNudge(event) { return }
+        if handleHotbarKeyPress(event) { return }
+        if handleMarkingMenuKeyDown(event) { return }
         guard let key = event.charactersIgnoringModifiers?.lowercased() else {
             super.keyDown(with: event)
             return
@@ -280,6 +360,12 @@ final class InteractiveMTKView: MTKView {
     }
 
     override func keyUp(with event: NSEvent) {
+        if isMarkingMenuActive, event.charactersIgnoringModifiers?.lowercased() == "q" {
+            isMarkingMenuActive = false
+            onMarkingMenuEnded?()
+            needsDisplay = true
+            return
+        }
         guard let key = event.charactersIgnoringModifiers?.lowercased(), heldMovementKeys.remove(key) != nil else {
             super.keyUp(with: event)
             return
@@ -375,6 +461,10 @@ struct MetalModelView: NSViewRepresentable {
     var onGizmoModeChanged: (() -> Void)?
     var onObjectPicked: ((Int) -> Void)?
     var onObjectPlaced: ((Int) -> Void)?
+    var onHotbarSlotPressed: ((Int) -> Void)?
+    var onMarkingMenuBegan: ((CGPoint) -> Void)?
+    var onMarkingMenuMoved: ((CGPoint) -> Void)?
+    var onMarkingMenuEnded: (() -> Void)?
 
     func makeNSView(context: Context) -> InteractiveMTKView {
         let view = InteractiveMTKView(frame: .zero, device: renderer.device)
@@ -384,6 +474,10 @@ struct MetalModelView: NSViewRepresentable {
         view.onGizmoModeChanged = onGizmoModeChanged
         view.onObjectPicked = onObjectPicked
         view.onObjectPlaced = onObjectPlaced
+        view.onHotbarSlotPressed = onHotbarSlotPressed
+        view.onMarkingMenuBegan = onMarkingMenuBegan
+        view.onMarkingMenuMoved = onMarkingMenuMoved
+        view.onMarkingMenuEnded = onMarkingMenuEnded
         view.delegate = renderer
         view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float
@@ -421,5 +515,9 @@ struct MetalModelView: NSViewRepresentable {
         nsView.onGizmoModeChanged = onGizmoModeChanged
         nsView.onObjectPicked = onObjectPicked
         nsView.onObjectPlaced = onObjectPlaced
+        nsView.onHotbarSlotPressed = onHotbarSlotPressed
+        nsView.onMarkingMenuBegan = onMarkingMenuBegan
+        nsView.onMarkingMenuMoved = onMarkingMenuMoved
+        nsView.onMarkingMenuEnded = onMarkingMenuEnded
     }
 }

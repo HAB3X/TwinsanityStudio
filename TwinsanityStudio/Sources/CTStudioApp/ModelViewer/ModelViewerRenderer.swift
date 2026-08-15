@@ -1612,6 +1612,17 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     }
     var snapToGrid = true
     var gridSize: Float = 1.0
+    /// "Vertex Magnet-Snapping": while translating, snap the dragged axis
+    /// to align with the nearest *other* placement's same-axis coordinate
+    /// when within `magnetSnapThreshold` — catches the common "slide this
+    /// piece until it lines up with its neighbor" case even when the
+    /// neighbor's spacing isn't a clean multiple of `gridSize`. Scoped to
+    /// placement origins, not full per-polygon mesh vertices (searching
+    /// every visible object's whole resolved mesh on every drag frame
+    /// isn't practical at level scale); on by default, applied after grid
+    /// snap so an exact neighbor match wins over a merely grid-aligned one.
+    var magnetSnapEnabled = true
+    var magnetSnapThreshold: Float = 0.75
     /// Rotation snap step, in degrees — the rotate-mode equivalent of
     /// `gridSize`, gated by the same `snapToGrid` toggle.
     var rotationSnapDegrees: Float = 15.0
@@ -1678,6 +1689,13 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// highlighting), gated at draw time by `layerVisibility.contains(.collision)`.
     private var collisionFillBuffer: MTLBuffer?
     private var collisionFillVertexCount = 0
+    /// "Drop-to-Floor Placement": the same real, mirrored collision
+    /// triangles `rebuildCollisionFillBuffer` uploads to the GPU, kept
+    /// around CPU-side too so `placeObject` can raycast against the
+    /// level's actual walkable surface instead of an assumed flat ground
+    /// plane. Empty for scenery-only `.sm2` levels with no `ColData`, same
+    /// "nothing to draw/hit" posture as the fill buffer itself.
+    private var collisionTriangles: [(SIMD3<Float>, SIMD3<Float>, SIMD3<Float>)] = []
 
     /// Builds one combined interleaved position+color triangle buffer from
     /// every real `CollisionMesh` this level's file (and, when loaded, its
@@ -1693,6 +1711,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// as solid ground.
     private func rebuildCollisionFillBuffer(meshes: [CollisionMesh]) {
         var floats: [Float] = []
+        var triangles: [(SIMD3<Float>, SIMD3<Float>, SIMD3<Float>)] = []
         for mesh in meshes {
             for triangle in mesh.triangles {
                 guard triangle.vertexIndex1 < mesh.vertices.count,
@@ -1700,6 +1719,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                       triangle.vertexIndex3 < mesh.vertices.count
                 else { continue }
                 let color = ModelViewerRenderer.mutedColor(forSurfaceID: triangle.surfaceID)
+                var worldVerts: [SIMD3<Float>] = []
                 for index in [triangle.vertexIndex1, triangle.vertexIndex2, triangle.vertexIndex3] {
                     // "Coordinate-System Overhaul" — see the matching
                     // comment in `upload(collisionMesh:)`: same raw-vertex
@@ -1707,10 +1727,14 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                     // floor fill lines up with scenery/instances instead of
                     // drifting from the standalone Collision Viewer.
                     let v = mesh.vertices[index]
-                    floats.append(contentsOf: [-v.x, v.y, v.z, color.x, color.y, color.z])
+                    let world = SIMD3<Float>(-v.x, v.y, v.z)
+                    worldVerts.append(world)
+                    floats.append(contentsOf: [world.x, world.y, world.z, color.x, color.y, color.z])
                 }
+                triangles.append((worldVerts[0], worldVerts[1], worldVerts[2]))
             }
         }
+        collisionTriangles = triangles
         guard !floats.isEmpty else {
             collisionFillBuffer = nil
             collisionFillVertexCount = 0
@@ -1718,6 +1742,62 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         }
         collisionFillVertexCount = floats.count / 6
         collisionFillBuffer = device.makeBuffer(bytes: floats, length: floats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
+    }
+
+    /// Möller–Trumbore ray/triangle intersection — standard, well-known
+    /// algorithm (not a guess), used by "Drop-to-Floor Placement" to find
+    /// where a placement ray actually hits the level's real collision
+    /// geometry. Returns the intersection distance along `direction`
+    /// (`nil` if the ray misses the triangle or hits behind the origin).
+    private static func rayTriangleIntersection(origin: SIMD3<Float>, direction: SIMD3<Float>, v0: SIMD3<Float>, v1: SIMD3<Float>, v2: SIMD3<Float>) -> Float? {
+        let epsilon: Float = 1e-6
+        let edge1 = v1 - v0
+        let edge2 = v2 - v0
+        let pvec = simd_cross(direction, edge2)
+        let det = simd_dot(edge1, pvec)
+        guard abs(det) > epsilon else { return nil }
+        let invDet = 1 / det
+        let tvec = origin - v0
+        let u = simd_dot(tvec, pvec) * invDet
+        guard u >= 0, u <= 1 else { return nil }
+        let qvec = simd_cross(tvec, edge1)
+        let v = simd_dot(direction, qvec) * invDet
+        guard v >= 0, u + v <= 1 else { return nil }
+        let t = simd_dot(edge2, qvec) * invDet
+        guard t > epsilon else { return nil }
+        return t
+    }
+
+    /// "Drop-to-Floor Placement": casts the same screen-space ray
+    /// `worldPositionOnGroundPlane` unprojects, but against the level's
+    /// real, decoded collision triangles instead of an assumed flat plane
+    /// — the closest hit (smallest `t`) wins, so placing on a raised
+    /// platform lands on the platform, not the ground beneath it. `nil`
+    /// when there's no collision data for this level or the ray hits
+    /// nothing (e.g. aimed at open sky), letting the caller fall back to
+    /// the ground-plane heuristic.
+    func worldPositionOnCollisionMesh(at screenPoint: CGPoint, viewSize: CGSize) -> SIMD3<Float>? {
+        guard !collisionTriangles.isEmpty else { return nil }
+        let viewProjection = currentViewProjection(viewSize: viewSize)
+        let inverse = viewProjection.inverse
+        let ndcX = Float(screenPoint.x / max(viewSize.width, 1)) * 2 - 1
+        let ndcY = Float(screenPoint.y / max(viewSize.height, 1)) * 2 - 1
+
+        func unproject(ndcZ: Float) -> SIMD3<Float>? {
+            let clip = inverse * SIMD4<Float>(ndcX, ndcY, ndcZ, 1)
+            guard abs(clip.w) > 0.0001 else { return nil }
+            return SIMD3(clip.x, clip.y, clip.z) / clip.w
+        }
+        guard let nearPoint = unproject(ndcZ: 0), let farPoint = unproject(ndcZ: 1) else { return nil }
+        let direction = farPoint - nearPoint
+
+        var closestT: Float?
+        for (v0, v1, v2) in collisionTriangles {
+            guard let t = LevelViewerRenderer.rayTriangleIntersection(origin: nearPoint, direction: direction, v0: v0, v1: v1, v2: v2) else { continue }
+            if closestT == nil || t < closestT! { closestT = t }
+        }
+        guard let t = closestT else { return nil }
+        return nearPoint + direction * t
     }
 
     /// - Parameters:
@@ -3029,17 +3109,22 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         return nearPoint + direction * t
     }
 
-    /// "The Forge Palette": a `mouseDown` in placement mode (armed via
-    /// `pendingPlacementObjectID`) resolves to a world position on this
-    /// ground-plane heuristic — the level's own vertical center, the same
-    /// "no per-object size data to do better" reasoning `expandBounds`
-    /// already uses for scenery bounds — then spawns the object there and
-    /// disarms placement mode (one shot per palette click, matching how
-    /// dragging one item from the Models Hub places exactly one object).
+    /// "The Forge Palette" + "Drop-to-Floor Placement": a `mouseDown` in
+    /// placement mode (armed via `pendingPlacementObjectID`) first tries a
+    /// real ray hit against the level's actual collision mesh, so a new
+    /// object lands on the real walkable surface (a raised platform, not
+    /// the ground below it) — falling back to the flat ground-plane
+    /// heuristic only when there's no collision data or the ray hits
+    /// nothing, same "no per-object size data to do better" reasoning
+    /// `expandBounds` already uses for scenery bounds. Either way, spawns
+    /// the object there and disarms placement mode (one shot per palette
+    /// click, matching how dragging one item from the Models Hub places
+    /// exactly one object).
     @discardableResult
     func placeObject(at screenPoint: CGPoint, viewSize: CGSize) -> Int? {
-        guard let objectID = pendingPlacementObjectID,
-              let worldPosition = worldPositionOnGroundPlane(at: screenPoint, viewSize: viewSize, planeY: boundsCenter.y)
+        guard let objectID = pendingPlacementObjectID else { return nil }
+        guard let worldPosition = worldPositionOnCollisionMesh(at: screenPoint, viewSize: viewSize)
+            ?? worldPositionOnGroundPlane(at: screenPoint, viewSize: viewSize, planeY: boundsCenter.y)
         else { return nil }
         pendingPlacementObjectID = nil
         return spawnInstance(objectID: objectID, at: worldPosition)
@@ -3591,8 +3676,49 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             case .z: newPosition.z = snap(newPosition.z)
             }
         }
+        if magnetSnapEnabled {
+            newPosition = magnetSnappedPosition(newPosition, excluding: index, axis: axis)
+        }
         objects[index].worldPosition = newPosition
         rebuildGizmoBuffer()
+    }
+
+    /// See `magnetSnapEnabled`'s doc comment. Linear scan over `objects` —
+    /// fine at the level sizes this build handles (hundreds of placements),
+    /// and only runs once per drag-mouse-move event, not once per frame.
+    /// Not `private` so tests can exercise the snap math directly, without
+    /// needing to reproduce `dragTranslate`'s screen-space projection math
+    /// to land on an exact world-space delta — same reasoning as
+    /// `hasCollisionFill`'s own "exposed for testing" doc comment.
+    func magnetSnappedPosition(_ position: SIMD3<Float>, excluding index: Int, axis: GizmoAxis) -> SIMD3<Float> {
+        var best: (distance: Float, value: Float)?
+        for (otherIndex, other) in objects.enumerated() where otherIndex != index {
+            let otherAxisValue: Float
+            switch axis {
+            case .x: otherAxisValue = other.worldPosition.x
+            case .y: otherAxisValue = other.worldPosition.y
+            case .z: otherAxisValue = other.worldPosition.z
+            }
+            let currentAxisValue: Float
+            switch axis {
+            case .x: currentAxisValue = position.x
+            case .y: currentAxisValue = position.y
+            case .z: currentAxisValue = position.z
+            }
+            let axisDistance = abs(currentAxisValue - otherAxisValue)
+            guard axisDistance < magnetSnapThreshold else { continue }
+            if best == nil || axisDistance < best!.distance {
+                best = (axisDistance, otherAxisValue)
+            }
+        }
+        guard let best else { return position }
+        var snapped = position
+        switch axis {
+        case .x: snapped.x = best.value
+        case .y: snapped.y = best.value
+        case .z: snapped.z = best.value
+        }
+        return snapped
     }
 
     /// Same screen-space axis-projection technique as `dragTranslate`, but

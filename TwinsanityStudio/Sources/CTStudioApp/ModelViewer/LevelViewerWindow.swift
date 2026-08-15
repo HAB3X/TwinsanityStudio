@@ -176,6 +176,12 @@ enum LevelEditorMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// "Numbered Hotbar (1-9)": one Forge Palette entry pinned to a slot.
+struct HotbarEntry: Equatable {
+    let objectID: UInt16
+    let name: String
+}
+
 struct LevelViewerWindow: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.undoManager) private var undoManager
@@ -220,6 +226,7 @@ struct LevelViewerWindow: View {
     @State private var gizmoMode: GizmoMode = .translate
     @State private var snapToGrid = true
     @State private var gridSize: Double = 1.0
+    @State private var magnetSnapEnabled = true
     @State private var rotationSnapDegrees: Double = 15.0
     @State private var isDropTargeted = false
     /// "The Forge Palette" (Part 4C): non-nil while a palette pick is armed
@@ -229,6 +236,12 @@ struct LevelViewerWindow: View {
     /// the renderer itself is a plain class AppKit mutates directly, not an
     /// `ObservableObject`.
     @State private var armedPlacement: (objectID: UInt16, name: String)?
+    /// "Numbered Hotbar (1-9)": what's pinned to each of the 9 slots —
+    /// `nil` for an empty slot. Session-only, like `armedPlacement`; not
+    /// persisted to disk. Pinned from the Forge Palette (a small pin
+    /// button per row); pressing 1-9 in the viewport arms whatever's in
+    /// that slot, the same as clicking the palette row directly.
+    @State private var hotbarSlots: [HotbarEntry?] = Array(repeating: nil, count: 9)
     /// "Procedural Brush" (roadmap 8.6) — see `scatterSelected`'s doc
     /// comment.
     @State private var scatterCount: Double = 8
@@ -290,6 +303,7 @@ struct LevelViewerWindow: View {
             )
             renderer?.snapToGrid = snapToGrid
             renderer?.gridSize = Float(gridSize)
+            renderer?.magnetSnapEnabled = magnetSnapEnabled
             renderer?.rotationSnapDegrees = Float(rotationSnapDegrees)
             renderer?.layerVisibility = layerVisibility
         }
@@ -308,6 +322,29 @@ struct LevelViewerWindow: View {
     private func syncFromRenderer() {
         selectedIndex = renderer?.selectedObjectIndex
         refreshTransformFields()
+    }
+
+    /// "Numbered Hotbar (1-9)": pins an entry into the first empty slot,
+    /// or replaces slot 1 once every slot is full — the same "keep going,
+    /// don't block" posture as everything else in this palette (no error
+    /// state for "hotbar is full," just the oldest/first pin gets bumped).
+    private func pinToHotbar(objectID: UInt16, name: String) {
+        if let emptyIndex = hotbarSlots.firstIndex(where: { $0 == nil }) {
+            hotbarSlots[emptyIndex] = HotbarEntry(objectID: objectID, name: name)
+        } else {
+            hotbarSlots[0] = HotbarEntry(objectID: objectID, name: name)
+        }
+    }
+
+    /// Arms whatever's pinned to `slot` (1-9) for placement, identically to
+    /// clicking that entry in the Forge Palette — including switching to
+    /// Place mode, so pressing a hotbar key works from any sidebar tab, not
+    /// just while the palette is already open.
+    private func armHotbarSlot(_ slot: Int) {
+        guard hotbarSlots.indices.contains(slot - 1), let entry = hotbarSlots[slot - 1] else { return }
+        editorMode = .place
+        armedPlacement = (entry.objectID, entry.name)
+        renderer?.pendingPlacementObjectID = entry.objectID
     }
 
     @ViewBuilder
@@ -333,7 +370,8 @@ struct LevelViewerWindow: View {
                             refreshTransformFields()
                             registerPlacementUndo(index: index)
                             armedPlacement = nil
-                        }
+                        },
+                        onHotbarSlotPressed: { slot in armHotbarSlot(slot) }
                     )
                     // See `ModelViewerWindow`'s matching comment — a
                     // `maxWidth/maxHeight: .infinity`-only frame isn't a
@@ -372,6 +410,9 @@ struct LevelViewerWindow: View {
                             .padding(10)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     }
+                    hotbarRow
+                        .padding(.bottom, 10)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .dropDestination(for: String.self) { items, _ in
@@ -431,6 +472,47 @@ struct LevelViewerWindow: View {
         .buttonStyle(.borderless)
         .controlSize(.regular)
         .padding(8)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// "Numbered Hotbar (1-9)" — always-visible bottom-center strip, the
+    /// Minecraft/Forge-style quick-select this Level Viewer never had:
+    /// pin an entry from the Forge Palette, then press its digit anywhere
+    /// in the viewport to arm it instantly, without opening the palette
+    /// list and scrolling to find it again.
+    private var hotbarRow: some View {
+        HStack(spacing: 4) {
+            ForEach(1...9, id: \.self) { slot in
+                let entry = hotbarSlots[slot - 1]
+                Button {
+                    armHotbarSlot(slot)
+                } label: {
+                    VStack(spacing: 2) {
+                        Text("\(slot)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        if let entry {
+                            Text(entry.name)
+                                .font(.caption2)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                        } else {
+                            Image(systemName: "circle.dashed")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .frame(width: 52, height: 36)
+                }
+                .buttonStyle(.plain)
+                .disabled(entry == nil)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(armedPlacement?.objectID == entry?.objectID && entry != nil ? Color.accentColor.opacity(0.25) : Color.clear)
+                )
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
+                .help(entry != nil ? "Press \(slot) to place \(entry!.name)" : "Empty — pin an object here from the Forge Palette (Place mode)")
+            }
+        }
+        .padding(6)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
     }
 
@@ -549,7 +631,8 @@ struct LevelViewerWindow: View {
             placedThisSession: renderer?.pendingNewInstances.count ?? 0,
             canResolve: { renderer?.canResolveObjectID($0) },
             resolveForThumbnail: { renderer?.resolvedAsset(forObjectID: $0) },
-            searchText: $sidebarSearchText
+            searchText: $sidebarSearchText,
+            onPin: { objectID, name in pinToHotbar(objectID: objectID, name: name) }
         ) { objectID, name in
             armedPlacement = (objectID, name)
             renderer?.pendingPlacementObjectID = objectID
@@ -612,6 +695,7 @@ struct LevelViewerWindow: View {
                 controlLegendRow("Arrow keys", "Nudge the selection along X/Z")
                 controlLegendRow("⇧ + ↑ / ↓", "Nudge the selection along Y")
                 controlLegendRow("F", "Frame the current selection")
+                controlLegendRow("1-9", "Place whatever's pinned to that hotbar slot")
                 controlLegendRow("⌘D", "Duplicate the selected object")
                 controlLegendRow("Delete", "Delete the selected object")
                 controlLegendRow("⌘Z / ⌘⇧Z", "Undo / Redo")
@@ -1059,6 +1143,11 @@ struct LevelViewerWindow: View {
                 .toggleStyle(.checkbox)
                 .help("When on, dragging a gizmo handle rounds the edited value to the nearest snap step instead of moving freely.")
                 .onChange(of: snapToGrid) { _, newValue in renderer?.snapToGrid = newValue }
+
+            Toggle("Magnet Snap", isOn: $magnetSnapEnabled)
+                .toggleStyle(.checkbox)
+                .help("When on, dragging a piece close to another placement's position snaps it into exact alignment on that axis — catches spacing a grid snap alone can't.")
+                .onChange(of: magnetSnapEnabled) { _, newValue in renderer?.magnetSnapEnabled = newValue }
 
             HStack {
                 Text("Grid Size")
@@ -1697,6 +1786,12 @@ private struct ForgePaletteView: View {
     /// entry point stays in sync with the other. Declared before `onArm`
     /// so trailing-closure call syntax still works at the call site.
     @Binding var searchText: String
+    /// "Numbered Hotbar (1-9)": pins this entry into the next free hotbar
+    /// slot — a separate action from `onArm` (clicking the row itself
+    /// still arms placement immediately, unchanged) so pinning doesn't
+    /// require placing one first. Declared before `onArm` so `onArm` stays
+    /// the trailing closure at the call site.
+    let onPin: (UInt16, String) -> Void
     let onArm: (UInt16, String) -> Void
 
     @State private var selectedCategory: DefaultObjectID.Category?
@@ -1753,20 +1848,30 @@ private struct ForgePaletteView: View {
 
             List(filteredEntries, id: \.id) { entry in
                 let resolvable = canResolve(entry.id) ?? true
-                Button {
-                    onArm(entry.id, entry.name)
-                } label: {
-                    HStack {
-                        paletteThumbnail(for: entry.id, resolvable: resolvable)
-                            .frame(width: 28, height: 28)
-                            .onAppear { loadThumbnailIfNeeded(for: entry.id) }
-                        Text(entry.name).lineLimit(1).font(.caption)
-                            .foregroundStyle(resolvable ? .primary : .secondary)
-                        Spacer()
-                        Text("#\(entry.id)").font(.caption2).foregroundStyle(.tertiary)
+                HStack {
+                    Button {
+                        onArm(entry.id, entry.name)
+                    } label: {
+                        HStack {
+                            paletteThumbnail(for: entry.id, resolvable: resolvable)
+                                .frame(width: 28, height: 28)
+                                .onAppear { loadThumbnailIfNeeded(for: entry.id) }
+                            Text(entry.name).lineLimit(1).font(.caption)
+                                .foregroundStyle(resolvable ? .primary : .secondary)
+                            Spacer()
+                            Text("#\(entry.id)").font(.caption2).foregroundStyle(.tertiary)
+                        }
                     }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        onPin(entry.id, entry.name)
+                    } label: {
+                        Image(systemName: "pin.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Pin to the numbered hotbar (next open 1-9 slot)")
                 }
-                .buttonStyle(.plain)
             }
             .frame(height: 220)
             .listStyle(.bordered)
