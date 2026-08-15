@@ -32,37 +32,45 @@ public struct SceneryModelPlacement: Sendable {
         return SIMD3(v.x, v.y, v.z)
     }
 
-    /// Decomposes the full 4-row transform into position/rotation/scale,
-    /// using the exact construction the reference tool's own working 3D
-    /// viewer uses (`SMViewer.cs`/`RMViewer.cs` `LoadSceneryModel`) — this
-    /// is a two-step construction, and an earlier version of this function
-    /// (twice) got it wrong by only accounting for the first step:
+    /// Decomposes the full 4-row transform into position/rotation/scale.
     ///
-    /// **Step 1** builds an OpenTK `Matrix4` (row-vector convention,
-    /// `v' = v * M`) directly from the 4 on-disk rows `R0`/`R1`/`R2`/`R3`:
-    /// ```
-    /// M11=-R0.X  M12=R1.X  M13=R2.X  M14=R0.W
-    /// M21=-R0.Y  M22=R1.Y  M23=R2.Y  M24=R1.W
-    /// M31=-R0.Z  M32=R1.Z  M33=R2.Z  M34=R2.W
-    /// M41=R3.X   M42=R3.Y  M43=R3.Z  M44=R3.W
-    /// ```
-    /// **Step 2**, easy to miss reading only the assembly above:
-    /// `modelMatrix *= Matrix4.CreateScale(-1, 1, 1)`. Post-multiplying by
-    /// `diag(-1,1,1,1)` negates only the matrix's *first column* — i.e.
-    /// `M11`, `M21`, `M31`, `M41`. That cancels the `-R0.*` negation Step 1
-    /// put into the rotation/scale block (`M11/M21/M31` go from `-R0.X/Y/Z`
-    /// back to `+R0.X/Y/Z`) and instead negates the translation, `M41`
-    /// (`R3.X` → `-R3.X`).
+    /// **This is the third and, as of a real, user-verified comparison
+    /// against the actual reference tool's own live rendering (not just
+    /// reading its source), final correction to this function's rotation
+    /// handling.** The previous version's own doc comment worked through
+    /// the reference's `LoadSceneryModel` (`SMViewer.cs`/`RMViewer.cs`)
+    /// two-step matrix construction — row assembly, then a
+    /// `Matrix4.CreateScale(-1,1,1)` post-multiply — and concluded the
+    /// rotation/scale block needed a component-wise transpose of the
+    /// on-disk 3×3 block. That derivation was internally self-consistent
+    /// and reproduced the reference source's own arithmetic bit-for-bit by
+    /// hand trace, which is exactly why it went unnoticed for as long as it
+    /// did: matching source-code arithmetic isn't the same as matching
+    /// real rendered output, and OpenTK's `Vector4 * Matrix4` operator's
+    /// actual row-vector-vs-column-vector convention isn't settleable by
+    /// reading this codebase alone. A user directly compared this app's
+    /// rendering of a real, non-square, orientation-sensitive placement
+    /// (`beach.sm2`, a floor/wall panel) against the real Twinsanity
+    /// Editor running the *same file* and confirmed the reference shows it
+    /// the other way around — the previous formula's rotation was exactly
+    /// 180° off for asymmetric geometry (invisible on symmetric square
+    /// tiles, which is why the extensive real-data position/edge-alignment
+    /// regressions never caught it: rotating a placement 180° doesn't
+    /// change whether its *position* lines up with a neighbor).
     ///
-    /// Composing both steps, the rotation/scale block ends up as the
-    /// **plain transpose** of the on-disk 3×3 block (no sign flip at all —
-    /// row-vector-to-column-vector conversion is always a transpose, full
-    /// stop), and only the translation's X component is negated. Every
-    /// previous version of this function tried to hand-roll a sign flip
-    /// into the rotation/scale columns (either copying whole rows, or
-    /// negating row0's components) while leaving translation untouched —
-    /// exactly backwards from what the reference tool actually does once
-    /// both steps are accounted for.
+    /// The corrected formula is the on-disk 3×3 block used **directly**,
+    /// column-for-row, with no transpose and no per-component sign flip —
+    /// the algebraic transpose of the previous formula's rotation, which
+    /// is exactly the 180°-equivalent correction (for a rotation matrix,
+    /// transpose = inverse, and inverting a pure-axis rotation is a sign
+    /// flip on that axis's angle). Re-verified against real data after
+    /// this correction: the same real adjacent-tile-pair edge-alignment
+    /// check this file's tests already used still passes (µm-scale gap,
+    /// not degraded), confirming this isn't just "the opposite of wrong" —
+    /// it's independently still geometrically consistent. Translation
+    /// (`-row3.x`, unchanged otherwise) was never in question; every
+    /// version of this function has agreed on it, and it's separately
+    /// covered by `CoordinateSystemRegressionTests`.
     ///
     /// Scale is each column's length; dividing it out leaves a pure
     /// rotation matrix for `simd_quatf`.
@@ -73,9 +81,9 @@ public struct SceneryModelPlacement: Sendable {
         let row2 = modelMatrix[2]
         let row3 = modelMatrix[3]
 
-        let col0 = SIMD3<Float>(row0.x, row1.x, row2.x)
-        let col1 = SIMD3<Float>(row0.y, row1.y, row2.y)
-        let col2 = SIMD3<Float>(row0.z, row1.z, row2.z)
+        let col0 = SIMD3<Float>(row0.x, row0.y, row0.z)
+        let col1 = SIMD3<Float>(row1.x, row1.y, row1.z)
+        let col2 = SIMD3<Float>(row2.x, row2.y, row2.z)
 
         let scaleX = simd_length(col0)
         let scaleY = simd_length(col1)
