@@ -327,4 +327,51 @@ final class WOCContainerParserTests: XCTestCase {
         let consumed = 16 + file.sections.reduce(0) { $0 + Int($1.length) }
         XCTAssertEqual(consumed, decoded.count)
     }
+
+    /// End-to-end regression: decompress a real WoC level and decode every
+    /// section this module currently understands, checking that they
+    /// agree with each other exactly where they're supposed to (NTBL
+    /// names, MS00/IABL/INST/SPEC record counts, the INST<->OBJ0 index
+    /// relationship, SPEC<->INST matrix identity, and a real texture).
+    /// This is the safety net for the whole pipeline: if any single piece
+    /// regresses, this test is the one most likely to catch it, since it
+    /// exercises them all together against one real file rather than in
+    /// isolation.
+    func testRealAirshipGSCFullPipelineIsInternallyConsistent() throws {
+        let decoded = try loadAndDecompressRealGSC("A/AIRSHIP/AIRSHIP.GSC")
+        let file = try WOCContainerParser.parse(decoded)
+        XCTAssertEqual(file.sections.map(\.tag), ["NTBL", "TST0", "MS00", "OBJ0", "INST", "SPEC", "SST0"])
+
+        let ntbl = try XCTUnwrap(file.sections.first { $0.tag == "NTBL" })
+        let (names, _) = try WOCContainerParser.parseNameTable(ntbl.payload)
+        XCTAssertEqual(names, ["target_red", "target_red_a", "target_white", "target_white_a", "cannon"])
+
+        let ms00 = try XCTUnwrap(file.sections.first { $0.tag == "MS00" })
+        let (ms00Records, ms00Width) = try WOCContainerParser.parseMeshSet(ms00.payload)
+        XCTAssertEqual(ms00Records.count, 57)
+        XCTAssertEqual(ms00Width, 464)
+
+        let obj0 = try XCTUnwrap(file.sections.first { $0.tag == "OBJ0" })
+        let obj0Count = try WOCContainerParser.leadingCount(obj0.payload)
+        XCTAssertEqual(obj0Count, 41)
+
+        let inst = try XCTUnwrap(file.sections.first { $0.tag == "INST" })
+        let instances = try WOCContainerParser.parseInstances(inst.payload)
+        XCTAssertEqual(instances.count, 41)
+        XCTAssertEqual(Set(instances.map(\.objectIndex)), Set(0..<UInt32(obj0Count)))
+
+        let spec = try XCTUnwrap(file.sections.first { $0.tag == "SPEC" })
+        let specRecords = try WOCContainerParser.parseSpecRecords(spec.payload)
+        XCTAssertEqual(specRecords.count, 5)
+        for record in specRecords {
+            let referenced = instances[Int(record.referencedInstanceIndex)]
+            XCTAssertTrue(matricesEqual(record.matrix, referenced.matrix))
+        }
+
+        let tst0 = try XCTUnwrap(file.sections.first { $0.tag == "TST0" })
+        let textures = WOCContainerParser.scanTextureEntries(tst0.payload)
+        XCTAssertFalse(textures.isEmpty)
+        XCTAssertEqual(textures[0].width, 128)
+        XCTAssertEqual(textures[0].height, 64)
+    }
 }
