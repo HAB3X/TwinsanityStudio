@@ -271,6 +271,20 @@ final class WOCContainerParserTests: XCTestCase {
         XCTAssertEqual(first.texelDataRange.count, 32768)
     }
 
+    /// `SST0` is always the last section (a footer). Confirmed here: its
+    /// outer blob-length field correctly splits the payload, and in
+    /// files that have the 12-byte trailer variant, the trailer's last
+    /// field echoes this section's own outer container length back.
+    func testRealSST0FooterEchoesOwnSectionLength() throws {
+        let decoded = try loadAndDecompressRealGSC("A/FARM/FARM.GSC")
+        let file = try WOCContainerParser.parse(decoded)
+        let sst0 = try XCTUnwrap(file.sections.first { $0.tag == "SST0" })
+        let (_, _, trailer) = try WOCContainerParser.parseFooterHeader(sst0.payload)
+        XCTAssertEqual(trailer.count, 12)
+        let echoedLength = trailer.suffix(4).withUnsafeBytes { $0.load(as: UInt32.self) }
+        XCTAssertEqual(echoedLength, sst0.length, "SST0 trailer should echo its own section length")
+    }
+
     func testRealCastleCGSCSectionChainCoversWholeFile() throws {
         let decoded = try loadAndDecompressRealGSC("A/CASTLE_C/CASTLE_C.GSC")
         let file = try WOCContainerParser.parse(decoded)

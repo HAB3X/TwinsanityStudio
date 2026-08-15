@@ -41,32 +41,55 @@ import Foundation
 /// present in `HUB.GSC`/`CASTLE_C.GSC`), `OBJ0`, `INST`, `IABL`/`ALIB`
 /// (also present-in-some/absent-in-others), `SPEC`, `SST0` (always last).
 ///
-/// **Decoded so far:**
+/// **Decoded so far** (this list has grown across several sessions --
+/// including a real self-correction, see `INST` below, from a broad
+/// 54-file sweep that overturned an earlier 2-file-verified claim):
 /// - `NTBL` (name table) -- see ``parseNameTable(_:)``. Fully decoded: a
 ///   byte-length-prefixed blob of null-terminated names. The trailer bytes
 ///   between the name blob and the next section are not understood (their
 ///   length varies non-trivially and doesn't reduce to a formula from the
 ///   name list alone).
 /// - `MS00` -- see ``parseMeshSet(_:)``. Confirmed to be `count` fixed
-///   464-byte records (exact division verified across 4 real files of very
-///   different sizes). Record internals not decoded.
+///   464-byte records (exact division verified universally across the
+///   full 54-file corpus, zero exceptions). Record internals not decoded.
+/// - `IABL` -- see ``parseAttributeBlock(_:)``. Same framing, confirmed
+///   fixed 96-byte records across 3 files. Sibling `ALIB` was explicitly
+///   tested and ruled out as fixed-width (different widths per file).
 /// - `INST` (placed object instances) -- see ``parseInstances(_:)`` and
-///   ``Instance``. Fully decoded and the strongest result so far: each of
-///   the 80-byte records is a real 4x4 world transform. Confirmed 3 ways:
-///   (1) the record width divides cleanly and identically across files,
-///   (2) a per-instance index field exactly matches that instance's own
-///   array position with 0 mismatches across 564 real instances in 2
-///   files, (3) plotting the decoded translations for 4 real levels
-///   produces recognizable level layouts (e.g. `CASTLE_C.GSC`'s clear
-///   cross-shaped corridor), not noise.
-/// - `TST0`, `OBJ0`, `TAS0`, `IABL`, `ALIB`, `SPEC`, `SST0` -- not decoded.
-///   `OBJ0`'s count matches `INST`'s count in both files checked
-///   (suggesting a 1:1 correspondence, e.g. per-instance mesh/material
-///   data) but it is NOT a fixed-width record table like `MS00`/`INST`
-///   (average ~9.7KB/entry in the `AIRSHIP.GSC` sample, with no offset
-///   table found at its start) -- likely the next highest-value target,
-///   left for a future session rather than guessed at under time
-///   pressure.
+///   ``Instance``. The 80-byte records are real 4x4 world transforms
+///   (`w == 1.0` universally, translations plot into recognizable real
+///   level layouts, e.g. `CASTLE_C.GSC`'s cross-shaped corridor). The
+///   tail's first field is a confirmed reference into `OBJ0` (see
+///   ``Instance/objectIndex`` for the full story, including a real
+///   correction after an initial 2-file check accidentally verified the
+///   wrong property).
+/// - `SPEC` -- see ``parseSpecRecords(_:)`` and ``SpecRecord``. Same
+///   80-byte record shape as `INST`, but a curated, strictly-increasing
+///   pointer-list *into* `INST` -- each record's matrix is byte-identical
+///   to the `INST` record it references (verified for every record in 7
+///   files, not sampled).
+/// - `TST0` -- see ``parseTextureEntry(_:trailerOffset:)`` and
+///   ``scanTextureEntries(_:)``. Not a record table at all: a serialized
+///   PS2 Graphics Synthesizer texture-upload command stream. The per-entry
+///   size/width/height math is confirmed exactly on 201 real entries
+///   across 6 files, but the entry-boundary *scan* is a documented
+///   heuristic, not a complete parser (misses some entries, and one file
+///   uses an unhandled variant -- see that function's doc comment).
+/// - `SST0` (always the last section) -- see ``parseFooterHeader(_:)``.
+///   Outer shape confirmed (`A:u32` + `B:u32` blob-length + blob + small
+///   trailer), and in 3 of 5 files checked the trailer's last field
+///   exactly echoes the section's own outer `length` field back -- but
+///   this exact trailer shape is absent or different in the other files
+///   (one file's `SST0` is entirely empty), so it's real but not
+///   universal. Blob internals unresolved.
+/// - `OBJ0`, `TAS0`, `ALIB` -- not decoded. `OBJ0` is the next
+///   highest-value target: its per-entry format holds real embedded mesh
+///   geometry (a 16-byte vertex quadword pattern was confirmed and
+///   visually verified -- see ``parseVertexQuadwords(_:byteOffset:count:)``),
+///   and its `count` is now confirmed (54-file sweep) to be exactly the
+///   number of distinct objects `INST` instances reference -- but entry
+///   *boundaries* within `OBJ0` are still unsolved (no offset table or
+///   self-length-prefix found).
 ///
 /// Every section not listed above as decoded is exposed as raw
 /// ``WOCSection/payload`` bytes rather than guessed at.
@@ -546,6 +569,38 @@ public enum WOCContainerParser {
             offset += 4
         }
         return entries
+    }
+
+    /// Decodes an `SST0` section's outer shape (`SST0` is always the last
+    /// section in the file, i.e. a "footer"). CONFIRMED across the files
+    /// checked: `blobLength:u32` at payload offset 4 exactly accounts for
+    /// a byte range (`blob = payload[8..<8+blobLength]`), with whatever
+    /// remains after that (`trailer`) always a small handful of bytes,
+    /// never garbage-length.
+    ///
+    /// One recurring but NOT universal pattern worth flagging for a future
+    /// session: in 3 of 5 files checked (`FARM.GSC`, `HUB.GSC`,
+    /// `EARTH_B.GSC`), the trailer is exactly 12 bytes and its *last* 4
+    /// bytes exactly equal this `SST0` section's own outer `length` field
+    /// from the top-level container header (echoing the section's total
+    /// size back into its own footer) -- independently re-verified before
+    /// documenting this, not just taken from an agent report. But
+    /// `CASTLE_C.GSC` has a shorter 8-byte trailer with no such echo,
+    /// `JUNGLE_A.GSC` has no trailer at all (the blob accounts for every
+    /// remaining byte), and `AIRSHIP.GSC`'s entire `SST0` is degenerate
+    /// (`firstField`/`blobLength` both `0`, no blob, no trailer). So this
+    /// function only decodes the confirmed outer split; the trailer-echo
+    /// pattern is documented but not enforced/parsed, since it isn't
+    /// universal.
+    public static func parseFooterHeader(_ payload: Data) throws -> (firstField: UInt32, blob: Data, trailer: Data) {
+        let bytes = [UInt8](payload)
+        guard bytes.count >= 8 else { return (0, Data(), Data()) }
+        let firstField = leUInt32(bytes, 0)
+        let blobLength = Int(leUInt32(bytes, 4))
+        guard 8 + blobLength <= bytes.count else { throw ParseError.truncated }
+        let blob = Data(bytes[8..<(8 + blobLength)])
+        let trailer = Data(bytes[(8 + blobLength)...])
+        return (firstField, blob, trailer)
     }
 
     // MARK: - helpers
