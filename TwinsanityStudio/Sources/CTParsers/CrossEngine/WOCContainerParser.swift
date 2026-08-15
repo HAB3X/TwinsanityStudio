@@ -210,9 +210,14 @@ public enum WOCContainerParser {
         /// mismatches across `AIRSHIP.GSC` (41 instances) and `FARM.GSC`
         /// (523 instances)) -- not inferred, directly cross-checked.
         public let index: UInt32
-        /// Varies per instance (seen values: mostly `5`, occasionally
-        /// `4` in the samples checked). Plausibly a mesh-set/type
-        /// reference into `MS00`, but that link is not yet confirmed --
+        /// Only ever `4` or `5` across all 564 real instances checked in
+        /// 2 files -- both values are valid `MS00` record indices in both
+        /// files (57 and 69 `MS00` records respectively), so a direct
+        /// "which `MS00` mesh does this instance use" reference is
+        /// plausible on bounds alone, but a real per-level object palette
+        /// should reference far more than 2 distinct meshes; a value this
+        /// narrow reads more like a small type/category enum than a
+        /// general mesh index. Neither interpretation is confirmed --
         /// treat as an opaque tag for now.
         public let typeOrMeshIndex: UInt32
         /// Zero for the vast majority of real instances (502/523 in the
