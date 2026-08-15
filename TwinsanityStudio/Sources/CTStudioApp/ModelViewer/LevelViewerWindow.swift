@@ -242,6 +242,15 @@ struct LevelViewerWindow: View {
     /// button per row); pressing 1-9 in the viewport arms whatever's in
     /// that slot, the same as clicking the palette row directly.
     @State private var hotbarSlots: [HotbarEntry?] = Array(repeating: nil, count: 9)
+    /// "Radial Marking Menu (hold Q)": non-nil while the menu is open, the
+    /// AppKit view-point (bottom-left origin, matching `MetalModelView`'s
+    /// own coordinate space) where Q went down — the menu's own center.
+    /// `nil` hides the overlay entirely.
+    @State private var markingMenuCenter: CGPoint?
+    /// The cursor's current position (same coordinate space as
+    /// `markingMenuCenter`), updated on every `mouseMoved` while the menu
+    /// is held — the delta between the two drives which slice highlights.
+    @State private var markingMenuCurrentPoint: CGPoint = .zero
     /// "Procedural Brush" (roadmap 8.6) — see `scatterSelected`'s doc
     /// comment.
     @State private var scatterCount: Double = 8
@@ -347,6 +356,108 @@ struct LevelViewerWindow: View {
         renderer?.pendingPlacementObjectID = entry.objectID
     }
 
+    /// "Radial Marking Menu (hold Q)": generic, always-available quick
+    /// actions on the current selection — the same four actions
+    /// `selectionHUD` already exposes, reachable without moving the mouse
+    /// to the corner of the viewport. Not layer-specific (a Trigger vs. an
+    /// Instance vs. a Camera all get the same four slices) since this
+    /// build has no decoded game-logic data to make a genuinely different
+    /// per-type action set honest, rather than invented.
+    private struct MarkingMenuAction {
+        let icon: String
+        let label: String
+        let isEnabled: Bool
+        let perform: () -> Void
+    }
+
+    private var markingMenuActions: [MarkingMenuAction] {
+        [
+            MarkingMenuAction(icon: "plus.square.on.square", label: "Duplicate", isEnabled: canDuplicateSelected) { duplicateSelected() },
+            MarkingMenuAction(icon: "trash", label: "Delete", isEnabled: canDeleteSelected) { deleteSelected() },
+            MarkingMenuAction(icon: "camera.viewfinder", label: "Copy Viewer Pos", isEnabled: selectedIndex != nil) { copyViewerPositionToSelected() },
+            MarkingMenuAction(icon: "viewfinder", label: "Frame Selection", isEnabled: true) { renderer?.resetView() },
+        ]
+    }
+
+    /// Which slice the cursor is currently over, or `nil` in the small
+    /// dead zone right at the center (so a barely-moved cursor doesn't
+    /// commit to whatever slice happens to contain the origin). A free
+    /// function (not a computed property) specifically so it's directly
+    /// unit-testable without a live view/`@State` — this codebase has been
+    /// burned repeatedly this session by rotation/angle sign errors that
+    /// "looked right" under hand-tracing alone, so this one gets a real
+    /// test instead of trusting the derivation.
+    ///
+    /// Both points are in AppKit's own y-up view space; the angle math
+    /// stays entirely in that space and converts to screen-clockwise
+    /// internally (`dyScreen = -dy`) — the caller never needs to think
+    /// about SwiftUI's y-down drawing coordinates, only `markingMenuOverlay`'s
+    /// drawing code does, and that's kept in the same convention (clockwise
+    /// from straight up / 12 o'clock) so the highlighted slice always
+    /// visually agrees with where the cursor actually is.
+    static func markingMenuSliceIndex(center: CGPoint, current: CGPoint, sliceCount: Int, deadZoneRadius: Double = 14) -> Int? {
+        guard sliceCount > 0 else { return nil }
+        let dx = Double(current.x - center.x)
+        let dyScreen = -Double(current.y - center.y) // AppKit is y-up; screen-clockwise math is y-down
+        guard hypot(dx, dyScreen) > deadZoneRadius else { return nil }
+        let theta = atan2(dyScreen, dx) // 0 = east, -pi/2 = up (north); increasing = clockwise on screen
+        let sliceSize = 2 * Double.pi / Double(sliceCount)
+        var shifted = (theta + .pi / 2 + sliceSize / 2).truncatingRemainder(dividingBy: 2 * .pi)
+        if shifted < 0 { shifted += 2 * .pi }
+        return Int(shifted / sliceSize) % sliceCount
+    }
+
+    private var markingMenuHighlightedIndex: Int? {
+        guard let markingMenuCenter else { return nil }
+        return Self.markingMenuSliceIndex(center: markingMenuCenter, current: markingMenuCurrentPoint, sliceCount: markingMenuActions.count)
+    }
+
+    private func executeHighlightedMarkingMenuAction() {
+        guard let index = markingMenuHighlightedIndex, markingMenuActions.indices.contains(index) else { return }
+        let action = markingMenuActions[index]
+        guard action.isEnabled else { return }
+        action.perform()
+    }
+
+    /// Radial pie overlay, positioned via `GeometryReader` so it can
+    /// convert `markingMenuCenter`'s AppKit (y-up) point into this
+    /// overlay's own SwiftUI (y-down) drawing space using the viewport's
+    /// actual current size, rather than assuming one.
+    @ViewBuilder
+    private var markingMenuOverlay: some View {
+        if let markingMenuCenter {
+            GeometryReader { geo in
+                let center = CGPoint(x: markingMenuCenter.x, y: geo.size.height - markingMenuCenter.y)
+                let radius: CGFloat = 70
+                let highlighted = markingMenuHighlightedIndex
+                ZStack {
+                    Circle()
+                        .fill(Color.black.opacity(0.35))
+                        .frame(width: radius * 2 + 44, height: radius * 2 + 44)
+                        .position(center)
+                    ForEach(Array(markingMenuActions.enumerated()), id: \.offset) { index, action in
+                        let sliceAngle = 2 * Double.pi / Double(markingMenuActions.count)
+                        let angle = -Double.pi / 2 + Double(index) * sliceAngle
+                        let itemCenter = CGPoint(x: center.x + radius * CGFloat(cos(angle)), y: center.y + radius * CGFloat(sin(angle)))
+                        VStack(spacing: 3) {
+                            Image(systemName: action.icon)
+                            Text(action.label).font(.caption2)
+                        }
+                        .foregroundStyle(action.isEnabled ? .white : .white.opacity(0.35))
+                        .padding(8)
+                        .background(Circle().fill(highlighted == index ? Color.accentColor : Color.black.opacity(0.55)))
+                        .position(itemCenter)
+                    }
+                    Circle()
+                        .fill(Color.white.opacity(0.9))
+                        .frame(width: 6, height: 6)
+                        .position(center)
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
     @ViewBuilder
     private var viewportArea: some View {
         if let renderer {
@@ -371,7 +482,16 @@ struct LevelViewerWindow: View {
                             registerPlacementUndo(index: index)
                             armedPlacement = nil
                         },
-                        onHotbarSlotPressed: { slot in armHotbarSlot(slot) }
+                        onHotbarSlotPressed: { slot in armHotbarSlot(slot) },
+                        onMarkingMenuBegan: { point in
+                            markingMenuCenter = point
+                            markingMenuCurrentPoint = point
+                        },
+                        onMarkingMenuMoved: { point in markingMenuCurrentPoint = point },
+                        onMarkingMenuEnded: {
+                            executeHighlightedMarkingMenuAction()
+                            markingMenuCenter = nil
+                        }
                     )
                     // See `ModelViewerWindow`'s matching comment — a
                     // `maxWidth/maxHeight: .infinity`-only frame isn't a
@@ -413,6 +533,7 @@ struct LevelViewerWindow: View {
                     hotbarRow
                         .padding(.bottom, 10)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    markingMenuOverlay
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .dropDestination(for: String.self) { items, _ in
@@ -696,6 +817,7 @@ struct LevelViewerWindow: View {
                 controlLegendRow("⇧ + ↑ / ↓", "Nudge the selection along Y")
                 controlLegendRow("F", "Frame the current selection")
                 controlLegendRow("1-9", "Place whatever's pinned to that hotbar slot")
+                controlLegendRow("Hold Q", "Radial marking menu — release on a slice to run it")
                 controlLegendRow("⌘D", "Duplicate the selected object")
                 controlLegendRow("Delete", "Delete the selected object")
                 controlLegendRow("⌘Z / ⌘⇧Z", "Undo / Redo")
