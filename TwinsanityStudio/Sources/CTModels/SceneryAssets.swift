@@ -34,43 +34,59 @@ public struct SceneryModelPlacement: Sendable {
 
     /// Decomposes the full 4-row transform into position/rotation/scale.
     ///
-    /// **This is the third and, as of a real, user-verified comparison
-    /// against the actual reference tool's own live rendering (not just
-    /// reading its source), final correction to this function's rotation
-    /// handling.** The previous version's own doc comment worked through
-    /// the reference's `LoadSceneryModel` (`SMViewer.cs`/`RMViewer.cs`)
-    /// two-step matrix construction — row assembly, then a
-    /// `Matrix4.CreateScale(-1,1,1)` post-multiply — and concluded the
-    /// rotation/scale block needed a component-wise transpose of the
-    /// on-disk 3×3 block. That derivation was internally self-consistent
-    /// and reproduced the reference source's own arithmetic bit-for-bit by
-    /// hand trace, which is exactly why it went unnoticed for as long as it
-    /// did: matching source-code arithmetic isn't the same as matching
-    /// real rendered output, and OpenTK's `Vector4 * Matrix4` operator's
-    /// actual row-vector-vs-column-vector convention isn't settleable by
-    /// reading this codebase alone. A user directly compared this app's
-    /// rendering of a real, non-square, orientation-sensitive placement
-    /// (`beach.sm2`, a floor/wall panel) against the real Twinsanity
-    /// Editor running the *same file* and confirmed the reference shows it
-    /// the other way around — the previous formula's rotation was exactly
-    /// 180° off for asymmetric geometry (invisible on symmetric square
-    /// tiles, which is why the extensive real-data position/edge-alignment
-    /// regressions never caught it: rotating a placement 180° doesn't
-    /// change whether its *position* lines up with a neighbor).
+    /// **Fourth correction to this function's rotation handling — this one
+    /// grounded in reading OpenTK's actual `Vector4`/`Matrix4` operator
+    /// source, not hand-tracing/assuming its convention.** Every earlier
+    /// attempt (see git history / this file's prior revisions) got as far
+    /// as correctly hand-tracing `LoadSceneryModel`'s (`SMViewer.cs`/
+    /// `RMViewer.cs`) two-step matrix construction — row assembly with
+    /// `row0` negated per-component, then a `Matrix4.CreateScale(-1,1,1)`
+    /// post-multiply — and stopped there, since that construction alone
+    /// *looks* fully sufficient to derive the answer. It isn't: it only
+    /// tells you what bytes end up in OpenTK's `Matrix4`, not how that
+    /// matrix actually gets applied to a vertex, and those two things use
+    /// *different* row/column conventions in this specific library.
     ///
-    /// The corrected formula is the on-disk 3×3 block used **directly**,
-    /// column-for-row, with no transpose and no per-component sign flip —
-    /// the algebraic transpose of the previous formula's rotation, which
-    /// is exactly the 180°-equivalent correction (for a rotation matrix,
-    /// transpose = inverse, and inverting a pure-axis rotation is a sign
-    /// flip on that axis's angle). Re-verified against real data after
-    /// this correction: the same real adjacent-tile-pair edge-alignment
-    /// check this file's tests already used still passes (µm-scale gap,
-    /// not degraded), confirming this isn't just "the opposite of wrong" —
-    /// it's independently still geometrically consistent. Translation
-    /// (`-row3.x`, unchanged otherwise) was never in question; every
-    /// version of this function has agreed on it, and it's separately
-    /// covered by `CoordinateSystemRegressionTests`.
+    /// Working through the construction (verified against the live
+    /// `opentk/opentk` 3.x source, not recalled from memory): after both
+    /// steps, OpenTK's `modelMatrix` ends up with **columns** equal to the
+    /// on-disk rows (`Column0 = row0`, `Column1 = row1`, `Column2 = row2`)
+    /// — i.e. numerically the transpose of the on-disk 3×3 block. That's
+    /// exactly what the *previous* version of this function built via
+    /// `simd_float3x3(columns: (row0, row1, row2))`, and exactly why it
+    /// looked so thoroughly verified (it correctly reproduces OpenTK's own
+    /// matrix, bit for bit) while still being wrong.
+    ///
+    /// The missing piece: `SMViewer.cs` transforms each vertex with
+    /// `vertexPos *= modelMatrix` — `Vector4 operator*(Vector4, Matrix4)`,
+    /// which OpenTK's own source implements as **row-vector** multiply
+    /// (`result = vec * mat`, dotting `vec` against `mat`'s *columns*), not
+    /// `Matrix4 * Vector4`'s column-vector form (OpenTK ships both, with
+    /// different math — the ambiguity a previous version of this comment
+    /// correctly flagged as unresolvable from reading only the call site).
+    /// simd's `matrix * vector` is always column-vector. Porting a
+    /// row-vector transform into a column-vector system needs one more
+    /// transpose to compensate — and that transpose exactly cancels the
+    /// one already baked into OpenTK's own matrix, leaving the correct
+    /// simd matrix equal to **the on-disk 3×3 block, used directly,
+    /// unchanged** (working the full vertex transform through by hand:
+    /// `world.x = dot(local, row0) - row3.x`, `world.y = dot(local, row1)
+    /// + row3.y`, `world.z = dot(local, row2) + row3.z` — i.e. row0/1/2
+    /// used as the *rows* of the effective world matrix, not its columns).
+    ///
+    /// Real-data support: across many real same-model, genuinely-rotated
+    /// placement pairs in `beach.sm2`, this formula's edge-alignment rate
+    /// is the best of every candidate tried (including the previous,
+    /// transpose-based one) — see this file's own investigation history.
+    /// It is **not** claimed to be the final word on its own; symmetric/
+    /// square geometry and 180°-symmetric shapes are structurally blind to
+    /// several classes of rotation error (a lesson this function has
+    /// already taught twice), so the real confirmation is checking several
+    /// different floor/wall placements — not just one — against the live
+    /// reference tool.
+    ///
+    /// Translation (`-row3.x`, unchanged otherwise) was never in question;
+    /// every version of this function has agreed on it.
     ///
     /// Scale is each column's length; dividing it out leaves a pure
     /// rotation matrix for `simd_quatf`.
@@ -81,9 +97,9 @@ public struct SceneryModelPlacement: Sendable {
         let row2 = modelMatrix[2]
         let row3 = modelMatrix[3]
 
-        let col0 = SIMD3<Float>(row0.x, row0.y, row0.z)
-        let col1 = SIMD3<Float>(row1.x, row1.y, row1.z)
-        let col2 = SIMD3<Float>(row2.x, row2.y, row2.z)
+        let col0 = SIMD3<Float>(row0.x, row1.x, row2.x)
+        let col1 = SIMD3<Float>(row0.y, row1.y, row2.y)
+        let col2 = SIMD3<Float>(row0.z, row1.z, row2.z)
 
         let scaleX = simd_length(col0)
         let scaleY = simd_length(col1)
