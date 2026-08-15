@@ -203,7 +203,18 @@ struct LevelViewerWindow: View {
     /// doesn't need it. Toggle it back on any time from the Terrain panel;
     /// the "Fully Populated" preset also still includes it, since that
     /// button is an explicit "show me everything" request.
-    @State private var layerVisibility: Set<SceneLayer> = Set(SceneLayer.allCases).subtracting([.collision])
+    ///
+    /// Chunk boundaries (load-wall quads) also start hidden — a real,
+    /// user-reported bug: a `ChunkLink.loadWall` is a genuinely flat quad
+    /// standing vertically *by design* (it marks a streaming boundary, not
+    /// terrain), and with this layer on by default it was being mistaken
+    /// for broken scenery, especially since its old fill color read close
+    /// enough to sandy/rock terrain tones to blend in (see
+    /// `ModelViewerRenderer.rebuildOverlayBuffer`'s `wallColor` — now a
+    /// saturated, unmistakably-not-terrain magenta). Same "opt into the
+    /// debug overlay" posture as collision, and same "Fully Populated"
+    /// exception.
+    @State private var layerVisibility: Set<SceneLayer> = Set(SceneLayer.allCases).subtracting([.collision, .chunkBoundaries])
     /// "Halo Reach Forge / Minecraft"-style mode rail — see
     /// `LevelEditorMode`'s own doc comment.
     @State private var editorMode: LevelEditorMode = .select

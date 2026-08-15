@@ -2245,7 +2245,18 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         // visibility from any angle, including edge-on) plus a filled
         // translucent quad below (`chunkWallTriangleBuffer`) for the
         // "translucent plane" the mandate asks for.
-        let wallColor = SIMD3<Float>(0.95, 0.75, 0.2)
+        //
+        // A real, user-reported bug lived here: this used to be gold/tan
+        // (0.95, 0.75, 0.2), close enough to sandy/rock terrain tones that
+        // a load wall (a genuinely flat quad standing vertically *by
+        // design* — it marks a streaming boundary, not terrain) read as
+        // broken scenery rather than an editor overlay, especially with
+        // this layer visible by default (see `layerVisibility`'s own doc
+        // comment). Every other overlay marker in this renderer
+        // (triggers, cameras, AI waypoints, spline points) already uses a
+        // saturated, distinctly non-terrain hue for exactly this reason —
+        // this one didn't, and it was the one that looked like a bug.
+        let wallColor = SIMD3<Float>(0.95, 0.15, 0.85)
         var wallFloats: [Float] = []
         func appendWallVertex(_ position: SIMD3<Float>, _ color: SIMD3<Float>) {
             wallFloats.append(contentsOf: [position.x, position.y, position.z, color.x, color.y, color.z])
