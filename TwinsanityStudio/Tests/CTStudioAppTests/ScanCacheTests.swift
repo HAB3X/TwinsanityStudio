@@ -85,4 +85,59 @@ final class ScanCacheTests: XCTestCase {
         try Data("different content, different size".utf8).write(to: fakeArchive)
         XCTAssertNil(ScanCache.load(for: fakeArchive), "cache should miss once the source file's identity (size/mtime) changes")
     }
+
+    /// Regression for a real, reproduced incident: `MeshSubmesh.jointIndices`/
+    /// `jointWeights` (populated only for skinned models) were left on the
+    /// naive synthesized `Codable` for `[SIMD4<UInt16>]`/`[SIMD4<Float>]` —
+    /// every other per-vertex field here was already flattened into `Data`
+    /// (see this type's own doc comment), but these two were missed. At
+    /// full-archive-scan scale that produced a real 2.3GB `ScanCache` file
+    /// on disk, and loading it back through `PropertyListDecoder` hung the
+    /// app for minutes on next launch — not a hypothetical, reproduced
+    /// against the real disc image. This pins both correctness (the joint
+    /// data round-trips exactly) and the actual regression (encoded size
+    /// stays close to the flat byte count, not inflated by generic
+    /// per-element container overhead).
+    func testSkinnedSubmeshJointDataRoundTripsWithoutCodableBloat() throws {
+        let vertexCount = 500
+        let vertices = (0..<vertexCount).map { StaticVertex(position: SIMD3(Float($0), 0, 0)) }
+        let jointIndices = (0..<vertexCount).map { i -> SIMD4<UInt16> in
+            let a = UInt16(i % 4)
+            let b = UInt16((i + 1) % 4)
+            let c = UInt16((i + 2) % 4)
+            let d = UInt16((i + 3) % 4)
+            return SIMD4<UInt16>(a, b, c, d)
+        }
+        let jointWeights = (0..<vertexCount).map { i -> SIMD4<Float> in
+            let bump = Float(i) * 0.0001
+            return SIMD4<Float>(0.4 + bump, 0.3, 0.2, 0.1)
+        }
+        let submesh = MeshSubmesh(
+            vertices: vertices,
+            connectivity: Array(repeating: true, count: vertexCount),
+            jointIndices: jointIndices,
+            jointWeights: jointWeights
+        )
+        let mesh = MeshAsset(id: 1, isSkinned: true, submeshes: [submesh])
+        let asset = ResolvedModelAsset(recordID: 1, displayName: "Skinned", mesh: mesh, submeshMaterials: [])
+
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        let encoded = try encoder.encode(ScanCachePayload(modelsHub: [asset], orphanedContent: []))
+
+        // The theoretical flat payload: 4 x UInt16 + 4 x Float per vertex,
+        // plus positions/connectivity/etc. The naive array-of-struct
+        // encoding this regresses to inflates well past 10x that — a loose
+        // bound (not pinned to an exact byte count, which would be brittle
+        // against unrelated plist-format overhead) that would have caught
+        // the real bug: it produced roughly a 100x-plus blowup at archive
+        // scale.
+        let flatJointBytes = vertexCount * (4 * 2 + 4 * 4)
+        XCTAssertLessThan(encoded.count, flatJointBytes * 10, "encoded size ballooned — the array-of-struct Codable bloat is back")
+
+        let decoded = try PropertyListDecoder().decode(ScanCachePayload.self, from: encoded)
+        let roundTrippedSubmesh = try XCTUnwrap(decoded.modelsHub.first?.mesh.submeshes.first)
+        XCTAssertEqual(roundTrippedSubmesh.jointIndices, jointIndices)
+        XCTAssertEqual(roundTrippedSubmesh.jointWeights, jointWeights)
+    }
 }

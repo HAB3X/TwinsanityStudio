@@ -71,8 +71,29 @@ public struct MeshSubmesh: Sendable, Codable {
         vertices = decodedVertices
         connectivity = [UInt8](try container.decode(Data.self, forKey: .connectivity)).map { $0 != 0 }
         materialID = try container.decodeIfPresent(UInt32.self, forKey: .materialID)
-        jointIndices = try container.decode([SIMD4<UInt16>].self, forKey: .jointIndices)
-        jointWeights = try container.decode([SIMD4<Float>].self, forKey: .jointWeights)
+
+        // Same flattened-`Data` fix as `vertices` above, missed the first
+        // time through: the naive synthesized `Codable` for `[SIMD4<UInt16>]`/
+        // `[SIMD4<Float>]` wraps every single element in its own container,
+        // and at full-archive-scan scale (every skinned model's joint
+        // influences) that's what actually bloated a real `ScanCache` write
+        // to 2.3GB and made loading it back hang for minutes — not a
+        // hypothetical, a real reproduction against the full disc image.
+        let jointIndexRaw = try container.decode(Data.self, forKey: .jointIndices).withUnsafeBytes { Array($0.bindMemory(to: UInt16.self)) }
+        var decodedJointIndices: [SIMD4<UInt16>] = []
+        decodedJointIndices.reserveCapacity(jointIndexRaw.count / 4)
+        for i in 0..<(jointIndexRaw.count / 4) {
+            decodedJointIndices.append(SIMD4(jointIndexRaw[i * 4], jointIndexRaw[i * 4 + 1], jointIndexRaw[i * 4 + 2], jointIndexRaw[i * 4 + 3]))
+        }
+        jointIndices = decodedJointIndices
+
+        let jointWeightRaw = try container.decode(Data.self, forKey: .jointWeights).withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        var decodedJointWeights: [SIMD4<Float>] = []
+        decodedJointWeights.reserveCapacity(jointWeightRaw.count / 4)
+        for i in 0..<(jointWeightRaw.count / 4) {
+            decodedJointWeights.append(SIMD4(jointWeightRaw[i * 4], jointWeightRaw[i * 4 + 1], jointWeightRaw[i * 4 + 2], jointWeightRaw[i * 4 + 3]))
+        }
+        jointWeights = decodedJointWeights
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -101,8 +122,16 @@ public struct MeshSubmesh: Sendable, Codable {
         try container.encode(Data(emissives), forKey: .emissives)
         try container.encode(Data(connectivity.map { $0 ? UInt8(1) : UInt8(0) }), forKey: .connectivity)
         try container.encodeIfPresent(materialID, forKey: .materialID)
-        try container.encode(jointIndices, forKey: .jointIndices)
-        try container.encode(jointWeights, forKey: .jointWeights)
+
+        var jointIndexFlat: [UInt16] = []
+        jointIndexFlat.reserveCapacity(jointIndices.count * 4)
+        for j in jointIndices { jointIndexFlat.append(contentsOf: [j.x, j.y, j.z, j.w]) }
+        try container.encode(jointIndexFlat.withUnsafeBufferPointer { Data(buffer: $0) }, forKey: .jointIndices)
+
+        var jointWeightFlat: [Float] = []
+        jointWeightFlat.reserveCapacity(jointWeights.count * 4)
+        for w in jointWeights { jointWeightFlat.append(contentsOf: [w.x, w.y, w.z, w.w]) }
+        try container.encode(jointWeightFlat.withUnsafeBufferPointer { Data(buffer: $0) }, forKey: .jointWeights)
     }
 
     /// Triangle index list (into `vertices`), ready for an `MTLBuffer` index
