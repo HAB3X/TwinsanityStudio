@@ -40,9 +40,36 @@ import Foundation
 /// files, absent in others -- e.g. missing from `AIRSHIP.GSC`/`FARM.GSC`,
 /// present in `HUB.GSC`/`CASTLE_C.GSC`), `OBJ0`, `INST`, `IABL`/`ALIB`
 /// (also present-in-some/absent-in-others), `SPEC`, `SST0` (always last).
-/// Only `NTBL`'s payload is decoded below (see ``parseNameTable(_:)``);
-/// every other section's internal structure is still unknown and is
-/// exposed as raw ``WOCSection/payload`` bytes rather than guessed at.
+///
+/// **Decoded so far:**
+/// - `NTBL` (name table) -- see ``parseNameTable(_:)``. Fully decoded: a
+///   byte-length-prefixed blob of null-terminated names. The trailer bytes
+///   between the name blob and the next section are not understood (their
+///   length varies non-trivially and doesn't reduce to a formula from the
+///   name list alone).
+/// - `MS00` -- see ``parseMeshSet(_:)``. Confirmed to be `count` fixed
+///   464-byte records (exact division verified across 4 real files of very
+///   different sizes). Record internals not decoded.
+/// - `INST` (placed object instances) -- see ``parseInstances(_:)`` and
+///   ``Instance``. Fully decoded and the strongest result so far: each of
+///   the 80-byte records is a real 4x4 world transform. Confirmed 3 ways:
+///   (1) the record width divides cleanly and identically across files,
+///   (2) a per-instance index field exactly matches that instance's own
+///   array position with 0 mismatches across 564 real instances in 2
+///   files, (3) plotting the decoded translations for 4 real levels
+///   produces recognizable level layouts (e.g. `CASTLE_C.GSC`'s clear
+///   cross-shaped corridor), not noise.
+/// - `TST0`, `OBJ0`, `TAS0`, `IABL`, `ALIB`, `SPEC`, `SST0` -- not decoded.
+///   `OBJ0`'s count matches `INST`'s count in both files checked
+///   (suggesting a 1:1 correspondence, e.g. per-instance mesh/material
+///   data) but it is NOT a fixed-width record table like `MS00`/`INST`
+///   (average ~9.7KB/entry in the `AIRSHIP.GSC` sample, with no offset
+///   table found at its start) -- likely the next highest-value target,
+///   left for a future session rather than guessed at under time
+///   pressure.
+///
+/// Every section not listed above as decoded is exposed as raw
+/// ``WOCSection/payload`` bytes rather than guessed at.
 public enum WOCContainerParser {
     public enum ParseError: Error, Equatable {
         case badMagic
