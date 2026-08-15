@@ -130,6 +130,52 @@ enum LevelViewMode: CaseIterable {
     }
 }
 
+/// "Halo Reach Forge / Minecraft"-style mode rail: instead of every panel
+/// stacked in one long scroll (the pre-overhaul layout — ~15 panels, a
+/// real level's object count alone runs into the hundreds), a beginner
+/// picks one task at a time and only sees the controls for it. The
+/// current-selection tools (Transform/gizmo, the selected object's own
+/// inspector, the Objects list) stay pinned below the rail regardless of
+/// mode — every mode still needs "what am I looking at right now."
+enum LevelEditorMode: String, CaseIterable, Identifiable {
+    case select, place, terrain, ai, audio, advanced
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .select: return "Select"
+        case .place: return "Place"
+        case .terrain: return "Terrain"
+        case .ai: return "AI"
+        case .audio: return "Audio"
+        case .advanced: return "Advanced"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .select: return "cursorarrow"
+        case .place: return "hammer.fill"
+        case .terrain: return "square.grid.3x3.fill"
+        case .ai: return "point.3.connected.trianglepath.dotted"
+        case .audio: return "speaker.wave.2.fill"
+        case .advanced: return "ellipsis.circle.fill"
+        }
+    }
+
+    var helpText: String {
+        switch self {
+        case .select: return "Level stats and save"
+        case .place: return "Forge Palette — place new Instances, Triggers, and Cameras"
+        case .terrain: return "Scene layer visibility and view mode"
+        case .ai: return "AI waypoints and paths"
+        case .audio: return "Chunk audio and scripted-trigger events"
+        case .advanced: return "Chunk links and cross-engine (Wrath of Cortex) data"
+        }
+    }
+}
+
 struct LevelViewerWindow: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.undoManager) private var undoManager
@@ -146,6 +192,16 @@ struct LevelViewerWindow: View {
     @State private var isAIPathsExpanded = false
     @State private var viewMode: LevelViewMode = .populated
     @State private var layerVisibility: Set<SceneLayer> = Set(SceneLayer.allCases)
+    /// "Halo Reach Forge / Minecraft"-style mode rail — see
+    /// `LevelEditorMode`'s own doc comment.
+    @State private var editorMode: LevelEditorMode = .select
+    /// One search field drives both the Object list (filters it directly)
+    /// and the Forge Palette (forwarded through its own `searchText`
+    /// binding) — a beginner shouldn't need to know which of six mode
+    /// tabs a specific object or placeable lives under before they can
+    /// search for it.
+    @State private var sidebarSearchText = ""
+    @State private var isControlsLegendExpanded = false
     @State private var positionX: String = ""
     @State private var positionY: String = ""
     @State private var positionZ: String = ""
@@ -305,6 +361,11 @@ struct LevelViewerWindow: View {
                             .padding(6)
                             .allowsHitTesting(false)
                     }
+                    if selectedIndex != nil {
+                        selectionHUD
+                            .padding(10)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .dropDestination(for: String.self) { items, _ in
@@ -328,55 +389,69 @@ struct LevelViewerWindow: View {
         }
     }
 
+    /// "Halo Reach Forge / Minecraft"-style quick-action bar: the most
+    /// common actions on the current selection (duplicate, delete, copy
+    /// the camera's position onto it), reachable without touching the
+    /// sidebar at all — Forge's own bottom action bar is the direct
+    /// inspiration. The sidebar's Transform panel still has the same
+    /// three actions (plus precise numeric fields), so nothing here is a
+    /// second, diverging implementation — every button below calls the
+    /// exact same functions the sidebar buttons do.
+    private var selectionHUD: some View {
+        HStack(spacing: 10) {
+            Button {
+                copyViewerPositionToSelected()
+            } label: {
+                Image(systemName: "camera.viewfinder")
+            }
+            .help("Copy Viewer Position")
+
+            Button {
+                duplicateSelected()
+            } label: {
+                Image(systemName: "plus.square.on.square")
+            }
+            .disabled(!canDuplicateSelected)
+            .help("Duplicate (⌘D)")
+
+            Button(role: .destructive) {
+                deleteSelected()
+            } label: {
+                Image(systemName: "trash")
+            }
+            .disabled(!canDeleteSelected)
+            .help("Delete")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.regular)
+        .padding(8)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
     private var sidebar: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text(context.scenery.chunkName.isEmpty ? "Chunk" : context.scenery.chunkName)
                     .font(.title3.bold())
 
-                modeAndLayersPanel
+                TextField("Search objects & placeables…", text: $sidebarSearchText)
+                    .textFieldStyle(.roundedBorder)
+                    .help("Filters the Objects list below and the Forge Palette (Place tab) at once — you don't need to know which tab something lives under to find it.")
+
+                controlsLegendPanel
+
+                modeRail
+
+                modeContent
 
                 Divider()
 
-                ForgePaletteView(
-                    placedThisSession: renderer?.pendingNewInstances.count ?? 0,
-                    canResolve: { renderer?.canResolveObjectID($0) },
-                    resolveForThumbnail: { renderer?.resolvedAsset(forObjectID: $0) }
-                ) { objectID, name in
-                    armedPlacement = (objectID, name)
-                    renderer?.pendingPlacementObjectID = objectID
-                }
-
-                if !context.chunkLinks.isEmpty {
-                    Divider()
-                    chunkLinksPanel
-                }
-
-                Form {
-                    LabeledContent("Placements in tree", value: "\(context.scenery.placements.count)")
-                    LabeledContent("Scenery resolved", value: "\(context.placements.count)")
-                    LabeledContent("Instance markers", value: "\(context.instanceMarkers.count)")
-                    LabeledContent("Triggers", value: "\(context.triggers.count)")
-                    LabeledContent("Cameras", value: "\(context.cameras.count)")
-                }
-                .formStyle(.grouped)
-
-                Text("Scenery objects are drawn at their correct world position, rotation, and scale, decoded from the chunk data — scenery has no write path yet (in-session sandbox only). The amber cubes are Instance records (crate/enemy/platform placements) — their position/rotation is real, live-editable with the gizmo, and \"Save Chunk Overrides…\" below writes it back to a copy of the file. Green/cyan wireframe boxes are Triggers/Cameras — click to select and inspect; no 3D gizmo yet, but their inspector panel below has real, writable position/size/rotation fields with their own \"Save Edited Copy…\" button. The small magenta boxes along a camera's path are its real spline/path control points — click and drag one with the gizmo like any other object; \"Save Chunk Overrides…\" patches each moved point's own 16 bytes straight into the file, without needing to re-encode the rest of that Camera record. Inserting or removing a control point isn't supported yet — only moving an existing one.")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-
-                if let referenceNode = referenceNodeForFileOps {
-                    Button("Save Chunk Overrides…") { saveLevelOverrides() }
-                        .disabled(!workspace.canSaveEdits(for: referenceNode))
-                    if !workspace.canSaveEdits(for: referenceNode) {
-                        Text("Editing only saves for a standalone-opened .RM2/.SM2 file — this level's file is archive-packed, which this build doesn't have a write path for yet.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Divider()
-
+                // Always-pinned regardless of mode — "what am I looking at
+                // right now" is relevant no matter which task tab is
+                // active. This is the single biggest change from the
+                // pre-overhaul layout: these three used to be three of
+                // ~15 panels stacked in one long scroll: now every mode
+                // still shows them without the user hunting for them.
                 gizmoControls
 
                 if let node = renderer?.selectedSourceNode {
@@ -387,34 +462,168 @@ struct LevelViewerWindow: View {
                 Divider()
 
                 objectList
-
-                if !context.sounds.isEmpty {
-                    Divider()
-                    LevelAudioPanel(sounds: context.sounds)
-                }
-
-                if !context.triggers.isEmpty || hasScriptedInstances {
-                    Divider()
-                    levelEventsPanel
-                }
-
-                if !context.aiPositions.isEmpty || !context.aiPaths.isEmpty {
-                    Divider()
-                    aiWaypointsPanel
-                }
-
-                if !context.aiPaths.isEmpty {
-                    Divider()
-                    aiPathsPanel
-                }
-
-                Divider()
-                addTriggerCameraPanel
-
-                Divider()
-                crossEngineDataPanel
             }
             .padding(16)
+        }
+    }
+
+    /// Icon-button row switching which task-specific panel shows below —
+    /// see `LevelEditorMode`'s own doc comment for the design rationale.
+    private var modeRail: some View {
+        HStack(spacing: 4) {
+            ForEach(LevelEditorMode.allCases) { mode in
+                Button {
+                    editorMode = mode
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: mode.systemImage)
+                            .font(.system(size: 15))
+                        Text(mode.displayName).font(.caption2)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .foregroundStyle(editorMode == mode ? Color.accentColor : Color.secondary)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(editorMode == mode ? Color.accentColor.opacity(0.15) : Color.clear)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help(mode.helpText)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var modeContent: some View {
+        switch editorMode {
+        case .select: selectModeContent
+        case .place: placeModeContent
+        case .terrain: modeAndLayersPanel
+        case .ai: aiModeContent
+        case .audio: audioModeContent
+        case .advanced: advancedModeContent
+        }
+    }
+
+    /// "Select" (default mode): level-wide stats and the save action —
+    /// the one thing every other mode eventually needs regardless of what
+    /// you were just placing/adjusting.
+    @ViewBuilder
+    private var selectModeContent: some View {
+        Form {
+            LabeledContent("Placements in tree", value: "\(context.scenery.placements.count)")
+            LabeledContent("Scenery resolved", value: "\(context.placements.count)")
+            LabeledContent("Instance markers", value: "\(context.instanceMarkers.count)")
+            LabeledContent("Triggers", value: "\(context.triggers.count)")
+            LabeledContent("Cameras", value: "\(context.cameras.count)")
+        }
+        .formStyle(.grouped)
+
+        Text("Scenery objects are drawn at their correct world position, rotation, and scale, decoded from the chunk data — scenery has no write path yet (in-session sandbox only). The amber cubes are Instance records (crate/enemy/platform placements) — their position/rotation is real, live-editable with the gizmo, and \"Save Chunk Overrides…\" below writes it back to a copy of the file. Green/cyan wireframe boxes are Triggers/Cameras — click to select and inspect; no 3D gizmo yet, but their inspector panel below has real, writable position/size/rotation fields with their own \"Save Edited Copy…\" button. The small magenta boxes along a camera's path are its real spline/path control points — click and drag one with the gizmo like any other object; \"Save Chunk Overrides…\" patches each moved point's own 16 bytes straight into the file, without needing to re-encode the rest of that Camera record. Inserting or removing a control point isn't supported yet — only moving an existing one.")
+            .font(.caption2)
+            .foregroundStyle(.orange)
+
+        if let referenceNode = referenceNodeForFileOps {
+            Button("Save Chunk Overrides…") { saveLevelOverrides() }
+                .disabled(!workspace.canSaveEdits(for: referenceNode))
+            if !workspace.canSaveEdits(for: referenceNode) {
+                Text("Editing only saves for a standalone-opened .RM2/.SM2 file — this level's file is archive-packed, which this build doesn't have a write path for yet.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// "Place" mode: the Forge Palette plus "Add Trigger"/"Add Camera" —
+    /// every way to bring a brand-new object into the level, in one place.
+    @ViewBuilder
+    private var placeModeContent: some View {
+        ForgePaletteView(
+            placedThisSession: renderer?.pendingNewInstances.count ?? 0,
+            canResolve: { renderer?.canResolveObjectID($0) },
+            resolveForThumbnail: { renderer?.resolvedAsset(forObjectID: $0) },
+            searchText: $sidebarSearchText
+        ) { objectID, name in
+            armedPlacement = (objectID, name)
+            renderer?.pendingPlacementObjectID = objectID
+        }
+        Divider()
+        addTriggerCameraPanel
+    }
+
+    @ViewBuilder
+    private var aiModeContent: some View {
+        if !context.aiPositions.isEmpty || !context.aiPaths.isEmpty {
+            aiWaypointsPanel
+            if !context.aiPaths.isEmpty {
+                Divider()
+                aiPathsPanel
+            }
+        } else {
+            Text("No AI waypoints or paths in this chunk.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var audioModeContent: some View {
+        if !context.sounds.isEmpty {
+            LevelAudioPanel(sounds: context.sounds)
+        }
+        if !context.triggers.isEmpty || hasScriptedInstances {
+            if !context.sounds.isEmpty { Divider() }
+            levelEventsPanel
+        }
+        if context.sounds.isEmpty && context.triggers.isEmpty && !hasScriptedInstances {
+            Text("No audio or scripted trigger events in this chunk.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var advancedModeContent: some View {
+        if !context.chunkLinks.isEmpty {
+            chunkLinksPanel
+            Divider()
+        }
+        crossEngineDataPanel
+    }
+
+    /// "On-Screen Control Legend" (QoL): the viewport's own single
+    /// rotating caption line only ever shows the *current* gizmo mode's
+    /// shortcut — this lists every camera/gizmo/placement shortcut at
+    /// once, collapsed by default so it doesn't compete for space with
+    /// the panels a returning user already knows how to find.
+    private var controlsLegendPanel: some View {
+        DisclosureGroup(isExpanded: $isControlsLegendExpanded) {
+            VStack(alignment: .leading, spacing: 4) {
+                controlLegendRow("Drag", "Orbit the camera")
+                controlLegendRow("Scroll", "Zoom (or fly speed, in Free Camera)")
+                controlLegendRow("W / E / R", "Move / Rotate / Scale gizmo")
+                controlLegendRow("F", "Frame the current selection")
+                controlLegendRow("⌘D", "Duplicate the selected object")
+                controlLegendRow("Delete", "Delete the selected object")
+                controlLegendRow("⌘Z / ⌘⇧Z", "Undo / Redo")
+                controlLegendRow("WASD + Q/E", "Fly (Free Camera mode only)")
+                controlLegendRow("Right-drag", "Look around (Free Camera mode only)")
+            }
+            .padding(.top, 4)
+        } label: {
+            Label("Controls", systemImage: "keyboard").font(.subheadline.bold())
+        }
+    }
+
+    private func controlLegendRow(_ key: String, _ action: String) -> some View {
+        HStack(alignment: .top) {
+            Text(key)
+                .font(.caption.monospaced().bold())
+                .frame(width: 90, alignment: .leading)
+            Text(action)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -1100,8 +1309,17 @@ struct LevelViewerWindow: View {
     /// past everything below it just to reach the other sidebar panels.
     @ViewBuilder
     private var objectList: some View {
+        let allSummaries = renderer?.objectSummaries ?? []
+        let filteredSummaries = sidebarSearchText.isEmpty
+            ? allSummaries
+            : allSummaries.filter { $0.displayName.localizedCaseInsensitiveContains(sidebarSearchText) }
         DisclosureGroup(isExpanded: $isObjectListExpanded) {
-            ForEach(renderer?.objectSummaries ?? [], id: \.index) { summary in
+            if filteredSummaries.isEmpty && !sidebarSearchText.isEmpty {
+                Text("No objects match “\(sidebarSearchText)”.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(filteredSummaries, id: \.index) { summary in
                 Button {
                     select(summary.index)
                 } label: {
@@ -1458,9 +1676,15 @@ private struct ForgePaletteView: View {
     /// same reasons `canResolve` can be `nil`/`false` (renderer not ready
     /// yet, or this level's data genuinely has no geometry for that ID).
     let resolveForThumbnail: (UInt16) -> ResolvedModelAsset?
+    /// Bound to the sidebar-wide search field (`LevelViewerWindow`'s own
+    /// `sidebarSearchText`) — typing there filters this palette live even
+    /// when "Place" isn't the active mode tab, and the palette's own
+    /// search field below both reads and writes the same text, so either
+    /// entry point stays in sync with the other. Declared before `onArm`
+    /// so trailing-closure call syntax still works at the call site.
+    @Binding var searchText: String
     let onArm: (UInt16, String) -> Void
 
-    @State private var searchText = ""
     @State private var selectedCategory: DefaultObjectID.Category?
     @State private var hideUnavailable = false
     /// Same cache/failure-set split `ModelsHubView` uses for its gallery
