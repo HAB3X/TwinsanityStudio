@@ -29,6 +29,30 @@ final class CollisionFloorLayerTests: XCTestCase {
         return CollisionMesh(id: 1, vertices: vertices, triangles: [triangle], groups: [], triggerBoxes: [])
     }
 
+    /// Regression for a real follow-up bug in the fix above: the fill
+    /// buffer originally reused `ModelViewerRenderer.color(forSurfaceID:)`
+    /// (saturation 0.62, value 0.95 — deliberately bold so distinct
+    /// surface IDs stand out as thin wireframe *lines*). Reused for a
+    /// solid, opaque floor covering the whole screen, real-world testing
+    /// showed this reads as a dominating, garish red/orange wash rather
+    /// than ground. `mutedColor(forSurfaceID:)` uses the same
+    /// deterministic per-ID hue stepping (still distinguishes different
+    /// real surface IDs) at much lower saturation/value.
+    func testMutedSurfaceColorIsLessSaturatedAndDarkerThanTheWireframePalette() {
+        for surfaceID in [0, 1, 4, 17, 250] {
+            let bold = ModelViewerRenderer.color(forSurfaceID: surfaceID)
+            let muted = ModelViewerRenderer.mutedColor(forSurfaceID: surfaceID)
+            let boldMax = max(bold.x, max(bold.y, bold.z))
+            let mutedMax = max(muted.x, max(muted.y, muted.z))
+            let boldMin = min(bold.x, min(bold.y, bold.z))
+            let mutedMin = min(muted.x, min(muted.y, muted.z))
+            // Saturation ~ (max-min)/max in HSV; muted should be visibly
+            // lower on both saturation and overall brightness (max channel).
+            XCTAssertLessThan((mutedMax - mutedMin) / max(mutedMax, 0.0001), (boldMax - boldMin) / max(boldMax, 0.0001), "surfaceID \(surfaceID): muted color should be less saturated")
+            XCTAssertLessThan(mutedMax, boldMax, "surfaceID \(surfaceID): muted color should be darker/less bright")
+        }
+    }
+
     func testRendererBuildsARealFillBufferFromASyntheticCollisionMesh() throws {
         let mesh = makeSyntheticMesh()
         let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [], collisionMeshes: [mesh]))

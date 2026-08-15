@@ -1135,6 +1135,27 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         return hsvToRGB(h: hue, s: 0.62, v: 0.95)
     }
 
+    /// Same per-surface-ID hue stepping as `color(forSurfaceID:)` — still
+    /// deterministic and still distinguishes different real surface IDs
+    /// from each other — but at much lower saturation/value. `color(
+    /// forSurfaceID:)`'s bold, maximally-saturated palette is a deliberate
+    /// choice for the wireframe/legend use case (thin colored *lines*
+    /// over other geometry, where standing out is the whole point); a
+    /// same-saturation *solid, opaque floor filling the entire screen* is
+    /// a completely different visual weight — real-world testing this
+    /// session showed it reads as a dominating, garish red/orange wash
+    /// rather than ground. This format has no decoded per-vertex normals
+    /// to light the fill and naturally shade it toward something more
+    /// terrain-like, so the fix is a muted palette at the color-selection
+    /// step instead.
+    static func mutedColor(forSurfaceID surfaceID: Int) -> SIMD3<Float> {
+        let goldenRatioConjugate: Double = 0.6180339887498949
+        let bucket = UInt(bitPattern: surfaceID) % 1000
+        var hue = (Double(bucket) / 1000.0 * goldenRatioConjugate).truncatingRemainder(dividingBy: 1.0)
+        if hue < 0 { hue += 1 }
+        return hsvToRGB(h: hue, s: 0.22, v: 0.5)
+    }
+
     private static func hsvToRGB(h: Double, s: Double, v: Double) -> SIMD3<Float> {
         let i = Int(h * 6)
         let f = h * 6 - Double(i)
@@ -1612,7 +1633,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                       triangle.vertexIndex2 < mesh.vertices.count,
                       triangle.vertexIndex3 < mesh.vertices.count
                 else { continue }
-                let color = ModelViewerRenderer.color(forSurfaceID: triangle.surfaceID)
+                let color = ModelViewerRenderer.mutedColor(forSurfaceID: triangle.surfaceID)
                 for index in [triangle.vertexIndex1, triangle.vertexIndex2, triangle.vertexIndex3] {
                     let v = mesh.vertices[index]
                     floats.append(contentsOf: [v.x, v.y, v.z, color.x, color.y, color.z])
