@@ -268,6 +268,57 @@ public enum WOCContainerParser {
         return instances
     }
 
+    /// One 16-byte quadword from an `OBJ0` entry's vertex-like data block:
+    /// a leading control word (unparsed -- see below) followed by 3 floats
+    /// that behave exactly like a position.
+    public struct VertexQuadword {
+        public let control: UInt32
+        public let position: SIMD3<Float>
+    }
+
+    /// Extracts `count` 16-byte quadwords starting at `byteOffset` within
+    /// an `OBJ0` section's payload as `(control:UInt32, position:xyz Float)`
+    /// pairs. This is **not** a full `OBJ0` entry parser -- `OBJ0`'s
+    /// per-entry byte length is not yet known (entries are variable-size,
+    /// no offset table or self-length-prefix was found at their start, and
+    /// this section is not a fixed-width record table like `MS00`/`INST`),
+    /// so callers must supply the start offset and count explicitly rather
+    /// than iterating entries automatically.
+    ///
+    /// What *is* confirmed, from real `AIRSHIP.GSC` bytes: at least the
+    /// first ~39 quadwords of `OBJ0`'s first entry decode to a smoothly
+    /// varying, visually coherent curved-surface vertex strip (plotted and
+    /// visually inspected, not just numerically plausible) -- real
+    /// geometry, not noise. The `control` word's low byte was observed
+    /// counting down (3, 1, 1, 0, 0, ...) across the first few quadwords
+    /// while its second byte flips from `0x80` to `0x00`, echoing this
+    /// same codebase's own `ModelParser`/`SkinParser` strip-connectivity
+    /// encoding (`(binaryW & 0xFF00) >> 8`) closely enough to be a
+    /// plausible cousin format -- but that specific interpretation is an
+    /// observation, not verified, so `control` is returned raw/unparsed.
+    /// An earlier pass through this data mistakenly described the Y
+    /// values as exact `sin(9n)` steps; a precise check showed that's
+    /// false (the fit drifts progressively worse per step) -- the values
+    /// are smoothly varying and plausible, not a confirmed closed-form
+    /// curve, and are documented here only as strongly as that.
+    public static func parseVertexQuadwords(_ payload: Data, byteOffset: Int, count: Int) throws -> [VertexQuadword] {
+        let bytes = [UInt8](payload)
+        guard byteOffset >= 0, count >= 0, byteOffset + count * 16 <= bytes.count else {
+            throw ParseError.truncated
+        }
+        var result: [VertexQuadword] = []
+        result.reserveCapacity(count)
+        for i in 0..<count {
+            let base = byteOffset + i * 16
+            let control = leUInt32(bytes, base)
+            let x = leFloat32(bytes, base + 4)
+            let y = leFloat32(bytes, base + 8)
+            let z = leFloat32(bytes, base + 12)
+            result.append(VertexQuadword(control: control, position: SIMD3(x, y, z)))
+        }
+        return result
+    }
+
     // MARK: - helpers
 
     private static func leFloat32(_ b: [UInt8], _ o: Int) -> Float {

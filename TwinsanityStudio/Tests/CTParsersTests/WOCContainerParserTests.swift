@@ -138,6 +138,33 @@ final class WOCContainerParserTests: XCTestCase {
         }
     }
 
+    /// Golden-value regression for `parseVertexQuadwords`: the first few
+    /// quadwords of `OBJ0`'s first entry in the real `AIRSHIP.GSC`,
+    /// hand-derived from the raw disc bytes (see `WOCContainerParser`'s
+    /// doc comment for how this region was found and visually confirmed
+    /// to be a real curved-surface vertex strip, not noise).
+    func testRealOBJ0FirstEntryVertexQuadwords() throws {
+        let decoded = try loadAndDecompressRealGSC("A/AIRSHIP/AIRSHIP.GSC")
+        let file = try WOCContainerParser.parse(decoded)
+        let obj0 = try XCTUnwrap(file.sections.first { $0.tag == "OBJ0" })
+
+        // Entry 0 starts right after OBJ0's own count(u32)+pad(u32) header;
+        // its vertex-quadword block was found to start at byte 168 within
+        // the entry (i.e. byte offset 8 + 168 = 176 into OBJ0's payload).
+        let quadwords = try WOCContainerParser.parseVertexQuadwords(obj0.payload, byteOffset: 8 + 168, count: 3)
+
+        XCTAssertEqual(quadwords.count, 3)
+        XCTAssertEqual(quadwords[0].position.x, 0.08512221, accuracy: 0.0001)
+        XCTAssertEqual(quadwords[0].position.y, -0.09876884, accuracy: 0.0001)
+        XCTAssertEqual(quadwords[0].position.z, 0.09516593, accuracy: 0.0001)
+        XCTAssertEqual(quadwords[1].position.x, 0.08734421, accuracy: 0.0001)
+        XCTAssertEqual(quadwords[1].position.y, -0.09876884, accuracy: 0.0001)
+        XCTAssertEqual(quadwords[1].position.z, 0.09080503, accuracy: 0.0001)
+        XCTAssertEqual(quadwords[2].position.x, 0.07061075, accuracy: 0.0001)
+        XCTAssertEqual(quadwords[2].position.y, -0.09510566, accuracy: 0.0001)
+        XCTAssertEqual(quadwords[2].position.z, 0.09045087, accuracy: 0.0001)
+    }
+
     func testRealCastleCGSCSectionChainCoversWholeFile() throws {
         let decoded = try loadAndDecompressRealGSC("A/CASTLE_C/CASTLE_C.GSC")
         let file = try WOCContainerParser.parse(decoded)
