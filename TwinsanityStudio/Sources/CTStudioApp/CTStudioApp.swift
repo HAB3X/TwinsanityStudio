@@ -4,12 +4,16 @@ import AppKit
 @main
 struct CTStudioApp: App {
     @StateObject private var workspace = WorkspaceViewModel()
+    /// Separate from `workspace` deliberately — see `WOCWorkspace`'s doc
+    /// comment.
+    @StateObject private var wocWorkspace = WOCWorkspace()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup("Twinsanity Studio") {
             ContentView()
                 .environmentObject(workspace)
+                .environmentObject(wocWorkspace)
                 .frame(minWidth: 1100, minHeight: 700)
         }
         .windowToolbarStyle(.unified)
@@ -63,6 +67,11 @@ struct CTStudioApp: App {
         Window("Chunk Viewer", id: GPUViewerWindowID.level) {
             LevelViewerWindowHost()
                 .environmentObject(workspace)
+                .tint(workspace.accentColorChoice.color)
+        }
+        Window("WoC Level Viewer", id: WOCViewerWindowID.viewer) {
+            WOCViewerWindowHost()
+                .environmentObject(wocWorkspace)
                 .tint(workspace.accentColorChoice.color)
         }
 

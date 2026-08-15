@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
+    @EnvironmentObject private var wocWorkspace: WOCWorkspace
     @Environment(\.openWindow) private var openWindow
     /// "Persist Window Layout" (QoL sweep): `@SceneStorage` only supports a
     /// closed set of primitive types (Bool/Int/Double/String/URL/Data),
@@ -134,6 +135,12 @@ struct ContentView: View {
                     } label: {
                         Label("Mount Disc Image…", systemImage: "opticaldiscdrive")
                     }
+                    Divider()
+                    Button {
+                        wocWorkspace.isLevelsHubPresented = true
+                    } label: {
+                        Label("Wrath of Cortex Levels", systemImage: "globe.americas.fill")
+                    }
                 } label: {
                     Label("Library", systemImage: "books.vertical.fill")
                 }
@@ -214,6 +221,9 @@ struct ContentView: View {
         .onChange(of: workspace.levelViewerContext?.id) { _, newValue in
             if newValue != nil { openWindow(id: GPUViewerWindowID.level) }
         }
+        .onChange(of: wocWorkspace.viewerAsset?.id) { _, newValue in
+            if newValue != nil { openWindow(id: WOCViewerWindowID.viewer) }
+        }
         // "Tear-Away Workspaces" (roadmap 9.5): the Hex Viewer and Mod
         // Crate Hub open as real windows too, not sheets — see
         // `TearAwayWindowHosts.swift`'s doc comment for why these two
@@ -236,6 +246,10 @@ struct ContentView: View {
         .sheet(isPresented: $workspace.isLevelsHubPresented) {
             LevelsHubView()
                 .environmentObject(workspace)
+        }
+        .sheet(isPresented: $wocWorkspace.isLevelsHubPresented) {
+            WOCLevelsHubView()
+                .environmentObject(wocWorkspace)
         }
         .sheet(isPresented: $workspace.isSoundBanksHubPresented) {
             SoundBanksHubView()
