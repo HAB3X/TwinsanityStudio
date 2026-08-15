@@ -66,22 +66,30 @@ import Foundation
 /// - `SPEC` -- see ``parseSpecRecords(_:)`` and ``SpecRecord``. Same
 ///   80-byte record shape as `INST`, but a curated, strictly-increasing
 ///   pointer-list *into* `INST` -- each record's matrix is byte-identical
-///   to the `INST` record it references (verified for every record in 7
-///   files, not sampled).
+///   to the `INST` record it references. Perfectly confirmed at full
+///   corpus scale: 1461 total `SPEC` records across all 46 files in the
+///   54-file corpus that have both `SPEC` and `INST`, zero
+///   not-strictly-increasing indices, zero out-of-bounds references, zero
+///   matrix mismatches -- not "almost always", zero exceptions of any
+///   kind.
 /// - `TST0` -- see ``parseTextureEntry(_:trailerOffset:)`` and
 ///   ``scanTextureEntries(_:)``. Not a record table at all: a serialized
 ///   PS2 Graphics Synthesizer texture-upload command stream. The per-entry
-///   size/width/height math is confirmed exactly on 201 real entries
-///   across 6 files, but the entry-boundary *scan* is a documented
-///   heuristic, not a complete parser (misses some entries, and one file
-///   uses an unhandled variant -- see that function's doc comment).
+///   size/width/height math was re-checked across the full 54-file corpus
+///   (1110 total validated entries, ZERO dimension-formula failures) --
+///   but the entry-boundary *scan* is a documented heuristic, not a
+///   complete parser: it finds zero entries at all in 4 of the 54 files
+///   (their `TST0` apparently uses the unpadded variant first seen in
+///   `E3HUB.GSC` -- see that function's doc comment for the follow-up on
+///   what is and isn't understood about that variant).
 /// - `SST0` (always the last section) -- see ``parseFooterHeader(_:)``.
 ///   Outer shape confirmed (`A:u32` + `B:u32` blob-length + blob + small
-///   trailer), and in 3 of 5 files checked the trailer's last field
-///   exactly echoes the section's own outer `length` field back -- but
-///   this exact trailer shape is absent or different in the other files
-///   (one file's `SST0` is entirely empty), so it's real but not
-///   universal. Blob internals unresolved.
+///   trailer). The trailer-echoes-own-section-length pattern, re-checked
+///   across the full 54-file corpus: present in exactly 10 of 53 files
+///   with `SST0`, and every single time it's present it's an exact match
+///   (zero false positives) -- real and deliberate, but only a minority
+///   shape; most files' `SST0` trailers look different or are absent.
+///   Blob internals unresolved.
 /// - `OBJ0`, `TAS0`, `ALIB` -- not decoded. `OBJ0` is the next
 ///   highest-value target: its per-entry format holds real embedded mesh
 ///   geometry (a 16-byte vertex quadword pattern was confirmed and
@@ -407,16 +415,18 @@ public enum WOCContainerParser {
                              Float, Float, Float, Float,
                              Float, Float, Float, Float,
                              Float, Float, Float, Float)
-        /// Confirmed (checked every record in all 7 real files, not a
-        /// sample): a valid index into the sibling `INST` section's own
-        /// instance array, strictly increasing across `SPEC`'s record
-        /// list (no duplicates, ascending order), and this record's
-        /// `matrix` is byte-for-byte identical to
-        /// `INST[referencedInstanceIndex]`'s matrix every time. `SPEC`
-        /// reads as a curated pointer-list into `INST` -- e.g. in
-        /// `AIRSHIP.GSC` it references instances `[34,35,36,37,38]` of
-        /// 41 total. What selection criterion picks these specific
-        /// instances is not visible in any decoded field yet.
+        /// Confirmed (checked every record across all 46 files in the
+        /// full 54-file corpus that have both `SPEC` and `INST` -- 1461
+        /// records total, zero exceptions): a valid index into the
+        /// sibling `INST` section's own instance array, strictly
+        /// increasing across `SPEC`'s record list (no duplicates,
+        /// ascending order), and this record's `matrix` is byte-for-byte
+        /// identical to `INST[referencedInstanceIndex]`'s matrix every
+        /// time. `SPEC` reads as a curated pointer-list into `INST` --
+        /// e.g. in `AIRSHIP.GSC` it references instances
+        /// `[34,35,36,37,38]` of 41 total. What selection criterion picks
+        /// these specific instances is not visible in any decoded field
+        /// yet.
         public let referencedInstanceIndex: UInt32
         /// Monotonically non-decreasing across the record list in every
         /// file checked, starting near 0 -- reads like a cumulative
@@ -504,10 +514,12 @@ public enum WOCContainerParser {
     /// writes, the standard PS2 "upload image to VRAM" sequence), each
     /// followed by its raw texel bytes.
     ///
-    /// Per-entry layout, all CONFIRMED across 201 real texture entries in
-    /// 6 of 7 files checked (100% match, zero exceptions -- the 7th file,
-    /// `E3HUB.GSC`, uses a variant without the padding this decoder
-    /// anchors on; see ``scanTextureEntries(_:)``):
+    /// Per-entry layout, all CONFIRMED first across 201 real texture
+    /// entries in 6 of 7 sample files, then re-checked across the full
+    /// 54-file corpus (1110 total validated entries, ZERO dimension-
+    /// formula failures). A handful of files (4 of 54) don't use the
+    /// padded variant this decoder anchors on at all -- `E3HUB.GSC` was
+    /// the first one found; see ``scanTextureEntries(_:)``):
     /// ```
     /// [[0x0CD filler, 32 or 80 bytes]]
     /// trailer (20 bytes): sizePlus:u32 size:u32 fmtA:u32 fmtB:u32 marker:u32(==76)
@@ -518,7 +530,7 @@ public enum WOCContainerParser {
     /// texelData: `size` bytes immediately after the header
     /// ```
     /// `sizePlus == size + 0xC4` and `width*height*bytesPerPixel == size`
-    /// both held exactly for every one of the 201 checked entries -- not
+    /// both held exactly for every one of the 1110 checked entries -- not
     /// approximate, not "most of the time".
     ///
     /// Follow-up on the `E3HUB.GSC` exception: its `TRXPOS`/`TRXREG`/
@@ -596,19 +608,20 @@ public enum WOCContainerParser {
     /// never garbage-length.
     ///
     /// One recurring but NOT universal pattern worth flagging for a future
-    /// session: in 3 of 5 files checked (`FARM.GSC`, `HUB.GSC`,
-    /// `EARTH_B.GSC`), the trailer is exactly 12 bytes and its *last* 4
-    /// bytes exactly equal this `SST0` section's own outer `length` field
-    /// from the top-level container header (echoing the section's total
-    /// size back into its own footer) -- independently re-verified before
-    /// documenting this, not just taken from an agent report. But
-    /// `CASTLE_C.GSC` has a shorter 8-byte trailer with no such echo,
-    /// `JUNGLE_A.GSC` has no trailer at all (the blob accounts for every
-    /// remaining byte), and `AIRSHIP.GSC`'s entire `SST0` is degenerate
-    /// (`firstField`/`blobLength` both `0`, no blob, no trailer). So this
-    /// function only decodes the confirmed outer split; the trailer-echo
-    /// pattern is documented but not enforced/parsed, since it isn't
-    /// universal.
+    /// session: re-checked across the full 54-file corpus, exactly 10 of
+    /// 53 files with `SST0` have a trailer that's exactly 12 bytes whose
+    /// *last* 4 bytes exactly equal this `SST0` section's own outer
+    /// `length` field from the top-level container header (echoing the
+    /// section's total size back into its own footer) -- and in every one
+    /// of those 10, the echo is exact (zero false positives -- when this
+    /// trailer shape appears, it's never wrong, just not always present).
+    /// The other 43 files differ: `CASTLE_C.GSC` has a shorter 8-byte
+    /// trailer with no such echo, `JUNGLE_A.GSC` has no trailer at all
+    /// (the blob accounts for every remaining byte), and `AIRSHIP.GSC`'s
+    /// entire `SST0` is degenerate (`firstField`/`blobLength` both `0`, no
+    /// blob, no trailer). So this function only decodes the confirmed
+    /// outer split; the trailer-echo pattern is documented but not
+    /// enforced/parsed, since it isn't universal.
     public static func parseFooterHeader(_ payload: Data) throws -> (firstField: UInt32, blob: Data, trailer: Data) {
         let bytes = [UInt8](payload)
         guard bytes.count >= 8 else { return (0, Data(), Data()) }
