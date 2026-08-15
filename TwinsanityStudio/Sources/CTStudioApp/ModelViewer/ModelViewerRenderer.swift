@@ -525,10 +525,19 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         var seenSurfaceIDs: [Int] = []
         var seenSurfaceIDSet: Set<Int> = []
 
+        // "Coordinate-System Overhaul": the reference tool's `LoadColTree`
+        // (`RMViewer.cs`) negates every raw vertex's X (`v.X = -v.X;`)
+        // before rendering — the same world-space X mirror `LoadSceneryModel`
+        // applies to scenery and `LoadInstances` applies to every instance/
+        // trigger/camera position. `CollisionMesh.vertices` themselves stay
+        // raw (there's a real write-back path — `ColDataWriter.write`, used
+        // by `ColDataEditorSheet` — that round-trips them byte-identical to
+        // disk), so the mirror is applied here, at the render boundary, not
+        // baked into the decoded struct.
         func point(_ index: Int) -> SIMD3<Float>? {
             guard collisionMesh.vertices.indices.contains(index) else { return nil }
             let v = collisionMesh.vertices[index]
-            return SIMD3(v.x, v.y, v.z)
+            return SIMD3(-v.x, v.y, v.z)
         }
 
         for triangle in collisionMesh.triangles {
@@ -546,7 +555,7 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         }
 
         for v in collisionMesh.vertices {
-            let p = SIMD3(v.x, v.y, v.z)
+            let p = SIMD3(-v.x, v.y, v.z)
             minBound = simd_min(minBound, p)
             maxBound = simd_max(maxBound, p)
         }
@@ -1667,8 +1676,13 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                 else { continue }
                 let color = ModelViewerRenderer.mutedColor(forSurfaceID: triangle.surfaceID)
                 for index in [triangle.vertexIndex1, triangle.vertexIndex2, triangle.vertexIndex3] {
+                    // "Coordinate-System Overhaul" — see the matching
+                    // comment in `upload(collisionMesh:)`: same raw-vertex
+                    // X mirror, applied here too so the Level Viewer's
+                    // floor fill lines up with scenery/instances instead of
+                    // drifting from the standalone Collision Viewer.
                     let v = mesh.vertices[index]
-                    floats.append(contentsOf: [v.x, v.y, v.z, color.x, color.y, color.z])
+                    floats.append(contentsOf: [-v.x, v.y, v.z, color.x, color.y, color.z])
                 }
             }
         }

@@ -34,32 +34,38 @@ public struct SceneryModelPlacement: Sendable {
 
     /// Decomposes the full 4-row transform into position/rotation/scale,
     /// using the exact construction the reference tool's own working 3D
-    /// viewer uses (`RMViewer.cs`/`SMViewer.cs` `LoadScenery`):
+    /// viewer uses (`SMViewer.cs`/`RMViewer.cs` `LoadSceneryModel`) — this
+    /// is a two-step construction, and an earlier version of this function
+    /// (twice) got it wrong by only accounting for the first step:
+    ///
+    /// **Step 1** builds an OpenTK `Matrix4` (row-vector convention,
+    /// `v' = v * M`) directly from the 4 on-disk rows `R0`/`R1`/`R2`/`R3`:
     /// ```
     /// M11=-R0.X  M12=R1.X  M13=R2.X  M14=R0.W
     /// M21=-R0.Y  M22=R1.Y  M23=R2.Y  M24=R1.W
     /// M31=-R0.Z  M32=R1.Z  M33=R2.Z  M34=R2.W
     /// M41=R3.X   M42=R3.Y  M43=R3.Z  M44=R3.W
     /// ```
-    /// That matrix is built in the reference tool's row-vector convention
-    /// (`v' = v * M`, so `M`'s *rows* are the transformed basis vectors —
-    /// row 1 is where local +X goes, row 2 is local +Y, row 3 is local
-    /// +Z). simd is column-vector (`v' = M * v`, basis vectors are
-    /// *columns*), so converting requires a transpose: simd's column *j*
-    /// must equal the reference's row *(j+1)*, not a straight copy of one
-    /// input row. Concretely, column 0 (local +X, transformed) takes the
-    /// X-component of `R0`/`R1`/`R2` — `(-R0.X, R1.X, R2.X)` — not all of
-    /// `R0`. An earlier version of this function copied whole input rows
-    /// into whole output columns instead of transposing, which happened to
-    /// pass its own round-trip tests (encode and decode shared the same
-    /// wrong formula) while producing wrong rotation/scale for any
-    /// non-trivial transform against real game data — every placement's
-    /// *position* (row 3, untouched by this bug either way) stayed
-    /// correct, so the visible symptom was pieces correctly anchored but
-    /// wildly mis-oriented/mis-scaled, reading as "flying apart."
+    /// **Step 2**, easy to miss reading only the assembly above:
+    /// `modelMatrix *= Matrix4.CreateScale(-1, 1, 1)`. Post-multiplying by
+    /// `diag(-1,1,1,1)` negates only the matrix's *first column* — i.e.
+    /// `M11`, `M21`, `M31`, `M41`. That cancels the `-R0.*` negation Step 1
+    /// put into the rotation/scale block (`M11/M21/M31` go from `-R0.X/Y/Z`
+    /// back to `+R0.X/Y/Z`) and instead negates the translation, `M41`
+    /// (`R3.X` → `-R3.X`).
     ///
-    /// Scale is each corrected column's length; dividing it out leaves a
-    /// pure rotation matrix for `simd_quatf`.
+    /// Composing both steps, the rotation/scale block ends up as the
+    /// **plain transpose** of the on-disk 3×3 block (no sign flip at all —
+    /// row-vector-to-column-vector conversion is always a transpose, full
+    /// stop), and only the translation's X component is negated. Every
+    /// previous version of this function tried to hand-roll a sign flip
+    /// into the rotation/scale columns (either copying whole rows, or
+    /// negating row0's components) while leaving translation untouched —
+    /// exactly backwards from what the reference tool actually does once
+    /// both steps are accounted for.
+    ///
+    /// Scale is each column's length; dividing it out leaves a pure
+    /// rotation matrix for `simd_quatf`.
     public var worldTransform: (position: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>)? {
         guard modelMatrix.count > 3 else { return nil }
         let row0 = modelMatrix[0]
@@ -67,9 +73,9 @@ public struct SceneryModelPlacement: Sendable {
         let row2 = modelMatrix[2]
         let row3 = modelMatrix[3]
 
-        let col0 = SIMD3<Float>(-row0.x, row1.x, row2.x)
-        let col1 = SIMD3<Float>(-row0.y, row1.y, row2.y)
-        let col2 = SIMD3<Float>(-row0.z, row1.z, row2.z)
+        let col0 = SIMD3<Float>(row0.x, row1.x, row2.x)
+        let col1 = SIMD3<Float>(row0.y, row1.y, row2.y)
+        let col2 = SIMD3<Float>(row0.z, row1.z, row2.z)
 
         let scaleX = simd_length(col0)
         let scaleY = simd_length(col1)
@@ -81,7 +87,7 @@ public struct SceneryModelPlacement: Sendable {
             scaleZ > 0.0001 ? col2 / scaleZ : SIMD3<Float>(0, 0, 1)
         ))
 
-        return (SIMD3(row3.x, row3.y, row3.z), simd_quatf(rotationMatrix), SIMD3(scaleX, scaleY, scaleZ))
+        return (SIMD3(-row3.x, row3.y, row3.z), simd_quatf(rotationMatrix), SIMD3(scaleX, scaleY, scaleZ))
     }
 }
 

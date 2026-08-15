@@ -125,18 +125,31 @@ final class CollisionFloorLayerTests: XCTestCase {
         walkScenery(smRoot)
         let sceneryAsset = try XCTUnwrap(scenery)
 
+        // "Coordinate-System Overhaul": collision vertices are raw on-disk
+        // data (see `ModelViewerRenderer.upload(collisionMesh:)`'s doc
+        // comment — there's a real write-back path, so the X mirror is
+        // applied only at render time, not baked into the decoded struct).
+        // `worldTransform` already applies its own (corrected) mirror to
+        // scenery, so this test has to mirror collision vertices by hand
+        // to compare them in the same space the renderer actually draws
+        // both in — comparing one mirrored and one raw would make this
+        // test meaningless.
+        let worldVertices = mesh.vertices.map { SIMD3<Float>(-$0.x, $0.y, $0.z) }
+
         var meshMin = SIMD2<Float>(repeating: .greatestFiniteMagnitude)
         var meshMax = SIMD2<Float>(repeating: -.greatestFiniteMagnitude)
-        for v in mesh.vertices {
+        for v in worldVertices {
             meshMin = simd_min(meshMin, SIMD2(v.x, v.z))
             meshMax = simd_max(meshMax, SIMD2(v.x, v.z))
         }
         var sceneryMin = SIMD2<Float>(repeating: .greatestFiniteMagnitude)
         var sceneryMax = SIMD2<Float>(repeating: -.greatestFiniteMagnitude)
+        var sceneryPositions: [SIMD3<Float>] = []
         for placement in sceneryAsset.placements {
             guard let t = placement.worldTransform else { continue }
             sceneryMin = simd_min(sceneryMin, SIMD2(t.position.x, t.position.z))
             sceneryMax = simd_max(sceneryMax, SIMD2(t.position.x, t.position.z))
+            sceneryPositions.append(t.position)
         }
 
         let overlapMinX = max(meshMin.x, sceneryMin.x)
@@ -145,5 +158,40 @@ final class CollisionFloorLayerTests: XCTestCase {
         let overlapMaxZ = min(meshMax.y, sceneryMax.y)
         XCTAssertLessThan(overlapMinX, overlapMaxX, "collision floor must span the same X range scenery occupies")
         XCTAssertLessThan(overlapMinZ, overlapMaxZ, "collision floor must span the same Z range scenery occupies")
+
+        // Tightened check: bounding boxes can coincidentally overlap even
+        // when the geometry inside them doesn't actually align (this is
+        // exactly how the pre-fix bug could still pass a pure bbox check
+        // for a roughly-symmetric level like hubb while being wrong for
+        // less symmetric ones). Sample real scenery placements and confirm
+        // each one sits close to *some* real collision triangle, not just
+        // somewhere inside the overall bounding box.
+        var validTriangles: [(SIMD3<Float>, SIMD3<Float>, SIMD3<Float>)] = []
+        validTriangles.reserveCapacity(mesh.triangles.count)
+        for triangle in mesh.triangles {
+            guard triangle.vertexIndex1 < worldVertices.count,
+                  triangle.vertexIndex2 < worldVertices.count,
+                  triangle.vertexIndex3 < worldVertices.count
+            else { continue }
+            validTriangles.append((worldVertices[triangle.vertexIndex1], worldVertices[triangle.vertexIndex2], worldVertices[triangle.vertexIndex3]))
+        }
+        XCTAssertFalse(validTriangles.isEmpty)
+
+        func nearestTriangleDistance(to point: SIMD3<Float>) -> Float {
+            var best = Float.greatestFiniteMagnitude
+            for (a, b, c) in validTriangles {
+                let centroid = (a + b + c) / 3
+                best = min(best, simd_distance(point, centroid))
+            }
+            return best
+        }
+
+        let sampled = sceneryPositions.count > 40 ? Array(stride(from: 0, to: sceneryPositions.count, by: sceneryPositions.count / 40).map { sceneryPositions[$0] }) : sceneryPositions
+        var closeCount = 0
+        for position in sampled where nearestTriangleDistance(to: position) < 15 {
+            closeCount += 1
+        }
+        let fraction = Double(closeCount) / Double(sampled.count)
+        XCTAssertGreaterThan(fraction, 0.5, "most real scenery placements should sit near some real collision geometry, not just inside the overall bounding box (\(closeCount)/\(sampled.count) within 15 units)")
     }
 }
