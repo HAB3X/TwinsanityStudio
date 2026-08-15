@@ -3293,6 +3293,75 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         else { return }
 
         let viewProjection = currentViewProjection(viewSize: view.bounds.size)
+        encodeScene(encoder: encoder, viewProjection: viewProjection)
+
+        encoder.endEncoding()
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+    }
+
+    /// Renders one frame of the level to an offscreen texture and reads it
+    /// back as a `CGImage` — the `LevelViewerRenderer` counterpart to
+    /// `ModelViewerRenderer.renderOffscreen`, added so the real rendering
+    /// pipeline (same `worldTransform`/mesh/material code the interactive
+    /// app uses) can be inspected from outside an on-screen window, e.g.
+    /// while debugging a specific level's geometry without driving the
+    /// full interactive app.
+    func renderOffscreen(width: Int, height: Int) -> CGImage? {
+        let colorDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        colorDescriptor.usage = [.renderTarget, .shaderRead]
+        colorDescriptor.storageMode = .shared
+        guard let colorTexture = device.makeTexture(descriptor: colorDescriptor) else { return nil }
+
+        let depthDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .depth32Float, width: width, height: height, mipmapped: false)
+        depthDescriptor.usage = [.renderTarget]
+        depthDescriptor.storageMode = .private
+        guard let depthTexture = device.makeTexture(descriptor: depthDescriptor) else { return nil }
+
+        let passDescriptor = MTLRenderPassDescriptor()
+        passDescriptor.colorAttachments[0].texture = colorTexture
+        passDescriptor.colorAttachments[0].loadAction = .clear
+        passDescriptor.colorAttachments[0].storeAction = .store
+        passDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.07, 0.07, 0.09, 1)
+        passDescriptor.depthAttachment.texture = depthTexture
+        passDescriptor.depthAttachment.loadAction = .clear
+        passDescriptor.depthAttachment.storeAction = .dontCare
+        passDescriptor.depthAttachment.clearDepth = 1.0
+
+        guard let commandBuffer = context.commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor)
+        else { return nil }
+
+        let viewProjection = currentViewProjection(viewSize: CGSize(width: width, height: height))
+        encodeScene(encoder: encoder, viewProjection: viewProjection)
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        var pixelBytes = [UInt8](repeating: 0, count: width * height * 4)
+        pixelBytes.withUnsafeMutableBytes { ptr in
+            colorTexture.getBytes(ptr.baseAddress!, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        }
+        var rgba = [UInt8](repeating: 0, count: pixelBytes.count)
+        for i in stride(from: 0, to: pixelBytes.count, by: 4) {
+            rgba[i] = pixelBytes[i + 2]
+            rgba[i + 1] = pixelBytes[i + 1]
+            rgba[i + 2] = pixelBytes[i]
+            rgba[i + 3] = pixelBytes[i + 3]
+        }
+        guard let providerRef = CGDataProvider(data: Data(rgba) as CFData) else { return nil }
+        return CGImage(
+            width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: providerRef, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+        )
+    }
+
+    /// Shared by `draw(in:)` and `renderOffscreen(width:height:)` — every
+    /// pass this renderer draws, factored out so an offscreen render is
+    /// pixel-for-pixel the same pipeline the interactive view uses, not a
+    /// parallel reimplementation that could drift from it.
+    private func encodeScene(encoder: MTLRenderCommandEncoder, viewProjection: simd_float4x4) {
         let lightDirection = normalize(SIMD3<Float>(-0.4, -1.0, -0.3))
 
         encoder.setRenderPipelineState(context.pipelineState)
@@ -3385,10 +3454,6 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             encoder.setVertexBuffer(chunkWallTriangleBuffer, offset: 0, index: 0)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: chunkWallTriangleVertexCount)
         }
-
-        encoder.endEncoding()
-        commandBuffer.present(drawable)
-        commandBuffer.commit()
     }
 
     // MARK: - Gizmo geometry, hit-testing, and dragging (blueprint 6.1)
