@@ -153,8 +153,12 @@ public enum SkinParser {
                 let b = UInt8(clamping: Int(colorRaw.binaryZ & 0xFF) + 127)
                 let a = UInt8(clamping: Int(colorRaw.binaryW & 0xFF) + 127)
 
+                // "Mesh-local X mirror": same fix as `ModelParser` -- ported
+                // from `SkinController.LoadMeshData` (`new Vector3(-model.
+                // Vertexes[j].X, ...)`), a separate mirror from the
+                // placement-level one this codebase already applies.
                 let vertex = StaticVertex(
-                    position: SIMD3(positions[j].x, positions[j].y, positions[j].z),
+                    position: SIMD3(-positions[j].x, positions[j].y, positions[j].z),
                     normal: .zero,
                     uv: SIMD2(uvs[j].x, uvs[j].y),
                     color: SIMD4(r, g, b, a)

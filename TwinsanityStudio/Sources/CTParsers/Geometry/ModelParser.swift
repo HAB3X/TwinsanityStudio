@@ -139,9 +139,22 @@ public enum ModelParser {
             let uv = idx < uvw.count ? uvw[idx] : VIFVector4()
             let normal = idx < normals.count ? normals[idx] : VIFVector4(0, 0, 0, 1)
             let emit = idx < emitColor.count ? emitColor[idx] : VIFVector4()
+            // "Mesh-local X mirror": ported from `ModelController.
+            // LoadMeshData` (`new Vector3(-model.Vertexes[j].X, ...)`,
+            // `new Vector3(-model.Vertexes[j].NX, ...)`) -- a *separate*
+            // mirror from the placement-level world-space X mirror this
+            // codebase already applies (`SceneryModelPlacement.
+            // worldTransform`, `ModelViewerRenderer.mirroredWorldPosition`).
+            // This one flips each mesh's own local vertex/normal X before
+            // any placement transform is applied at all. Symmetric meshes
+            // (a square floor tile) look identical either way, which is
+            // exactly why this was missed for as long as it was: it's
+            // invisible until a genuinely asymmetric mesh (a curved pipe
+            // segment, which mirrors into curving the *opposite* direction)
+            // is placed next to a neighbor it's supposed to connect to.
             vertices.append(StaticVertex(
-                position: SIMD3(positions[idx].x, positions[idx].y, positions[idx].z),
-                normal: SIMD3(normal.x, normal.y, normal.z),
+                position: SIMD3(-positions[idx].x, positions[idx].y, positions[idx].z),
+                normal: SIMD3(-normal.x, normal.y, normal.z),
                 uv: SIMD2(uv.x, uv.y),
                 color: SIMD4(color.r, color.g, color.b, color.a),
                 emissive: SIMD4(UInt8(clamping: Int(emit.x)), UInt8(clamping: Int(emit.y)), UInt8(clamping: Int(emit.z)), UInt8(clamping: Int(emit.w)))
