@@ -200,10 +200,39 @@ final class WOCContainerParserTests: XCTestCase {
             let decoded = try loadAndDecompressRealGSC(sample.path)
             let file = try WOCContainerParser.parse(decoded)
             let iabl = try XCTUnwrap(file.sections.first { $0.tag == "IABL" }, "no IABL in \(sample.path)")
-            let (records, width) = try WOCContainerParser.parseAttributeBlock(iabl.payload)
+            let records = try WOCContainerParser.parseAttributeBlock(iabl.payload)
             XCTAssertEqual(records.count, sample.expectedCount, "record count for \(sample.path)")
-            XCTAssertEqual(width, 96, "record width for \(sample.path)")
+            for record in records {
+                XCTAssertEqual(record.rawBytes.count, 96, "record width for \(sample.path)")
+            }
         }
+    }
+
+    /// Independently re-verified (not just trusting the agent report that
+    /// found this) on `DROID.GSC`: `ALIB`'s zero-sentinel record and
+    /// `IABL`'s alibIndex cross-reference agree exactly -- the one ALIB
+    /// index no IABL record ever points at is exactly the one ALIB record
+    /// with a zero-offset (empty) sentinel.
+    func testRealALIBZeroSentinelMatchesIABLUnreferencedIndex() throws {
+        let path = "A/DROID/DROID.GSC"
+        let decoded = try loadAndDecompressRealGSC(path)
+        let file = try WOCContainerParser.parse(decoded)
+        let alib = try XCTUnwrap(file.sections.first { $0.tag == "ALIB" })
+        let iabl = try XCTUnwrap(file.sections.first { $0.tag == "IABL" })
+
+        let alibRecords = try WOCContainerParser.parseAttributeLibrary(alib.payload)
+        let iablRecords = try WOCContainerParser.parseAttributeBlock(iabl.payload)
+
+        XCTAssertEqual(alibRecords.count, 10)
+        let emptyIndices = Set(alibRecords.enumerated().filter { $0.element.isEmpty }.map { $0.offset })
+        XCTAssertEqual(emptyIndices, [6])
+
+        for record in iablRecords {
+            XCTAssertLessThan(Int(record.alibIndex), alibRecords.count, "IABL alibIndex should be in-bounds")
+        }
+        let referenced = Set(iablRecords.map { Int($0.alibIndex) })
+        let unreferenced = Set(0..<alibRecords.count).subtracting(referenced)
+        XCTAssertEqual(unreferenced, emptyIndices, "ALIB's empty-sentinel records should exactly match IABL's unreferenced indices")
     }
 
     /// Confirmed by an independent spot-check before shipping (this

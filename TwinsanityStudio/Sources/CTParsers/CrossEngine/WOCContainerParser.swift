@@ -91,21 +91,32 @@ import Foundation
 ///   (zero false positives) -- real and deliberate, but only a minority
 ///   shape; most files' `SST0` trailers look different or are absent.
 ///   Blob internals unresolved.
-/// - `OBJ0`, `TAS0`, `ALIB` -- not decoded. `OBJ0` is the next
-///   highest-value target: its per-entry format holds real embedded mesh
-///   geometry (a 16-byte vertex quadword pattern was confirmed and
-///   visually verified -- see ``parseVertexQuadwords(_:byteOffset:count:)``),
-///   its `count` is confirmed (54-file sweep) to be exactly the number of
-///   distinct objects `INST` instances reference, and a finer-grained
-///   "chunk" framing inside it is confirmed for at least one file (see
-///   ``obj0ChunkLength(_:markerOffset:)``) -- but entry *boundaries*
-///   (`OBJ0`'s own per-object count) are still unsolved. `TAS0` (13 of 54
-///   files have it): a `count:u32 + reserved:u32` header divides cleanly
-///   to the SAME width -- 48 bytes -- in 5 of those 13 files (counts
-///   1/1/2/2/3, all landing on 48 exactly), but the other 8 files give
-///   inconsistent widths (44, 96, 112, or no clean division at all), so
-///   this is a real partial lead, not a confirmed universal record size --
-///   left undecoded rather than implemented on a 5/13 hit rate.
+/// - `ALIB` -- see ``parseAttributeLibrary(_:)``. NOT a fixed-width table
+///   (confirmed dead end from an earlier pass); the real structure is a
+///   `count`-entry offset table (relative to just past the table itself,
+///   with `0` as an empty-record sentinel) into a following record blob.
+///   Verified across all 25 files that have it, and independently
+///   cross-validated against `IABL`'s own `alibIndex` field (see
+///   ``AttributeBlockRecord/alibIndex``): every `IABL` record references
+///   a valid `ALIB` index, and in 8 of 24 files the exact set of
+///   `ALIB`-indices-never-referenced-by-`IABL` matches the exact set of
+///   `ALIB`'s own empty-sentinel records. Record *internals* (once
+///   boundaries are known) are still undecoded.
+/// - `OBJ0`, `TAS0` -- not decoded. `OBJ0` is the next highest-value
+///   target: its per-entry format holds real embedded mesh geometry (a
+///   16-byte vertex quadword pattern was confirmed and visually verified
+///   -- see ``parseVertexQuadwords(_:byteOffset:count:)``), its `count`
+///   is confirmed (54-file sweep) to be exactly the number of distinct
+///   objects `INST` instances reference, and a finer-grained "chunk"
+///   framing inside it is confirmed across 4 files via a validated walk
+///   (see ``walkOBJ0Chunks(_:)``) -- but entry *boundaries* (`OBJ0`'s own
+///   per-object count) are still unsolved. `TAS0` (13 of 54 files have
+///   it): a `count:u32 + reserved:u32` header divides cleanly to the SAME
+///   width -- 48 bytes -- in 5 of those 13 files (counts 1/1/2/2/3, all
+///   landing on 48 exactly), but the other 8 files give inconsistent
+///   widths (44, 96, 112, or no clean division at all), so this is a real
+///   partial lead, not a confirmed universal record size -- left
+///   undecoded rather than implemented on a 5/13 hit rate.
 ///
 /// Every section not listed above as decoded is exposed as raw
 /// ``WOCSection/payload`` bytes rather than guessed at.
@@ -387,33 +398,110 @@ public enum WOCContainerParser {
         return result
     }
 
-    /// Decodes an `IABL` ("Instance Attribute BLock"?) section's payload
-    /// the same way as ``parseMeshSet(_:)``: `count:UInt32LE` +
+    /// A single `IABL` record ("Instance Attribute BLock"?): a 96-byte
+    /// fixed record where only one field is decoded -- see
+    /// ``parseAttributeBlock(_:)``.
+    public struct AttributeBlockRecord {
+        /// The last `UInt32LE` of the 96-byte record (byte offset 92).
+        /// CONFIRMED: a reference into the sibling `ALIB` section's own
+        /// record list, exactly analogous to `INST.objectIndex`'s
+        /// reference into `OBJ0`. Verified across all 24 files that have
+        /// both `IABL` and `ALIB`: every single value falls strictly
+        /// within `0..<ALIB record count`, zero out-of-range references
+        /// anywhere. In 8 of those 24 files, the set of `ALIB` indices
+        /// *never* referenced by any `IABL` record exactly matches the
+        /// set of `ALIB` records with zero length (see
+        /// ``ALIBRecord/isEmpty``) -- independent cross-validation of both
+        /// findings at once, re-checked directly (not just taken from an
+        /// agent report) on `DROID.GSC` (`{6}` == `{6}` exactly).
+        public let alibIndex: UInt32
+        /// The full 96-byte record; internals beyond `alibIndex` are not
+        /// decoded (mostly zero, with a small non-zero region starting
+        /// around byte 64 containing plausible attribute-like float
+        /// values -- not verified enough to commit to further field
+        /// offsets).
+        public let rawBytes: Data
+    }
+
+    /// Decodes an `IABL` section's payload: `count:UInt32LE` +
     /// `reserved:UInt32LE` + `count` fixed-width records. Confirmed
     /// cross-file: the width is **96 bytes** in every one of the 24 files
-    /// in the full 54-file corpus that have `IABL` (originally checked on
-    /// 3, re-verified against all 24 -- zero exceptions, exact division
-    /// every time, not approximate).
+    /// in the full 54-file corpus that have `IABL`, zero exceptions, exact
+    /// division every time.
+    public static func parseAttributeBlock(_ payload: Data) throws -> [AttributeBlockRecord] {
+        let (records, width) = try parseMeshSet(payload)
+        guard width == 96 else { return [] }
+        return records.map { record in
+            let bytes = [UInt8](record)
+            return AttributeBlockRecord(alibIndex: leUInt32(bytes, 92), rawBytes: record)
+        }
+    }
+
+    /// A single record from an `ALIB` ("ATTRIBUTE LIBrary"?) section, as
+    /// resolved by ``parseAttributeLibrary(_:)``.
+    public struct ALIBRecord {
+        /// This record's byte range within `ALIB`'s record blob (i.e.
+        /// relative to just past the offset table, not the section
+        /// payload start).
+        public let byteRange: Range<Int>
+        public let data: Data
+        /// `true` when this record's raw offset-table entry was the `0`
+        /// sentinel (see ``parseAttributeLibrary(_:)``'s doc comment) --
+        /// an explicitly empty/unused record, not a decode failure.
+        public let isEmpty: Bool
+    }
+
+    /// Decodes an `ALIB` section's payload. Earlier sessions correctly
+    /// ruled out the obvious fixed-width-record hypothesis (the leading
+    /// count field divided the payload evenly in some files but to
+    /// *different* widths, the same trap that made `ALIB` look briefly
+    /// promising before -- see the git history for that dead end). The
+    /// real structure, found afterward:
+    /// ```
+    /// ALIB := count:UInt32LE reserved:UInt32LE(==0) offsetTable:UInt32LE[count] recordBlob:Bytes
+    /// ```
+    /// Each `offsetTable[i]` is a byte offset **relative to the position
+    /// right after the table itself** (`baseline = 8 + 4*count`). Record
+    /// `i` spans `[baseline+offsetTable[i], baseline+offsetTable[i+1])`,
+    /// and the last record runs to the end of the payload. A `0` table
+    /// entry is a sentinel for an explicitly empty record -- it "inherits"
+    /// the start position of the next non-zero entry (so it has zero
+    /// length), rather than being a literal offset back to the table.
     ///
-    /// Record internals not decoded, but worth noting for a future
-    /// session: records are mostly zero with a small non-zero region
-    /// starting around byte 64, containing a varying float that read as
-    /// exact values like `0.3`/`0.5` in the samples checked (plausibly a
-    /// per-object radius or scale), two constant exact `1.0`s nearby, and
-    /// a small varying integer in the last 4 bytes -- an attribute-block
-    /// shape consistent with the section's name, but not verified enough
-    /// to commit to field offsets.
-    ///
-    /// **Ruled out, not just unattempted:** the sibling `ALIB` section
-    /// ("ATTRIBUTE LIBrary"?) looked at first like the same fixed-width
-    /// pattern (its leading count field divided its payload evenly in 2 of
-    /// 3 files checked), but the resulting width was *different* between
-    /// those two files (1456 in `FARM.GSC`, 5242 in `HUB.GSC`) and didn't
-    /// divide evenly at all in the third (`CASTLE_C.GSC`) -- so `ALIB` is
-    /// NOT a simple fixed-width record table, and no parser is provided
-    /// for it here to avoid a future session re-deriving the same dead end.
-    public static func parseAttributeBlock(_ payload: Data) throws -> (records: [Data], recordWidth: Int) {
-        try parseMeshSet(payload) // identical framing -- count(u32) + reserved(u32) + count fixed records
+    /// CONFIRMED across all 25 real files with `ALIB` in the full corpus:
+    /// offsets are non-negative and monotonically non-decreasing after
+    /// resolving the zero-sentinel, and the last resolved offset never
+    /// exceeds the blob's length. Independently re-verified before
+    /// implementing (not just trusting the source that found this) on
+    /// `FARM.GSC` (4 records, offsets `20,1776,3532,5288`, blob length
+    /// 5808) and `DROID.GSC` (10 records, one zero-sentinel at index 6,
+    /// confirmed to be exactly the `IABL`-unreferenced index).
+    public static func parseAttributeLibrary(_ payload: Data) throws -> [ALIBRecord] {
+        let bytes = [UInt8](payload)
+        guard bytes.count >= 8 else { return [] }
+        let count = Int(leUInt32(bytes, 0))
+        guard count > 0, 8 + 4 * count <= bytes.count else { return [] }
+
+        var rawOffsets: [Int] = []
+        for i in 0..<count { rawOffsets.append(Int(leUInt32(bytes, 8 + i * 4))) }
+
+        let baseline = 8 + 4 * count
+        let blobLength = bytes.count - baseline
+        var resolved = rawOffsets
+        for i in stride(from: resolved.count - 2, through: 0, by: -1) where resolved[i] == 0 {
+            resolved[i] = resolved[i + 1]
+        }
+
+        var records: [ALIBRecord] = []
+        records.reserveCapacity(count)
+        for i in 0..<count {
+            let start = resolved[i]
+            let end = i + 1 < count ? resolved[i + 1] : blobLength
+            guard start >= 0, end >= start, baseline + end <= bytes.count else { break }
+            let range = (baseline + start)..<(baseline + end)
+            records.append(ALIBRecord(byteRange: (start)..<(end), data: Data(bytes[range]), isEmpty: rawOffsets[i] == 0))
+        }
+        return records
     }
 
     /// A single record from a `SPEC` section: byte-for-byte the same
