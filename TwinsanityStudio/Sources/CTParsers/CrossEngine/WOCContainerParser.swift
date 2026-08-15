@@ -160,6 +160,17 @@ public enum WOCContainerParser {
         return (names, trailer)
     }
 
+    /// Reads the leading `UInt32LE` "count" field present at the start of
+    /// every count-prefixed section payload (`MS00`/`INST`/`IABL`/`OBJ0`).
+    /// A small standalone helper since callers sometimes need this count
+    /// (e.g. to cross-reference against another section) without wanting
+    /// the full fixed-width record decode.
+    public static func leadingCount(_ payload: Data) throws -> Int {
+        let bytes = [UInt8](payload)
+        guard bytes.count >= 4 else { throw ParseError.truncated }
+        return Int(leUInt32(bytes, 0))
+    }
+
     /// Decodes an `MS00` section's payload as a fixed-width record table:
     /// `count:UInt32LE` + `reserved:UInt32LE` + `count` records of a
     /// constant width. Confirmed across 4 real files of very different
@@ -205,11 +216,26 @@ public enum WOCContainerParser {
                              Float, Float, Float, Float,
                              Float, Float, Float, Float,
                              Float, Float, Float, Float)
-        /// Confirmed to exactly equal this instance's own position in the
-        /// `INST` array in every one of 564 real records checked (0
-        /// mismatches across `AIRSHIP.GSC` (41 instances) and `FARM.GSC`
-        /// (523 instances)) -- not inferred, directly cross-checked.
-        public let index: UInt32
+        /// A reference into the sibling `OBJ0` section's entry array --
+        /// i.e. which object/mesh definition this placed instance uses.
+        /// This was originally (WRONGLY) documented as "this instance's
+        /// own array position" based on 2 small files where that
+        /// coincidentally held (`AIRSHIP.GSC`/`FARM.GSC`, where every
+        /// object happens to be placed exactly once). A full 53-file
+        /// sweep found the real pattern instead, and it's rock solid:
+        /// in **every one of the 53 real files checked**, this field's
+        /// set of distinct values across all instances is *exactly*
+        /// `0..<OBJ0.count` (same count, same max, zero out-of-bounds
+        /// references anywhere) -- i.e. every `OBJ0` entry is referenced
+        /// by at least one instance, and no instance ever references
+        /// past the end. Levels with heavy prop reuse (e.g.
+        /// `CASTLE_A.GSC`: 2111 instances referencing only 408 distinct
+        /// `OBJ0` entries) make this unambiguous -- it cannot be a
+        /// coincidental position match at that scale. Named
+        /// `objectIndex` for what it verifiably references; `OBJ0`'s own
+        /// per-entry internal format (beyond entry 0's confirmed
+        /// embedded vertex geometry) is still not decoded.
+        public let objectIndex: UInt32
         /// Only ever `4` or `5` across all 564 real instances checked in
         /// 2 files -- both values are valid `MS00` record indices in both
         /// files (57 and 69 `MS00` records respectively), so a direct
@@ -239,10 +265,8 @@ public enum WOCContainerParser {
     /// Decodes an `INST` section's payload: `count:UInt32LE` +
     /// `reserved:UInt32LE` + `count` fixed-width 80-byte records. Record
     /// width and count were cross-verified against real files the same
-    /// way as ``parseMeshSet(_:)``, and `INST`'s `count` was additionally
-    /// observed to exactly match its sibling `OBJ0` section's own leading
-    /// count field in both samples checked, suggesting (not yet confirmed)
-    /// a 1:1 correspondence between `OBJ0` entries and `INST` instances.
+    /// way as ``parseMeshSet(_:)``. See ``Instance/objectIndex`` for the
+    /// (now fully confirmed, 53-file) `OBJ0` cross-reference relationship.
     public static func parseInstances(_ payload: Data) throws -> [Instance] {
         let bytes = [UInt8](payload)
         guard bytes.count >= 8 else { throw ParseError.truncated }
@@ -257,7 +281,7 @@ public enum WOCContainerParser {
             var floats = [Float](repeating: 0, count: 16)
             for f in 0..<16 { floats[f] = leFloat32(bytes, start + f * 4) }
             let tailStart = start + 64
-            let index = leUInt32(bytes, tailStart)
+            let objectIndex = leUInt32(bytes, tailStart)
             let typeOrMeshIndex = leUInt32(bytes, tailStart + 4)
             let unknownTail1 = leUInt32(bytes, tailStart + 8)
             let unknownTail2 = leUInt32(bytes, tailStart + 12)
@@ -266,7 +290,7 @@ public enum WOCContainerParser {
                          floats[4], floats[5], floats[6], floats[7],
                          floats[8], floats[9], floats[10], floats[11],
                          floats[12], floats[13], floats[14], floats[15]),
-                index: index, typeOrMeshIndex: typeOrMeshIndex,
+                objectIndex: objectIndex, typeOrMeshIndex: typeOrMeshIndex,
                 unknownTail1: unknownTail1, unknownTail2: unknownTail2
             ))
         }

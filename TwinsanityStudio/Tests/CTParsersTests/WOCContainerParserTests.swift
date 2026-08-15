@@ -116,7 +116,7 @@ final class WOCContainerParserTests: XCTestCase {
         }
     }
 
-    func testRealINSTInstancesHaveSelfConsistentIndicesAndPlausibleTransforms() throws {
+    func testRealINSTInstancesHavePlausibleTransforms() throws {
         let samples: [(path: String, expectedCount: Int)] = [
             ("A/AIRSHIP/AIRSHIP.GSC", 41),
             ("A/FARM/FARM.GSC", 523),
@@ -128,13 +128,39 @@ final class WOCContainerParserTests: XCTestCase {
             let instances = try WOCContainerParser.parseInstances(inst.payload)
             XCTAssertEqual(instances.count, sample.expectedCount, "instance count for \(sample.path)")
             for (i, instance) in instances.enumerated() {
-                XCTAssertEqual(instance.index, UInt32(i), "instance \(i) index field should equal its own array position, for \(sample.path)")
                 XCTAssertEqual(instance.matrix.15, 1.0, "homogeneous w should be 1.0 for instance \(i) in \(sample.path)")
                 XCTAssertEqual(instance.unknownTail2, 0, "unknownTail2 for \(sample.path) instance \(i)")
             }
             // unknownTail1 is NOT always zero (verified: don't assert it is) --
             // it's zero for the vast majority of real instances but a real
             // minority carry a nonzero, pointer-shaped value.
+        }
+    }
+
+    /// The definitive real-data test for `Instance.objectIndex`: a broad
+    /// sweep (see `WOCContainerParser`'s doc comment) found that an
+    /// earlier, narrower 2-file check had accidentally verified the WRONG
+    /// property (that this field equals the instance's own array
+    /// position) -- true only because those 2 small files happen to place
+    /// every object exactly once. `CASTLE_A.GSC` is a real file with heavy
+    /// prop reuse (2111 instances, only 408 distinct objects) where the
+    /// old property is false for the overwhelming majority of instances,
+    /// but the real property -- every value is a valid `OBJ0` index, and
+    /// the set of distinct values is exactly `0..<OBJ0.count` -- still
+    /// holds exactly.
+    func testRealINSTObjectIndexIsExactlyTheOBJ0IndexRange() throws {
+        let samples = ["A/AIRSHIP/AIRSHIP.GSC", "A/FARM/FARM.GSC", "A/CASTLE_A/CASTLE_A.GSC"]
+        for path in samples {
+            let decoded = try loadAndDecompressRealGSC(path)
+            let file = try WOCContainerParser.parse(decoded)
+            let obj0 = try XCTUnwrap(file.sections.first { $0.tag == "OBJ0" }, "no OBJ0 in \(path)")
+            let obj0Count = try WOCContainerParser.leadingCount(obj0.payload)
+            let inst = try XCTUnwrap(file.sections.first { $0.tag == "INST" }, "no INST in \(path)")
+            let instances = try WOCContainerParser.parseInstances(inst.payload)
+
+            let distinctIndices = Set(instances.map(\.objectIndex))
+            XCTAssertEqual(distinctIndices, Set(0..<UInt32(obj0Count)), "objectIndex values should exactly cover 0..<OBJ0.count for \(path)")
+            XCTAssertTrue(instances.allSatisfy { $0.objectIndex < UInt32(obj0Count) }, "no objectIndex should be out of OBJ0's bounds for \(path)")
         }
     }
 
