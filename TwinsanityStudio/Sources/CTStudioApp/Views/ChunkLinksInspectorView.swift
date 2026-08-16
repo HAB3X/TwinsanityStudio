@@ -2,10 +2,10 @@ import SwiftUI
 import CTModels
 
 /// Inspector for a decoded `ChunkLinks` record — "Chunk-Based Architecture"
-/// (Part 2). No write-back yet (unlike Trigger/Camera): this build has no
-/// verified byte-exact encoder for the record's variable-length
-/// `path`/tree-chain shape, so editing here would risk producing a file this
-/// build itself can't parse back.
+/// (Part 2). "Parity Phase E": real write-back now too, via
+/// `ChunkLinksEditorSheet`/`ChunkLinksWriter` — ports `Editors/
+/// ChunkLinksEditor.cs`'s field set (transform matrices, visibility flags,
+/// load area/wall arrays).
 ///
 /// "Load Chunk" (below) *is* real, wired to `WorkspaceViewModel.
 /// openChunkLink` — it resolves the link's target against currently open
@@ -18,6 +18,7 @@ struct ChunkLinksInspectorView: View {
     let node: ChunkNode
     let chunkLinks: ChunkLinksAsset
     @State private var loadingLinkID: Int?
+    @State private var showEditor = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -26,6 +27,8 @@ struct ChunkLinksInspectorView: View {
                     Text("Every neighboring chunk file this level can stream in, decoded from the real on-disk `ChunkLinks` record. \"Load Chunk\" opens the target into the sidebar if its archive is already open; the Level Viewer additionally stitches its geometry into the 3D view.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Button("Edit Chunk Links…") { showEditor = true }
+                        .disabled(!workspace.canSaveEdits(for: node))
                 }
                 ForEach(chunkLinks.links) { link in
                     Section("Link \(link.id): \(link.path)") {
@@ -51,6 +54,9 @@ struct ChunkLinksInspectorView: View {
                 }
             }
             .formStyle(.grouped)
+        }
+        .sheet(isPresented: $showEditor) {
+            ChunkLinksEditorSheet(node: node, chunkLinks: chunkLinks)
         }
     }
 }
