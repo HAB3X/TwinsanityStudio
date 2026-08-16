@@ -86,13 +86,13 @@ struct TextureInspectorView: View {
                 } label: {
                     Label(isReplacingTexture ? "Replacing…" : "Replace with Image…", systemImage: "photo.badge.plus")
                 }
-                .disabled(texture.pixelFormat != .psmct32 || isReplacingTexture)
+                .disabled(!Self.isReplaceable(texture.pixelFormat) || isReplacingTexture)
                 Spacer()
                 if isReplacingTexture { ProgressView().controlSize(.small) }
             }
-            Text(texture.pixelFormat == .psmct32
-                ? "\"Asset Swap & Quick-Test: Recipe Book\" (blueprint 6.4) texture replace: resamples an image you pick to this texture's exact \(texture.width) × \(texture.height) and re-encodes it into a real PSMCT32 record, then saves an edited copy — the original file on disk is not modified."
-                : "Only PSMCT32 (raw RGBA) textures can be replaced — this is \(texture.pixelFormat.rawValue.uppercased()), which has no verified encoder yet (re-swizzling and re-quantizing to a palette are real, separate work this build doesn't guess at).")
+            Text(Self.isReplaceable(texture.pixelFormat)
+                ? "\"Asset Swap & Quick-Test: Recipe Book\" (blueprint 6.4) texture replace: resamples an image you pick to this texture's exact \(texture.width) × \(texture.height) and re-encodes it into a real \(texture.pixelFormat.rawValue.uppercased()) record, then saves an edited copy — the original file on disk is not modified."
+                : "Only PSMCT32 (PS2 raw RGBA) and raw-uncompressed TextureX (Xbox) textures can be replaced — this is \(texture.pixelFormat.rawValue.uppercased()), which has no verified encoder yet (re-compressing to DXT5, and re-swizzling/re-quantizing to a GS palette, are real, separate work this build doesn't guess at).")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             if let replaceError {
@@ -124,13 +124,15 @@ struct TextureInspectorView: View {
             replaceError = "Couldn't read that file as an image."
             return
         }
-        let replacement = TextureAsset(id: texture.id, width: texture.width, height: texture.height, pixelFormat: .psmct32, rgba: resampled)
+        let replacement = TextureAsset(id: texture.id, width: texture.width, height: texture.height, pixelFormat: texture.pixelFormat, rgba: resampled)
         guard let originalRecordBytes = workspace.rawBytes(for: node) else {
             replaceError = "Couldn't read this texture's original on-disk bytes — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
             return
         }
         do {
-            let newRecordBytes = try TextureWriter.replacingPixelData(of: replacement, inOriginalRecordBytes: originalRecordBytes)
+            let newRecordBytes = texture.pixelFormat == .rawRGBA
+                ? try TextureXWriter.replacingPixelData(of: replacement, inOriginalRecordBytes: originalRecordBytes)
+                : try TextureWriter.replacingPixelData(of: replacement, inOriginalRecordBytes: originalRecordBytes)
             guard let patchedBytes = workspace.patchedFileBytes(replacing: node, with: newRecordBytes) else {
                 replaceError = "Couldn't patch this texture back into its file."
                 return
@@ -161,6 +163,15 @@ struct TextureInspectorView: View {
     /// a target size decoupled from the source image's own dimensions
     /// (this always needs to land on the original texture's exact size,
     /// never the picked image's).
+    /// "Parity Phase L": which pixel formats have a verified, byte-exact
+    /// encoder to replace back into — PS2 PSMCT32 (`TextureWriter`) and now
+    /// Xbox raw-uncompressed `TextureX` (`TextureXWriter`). DXT5 and
+    /// GS-swizzled/palette formats aren't included; see the button's own
+    /// caption for why.
+    private static func isReplaceable(_ format: TexturePixelFormat) -> Bool {
+        format == .psmct32 || format == .rawRGBA
+    }
+
     private static func resampledRGBA(from image: NSImage, width: Int, height: Int) -> [UInt8]? {
         guard width > 0, height > 0 else { return nil }
         var proposedRect = CGRect(x: 0, y: 0, width: image.size.width, height: image.size.height)
