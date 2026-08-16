@@ -129,6 +129,7 @@ public enum WorldPlacementParser {
         let size = try cursor.readVector4()
         let instanceIDs = try readCountedUInt16List(&cursor)
 
+        let fixedFieldsFileOffset = cursor.position
         let camHeader = try cursor.readUInt32()
         let unkShort: UInt16? = isDemo ? nil : try cursor.readUInt16()
         let unkFloat1 = try cursor.readFloat32()
@@ -191,7 +192,8 @@ public enum WorldPlacementParser {
             cameraType2: CameraKind(rawValue: cameraType2Raw) ?? .none,
             unkByte: unkByte,
             subtype1: subtype1,
-            subtype2: subtype2
+            subtype2: subtype2,
+            fixedFieldsFileOffset: fixedFieldsFileOffset
         )
     }
 

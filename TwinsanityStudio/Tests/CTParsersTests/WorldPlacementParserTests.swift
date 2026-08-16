@@ -420,6 +420,58 @@ final class WorldPlacementParserTests: XCTestCase {
         XCTAssertEqual(cursor.position, w.count)
     }
 
+    /// "Parity Phase F": `PlacedCamera.fixedFieldsFileOffset` +
+    /// `WorldPlacementWriter.writeCameraFixedFields` — captures the real
+    /// offset of `camHeader` (right after the shared Trigger-shape prefix
+    /// `writeTriggerOrCameraPrefix` already patches) and round-trips a
+    /// same-size patch across the whole fixed block up to (not including)
+    /// `cameraType1`, leaving that and the sub-payload untouched.
+    func testCameraFixedFieldsOffsetRoundTripsThroughWriter() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(0); w.writeUInt32(1); w.writeFloat32(0.3)
+        for _ in 0..<3 { w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1) }
+        w.writeInt32(0); w.writeInt32(0); w.writeUInt32(10)
+        w.writeUInt32(0xCAFE) // CamHeader
+        w.writeUInt16(7)      // UnkShort
+        w.writeFloat32(1)     // UnkFloat1
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0)
+        w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0)
+        w.writeInt32(0); w.writeInt32(0)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0)
+        w.writeUInt32(0); w.writeInt32(0); w.writeUInt32(0); w.writeFloat32(0)
+        w.writeUInt32(3); w.writeUInt32(3) // CameraType1/2 = none
+        w.writeUInt8(9) // UnkByte
+
+        let originalBytes = w.data
+        var cursor = BinaryCursor(data: originalBytes)
+        let camera = try WorldPlacementParser.parseCamera(&cursor, recordID: 20, isDemo: false)
+
+        var probe = BinaryCursor(data: originalBytes)
+        _ = try probe.seek(to: camera.fixedFieldsFileOffset)
+        XCTAssertEqual(try probe.readUInt32(), 0xCAFE)
+
+        var edited = camera
+        edited.camHeader = 0xBEEF
+        edited.unkFloat1 = 42.5
+        edited.unkUInt7 = 99
+        let encoded = WorldPlacementWriter.writeCameraFixedFields(edited, isDemo: false)
+
+        var patched = originalBytes
+        let offset = camera.fixedFieldsFileOffset
+        patched.replaceSubrange(offset..<(offset + encoded.count), with: encoded)
+        var reparseCursor = BinaryCursor(data: patched)
+        let reparsed = try WorldPlacementParser.parseCamera(&reparseCursor, recordID: 20, isDemo: false)
+
+        XCTAssertEqual(reparsed.camHeader, 0xBEEF)
+        XCTAssertEqual(reparsed.unkFloat1, 42.5)
+        XCTAssertEqual(reparsed.unkUInt7, 99)
+        XCTAssertEqual(reparsed.cameraType1, .none, "the field right after the patched block must be untouched")
+        XCTAssertEqual(reparsed.unkByte, 9, "the field at the very end must be untouched")
+        XCTAssertEqual(patched.count, originalBytes.count)
+    }
+
     func testParseCameraDemoOmitsUnkShortAndUnkByte() throws {
         var w = BinaryWriter()
         w.writeUInt32(0); w.writeUInt32(1); w.writeFloat32(0.3)

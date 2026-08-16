@@ -187,6 +187,43 @@ public enum WorldPlacementWriter {
     /// straight into a copy of the file at the point's exact absolute
     /// offset (`ChunkNode.fileOffset + controlPointFileOffsets[i]`) with
     /// nothing else in the file needing to move.
+    /// "Parity Phase F": encodes the fixed-size block of `Camera`-specific
+    /// scalar fields between the shared Trigger-shape prefix and the
+    /// polymorphic `cameraType1`/`cameraType2`/sub-payload — `camHeader`
+    /// through `unkFloat8`, in `WorldPlacementParser.parseCamera`'s exact
+    /// read order, respecting `isDemo`'s `unkShort` omission the same way
+    /// that parser does. Meant to be patched at `PlacedCamera.
+    /// fixedFieldsFileOffset`; never touches `cameraType1`/`cameraType2`
+    /// or either sub-payload, so the block is always the same size as what
+    /// it replaces.
+    public static func writeCameraFixedFields(_ camera: PlacedCamera, isDemo: Bool) -> Data {
+        var writer = BinaryWriter()
+        writer.writeUInt32(camera.camHeader)
+        if !isDemo, let unkShort = camera.unkShort {
+            writer.writeUInt16(unkShort)
+        }
+        writer.writeFloat32(camera.unkFloat1)
+        writer.writeVector4(camera.unkCoords1)
+        writer.writeVector4(camera.unkCoords2)
+        writer.writeFloat32(camera.unkFloat2)
+        writer.writeFloat32(camera.unkFloat3)
+        writer.writeUInt32(camera.unkUInt1)
+        writer.writeUInt32(camera.unkUInt2)
+        writer.writeUInt32(camera.unkUInt3)
+        writer.writeUInt32(camera.unkUInt4)
+        writer.writeInt32(camera.unkInt5)
+        writer.writeInt32(camera.unkInt6)
+        writer.writeFloat32(camera.unkFloat4)
+        writer.writeFloat32(camera.unkFloat5)
+        writer.writeFloat32(camera.unkFloat6)
+        writer.writeFloat32(camera.unkFloat7)
+        writer.writeUInt32(camera.unkUInt7)
+        writer.writeInt32(camera.unkInt8)
+        writer.writeUInt32(camera.unkUInt9)
+        writer.writeFloat32(camera.unkFloat8)
+        return writer.data
+    }
+
     public static func writeCameraControlPoint(_ vector: SIMD4<Float>) -> Data {
         var writer = BinaryWriter()
         writer.writeFloat32(vector.x)

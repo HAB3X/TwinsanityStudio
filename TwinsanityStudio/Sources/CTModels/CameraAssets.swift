@@ -337,6 +337,20 @@ public struct PlacedCamera: Sendable, Identifiable {
     public var unkByte: UInt8?
     public var subtype1: CameraSubtype?
     public var subtype2: CameraSubtype?
+    /// Byte offset of `camHeader` (the first field after the shared
+    /// Trigger-shape prefix `WorldPlacementWriter.writeTriggerOrCameraPrefix`
+    /// already patches), relative to this `Camera` record's own start.
+    /// Every field from `camHeader` through `unkFloat8` is fixed-size and
+    /// strictly sequential (branching only on `isDemo`'s `unkShort`
+    /// presence) right up to the polymorphic `cameraType1`/`cameraType2`/
+    /// sub-payload — "Parity Phase F" — so this one offset is enough for
+    /// `WorldPlacementWriter.writeCameraFixedFields` to patch that whole
+    /// block in one same-size write, same "capture once, patch in place"
+    /// discipline as `ScriptCondition.fileOffset`. Changing which
+    /// `CameraKind` a slot uses isn't covered — that would reshape the
+    /// trailing variable-length sub-payload, real, separate structural
+    /// work this pass doesn't attempt.
+    public var fixedFieldsFileOffset: Int
 
     public init(
         id: UInt32,
@@ -372,7 +386,8 @@ public struct PlacedCamera: Sendable, Identifiable {
         cameraType2: CameraKind,
         unkByte: UInt8?,
         subtype1: CameraSubtype?,
-        subtype2: CameraSubtype?
+        subtype2: CameraSubtype?,
+        fixedFieldsFileOffset: Int = 0
     ) {
         self.id = id
         self.header = header
@@ -408,6 +423,7 @@ public struct PlacedCamera: Sendable, Identifiable {
         self.unkByte = unkByte
         self.subtype1 = subtype1
         self.subtype2 = subtype2
+        self.fixedFieldsFileOffset = fixedFieldsFileOffset
     }
 
     /// Rotation angle in degrees — same `2 * acos(w)` decode as
