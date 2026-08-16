@@ -93,7 +93,7 @@ public enum RM2Parser {
     private static func buildTopLevelNode(data: Data, entry: ChunkIndexEntry, absoluteOffset: Int, fileKind: TwinsFileKind) throws -> ChunkNode {
         switch tier0Kind(fileKind: fileKind, subID: entry.id) {
         case .section(let sectionType):
-            return try buildSectionNode(data: data, sectionType: sectionType, absoluteOffset: absoluteOffset, size: Int(entry.size), recordID: entry.id, level: 1)
+            return try buildSectionNode(data: data, sectionType: sectionType, absoluteOffset: absoluteOffset, size: Int(entry.size), recordID: entry.id, level: 1, fileKind: fileKind)
         case .rawLeaf(let name):
             let byteSize = max(0, Int(entry.size))
             let displayName = "\(name) #\(entry.id)"
@@ -188,7 +188,7 @@ public enum RM2Parser {
     /// Builds a node for a chunk-headered section at `absoluteOffset` (either
     /// a Tier 1 container or a Tier 2 collection — both look identical
     /// structurally; only what we *do* with their children differs).
-    private static func buildSectionNode(data: Data, sectionType: SectionType, absoluteOffset: Int, size: Int, recordID: UInt32, level: Int) throws -> ChunkNode {
+    private static func buildSectionNode(data: Data, sectionType: SectionType, absoluteOffset: Int, size: Int, recordID: UInt32, level: Int, fileKind: TwinsFileKind) throws -> ChunkNode {
         guard size >= 12, absoluteOffset >= 0, absoluteOffset + size <= data.count else {
             return ChunkNode(recordID: recordID, sectionType: sectionType, displayName: "\(sectionType.rawValue) #\(recordID)", byteSize: max(0, size), fileOffset: absoluteOffset, payload: .raw(byteCount: max(0, size)))
         }
@@ -217,7 +217,7 @@ public enum RM2Parser {
             let childSize = max(0, Int(entry.size))
 
             if containerTypes.contains(sectionType), let childType = tier1ChildType(parent: sectionType, subID: entry.id) {
-                if let childNode = try? buildSectionNode(data: data, sectionType: childType, absoluteOffset: childAbsoluteOffset, size: childSize, recordID: entry.id, level: level + 1) {
+                if let childNode = try? buildSectionNode(data: data, sectionType: childType, absoluteOffset: childAbsoluteOffset, size: childSize, recordID: entry.id, level: level + 1, fileKind: fileKind) {
                     node.children.append(childNode)
                 }
             } else if containerTypes.contains(sectionType) {
@@ -228,7 +228,7 @@ public enum RM2Parser {
                 node.children.append(buildSoundEffectLeafNode(data: data, extraData: soundExtraData.data, extraDataAbsoluteFileOffset: soundExtraData.absoluteStart, sectionType: sectionType, absoluteOffset: childAbsoluteOffset, size: childSize, recordID: entry.id))
             } else {
                 // Tier 2 collection: every child is a leaf record of `sectionType`.
-                node.children.append(buildLeafNode(data: data, sectionType: sectionType, absoluteOffset: childAbsoluteOffset, size: childSize, recordID: entry.id))
+                node.children.append(buildLeafNode(data: data, sectionType: sectionType, absoluteOffset: childAbsoluteOffset, size: childSize, recordID: entry.id, fileKind: fileKind))
             }
         }
         return node
@@ -273,15 +273,31 @@ public enum RM2Parser {
 
     // MARK: - Tier 2 leaves
 
-    private static func buildLeafNode(data: Data, sectionType: SectionType, absoluteOffset: Int, size: Int, recordID: UInt32) -> ChunkNode {
+    private static func buildLeafNode(data: Data, sectionType: SectionType, absoluteOffset: Int, size: Int, recordID: UInt32, fileKind: TwinsFileKind) -> ChunkNode {
         let displayName = "\(sectionType.rawValue) #\(recordID)"
         guard absoluteOffset >= 0, size >= 0, absoluteOffset + size <= data.count else {
             return ChunkNode(recordID: recordID, sectionType: sectionType, displayName: displayName, byteSize: max(0, size), fileOffset: absoluteOffset, payload: .raw(byteCount: max(0, size)))
         }
         let leafData = data.subdata(in: (data.startIndex + absoluteOffset)..<(data.startIndex + absoluteOffset + size))
         var cursor = BinaryCursor(data: leafData)
-        let payload = decodeLeafPayload(sectionType: sectionType, cursor: &cursor, size: size, recordID: recordID)
+        let payload = decodeLeafPayload(sectionType: sectionType, cursor: &cursor, size: size, recordID: recordID, fileKind: fileKind)
         return ChunkNode(recordID: recordID, sectionType: sectionType, displayName: displayName, byteSize: size, fileOffset: absoluteOffset, payload: payload)
+    }
+
+    /// PS2/Xbox/Demo, derived once per file from `fileKind` -- `GameObject`
+    /// records carry no platform tag of their own on disk (there's no
+    /// `.objectX` `SectionType`, only `.object`/`.objectDemo`), so this is
+    /// the Swift equivalent of the reference `GameObject.Load`'s own
+    /// `ParentType == SectionType.ScriptX`/`ScriptDemo` check -- a single
+    /// file is always one platform variant throughout, so checking the
+    /// file-wide kind is equivalent to (and simpler than) re-deriving a
+    /// per-record parent-section check.
+    private static func agentLabPlatform(for fileKind: TwinsFileKind) -> AgentLabPlatformVariant {
+        switch fileKind {
+        case .rmx, .smx: return .xbox
+        case .rm2Demo, .sm2Demo: return .demo
+        case .rm2, .sm2: return .ps2
+        }
     }
 
     /// Decodes a leaf record's payload where this package understands the
@@ -289,7 +305,7 @@ public enum RM2Parser {
     /// including formats this package deliberately does not attempt (Xbox
     /// `Model`/`Skin` use a different, non-VIF vertex encoding; `BlendSkin`
     /// morph-target blobs).
-    private static func decodeLeafPayload(sectionType: SectionType, cursor: inout BinaryCursor, size: Int, recordID: UInt32) -> ChunkPayload {
+    private static func decodeLeafPayload(sectionType: SectionType, cursor: inout BinaryCursor, size: Int, recordID: UInt32, fileKind: TwinsFileKind) -> ChunkPayload {
         do {
             switch sectionType {
             case .texture:
@@ -306,8 +322,8 @@ public enum RM2Parser {
                 return .material(try MaterialParser.parse(&cursor, recordID: recordID))
             case .ogi:
                 return .skeleton(try GraphicsInfoParser.parse(&cursor, recordID: recordID))
-            case .object:
-                return .gameObject(try GameObjectParser.parse(&cursor, recordID: recordID))
+            case .object, .objectDemo:
+                return .gameObject(try GameObjectParser.parse(&cursor, recordID: recordID, platform: agentLabPlatform(for: fileKind)))
             case .animation:
                 return .animation(try AnimationParser.parse(&cursor, recordID: recordID))
             case .position:
