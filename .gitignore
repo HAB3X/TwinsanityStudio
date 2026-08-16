@@ -1,6 +1,9 @@
 # Game disc image — large, copyrighted, doesn't belong in version control
 Games Files/
 
+# Personal planning doc, not meant for the public repo
+Twinsanity Studio ROADMAP.docx
+
 # Swift Package Manager / Xcode build artifacts
 .build/
 .swiftpm/
