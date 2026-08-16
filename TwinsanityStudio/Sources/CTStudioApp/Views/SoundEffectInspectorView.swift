@@ -320,7 +320,13 @@ struct SoundEffectInspectorView: View {
     /// via a one-shot `AVAudioConverter` pull (the whole source file is
     /// already loaded into one buffer, so the pull callback supplies it
     /// exactly once and reports no more data after).
-    private static func loadMonoPCM(from url: URL, targetSampleRateHz: Double) throws -> [Int16] {
+    /// Not `private`: "Parity Phase K" reuses this for sound-*bank* entries
+    /// too (`SoundBanksHubView`'s "Replace with Audio… (repacks bank)"),
+    /// which has no `ChunkNode` to route through this view's own
+    /// `presentReplaceAudioPanel` — same resample-to-the-slot's-real-
+    /// sample-rate reasoning, just landing in a whole-bank `MBWriter`/
+    /// `MHWriter` repack instead of a single record patch.
+    static func loadMonoPCM(from url: URL, targetSampleRateHz: Double) throws -> [Int16] {
         let file = try AVAudioFile(forReading: url)
         let sourceFormat = file.processingFormat
         guard let targetFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: targetSampleRateHz, channels: 1, interleaved: true),

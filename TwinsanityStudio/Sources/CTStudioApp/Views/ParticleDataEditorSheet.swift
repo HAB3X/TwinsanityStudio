@@ -166,9 +166,42 @@ private struct DefinitionFields: View {
             Section("Collision") {
                 LabeledField("Collision Num Spheres", value: Binding(get: { Double(definition.collisionNumSpheres) }, set: { definition.collisionNumSpheres = UInt8(max(0, min(255, $0))) }))
             }
+            Section("Generation / Rendering Mode") {
+                Picker("Gen Sort", selection: Binding(
+                    get: { definition.resolvedGenSort },
+                    set: { if let value = $0 { definition.genSort = value.rawValue } }
+                )) {
+                    Text("(raw \(definition.genSort))").tag(ParticleSystemDefinition.GenSort?.none)
+                    ForEach(Self.genSorts, id: \.self) { sort in
+                        Text(String(describing: sort)).tag(ParticleSystemDefinition.GenSort?.some(sort))
+                    }
+                }
+                Picker("Texture Filter", selection: Binding(
+                    get: { definition.resolvedTextureFilter },
+                    set: { if let value = $0 { definition.textureFilter = value.rawValue } }
+                )) {
+                    Text("(raw \(definition.textureFilter))").tag(ParticleSystemDefinition.TextureFiltering?.none)
+                    ForEach(Self.textureFilters, id: \.self) { filter in
+                        Text(String(describing: filter)).tag(ParticleSystemDefinition.TextureFiltering?.some(filter))
+                    }
+                }
+                Picker("Draw Flag", selection: Binding(
+                    get: { definition.resolvedDrawFlag },
+                    set: { if let value = $0 { definition.drawFlag = value.rawValue } }
+                )) {
+                    Text("(raw \(definition.drawFlag))").tag(ParticleSystemDefinition.DrawFlags?.none)
+                    ForEach(Self.drawFlags, id: \.self) { flag in
+                        Text(String(describing: flag)).tag(ParticleSystemDefinition.DrawFlags?.some(flag))
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
     }
+
+    private static let genSorts: [ParticleSystemDefinition.GenSort] = [.normal, .unk1, .unk2, .unk3, .unk4, .unk5, .radial, .radialRotor, .spheroid, .bounceY, .bounceXZ, .improvedRadial, .starRadial]
+    private static let textureFilters: [ParticleSystemDefinition.TextureFiltering] = [.additive, .unknown, .modulation, .subtractive, .unk4, .unk5, .unk6, .glass]
+    private static let drawFlags: [ParticleSystemDefinition.DrawFlags] = [.afterFog, .beforeFog, .glassRelated, .superEarly]
 }
 
 /// "Particle Curve Graph Editor" (roadmap 10.1) — real graphical editors
@@ -203,6 +236,11 @@ private struct InstanceFields: View {
             LabeledField("Position X", value: Binding(get: { Double(instance.position.x) }, set: { instance.position.x = Float($0) }))
             LabeledField("Position Y", value: Binding(get: { Double(instance.position.y) }, set: { instance.position.y = Float($0) }))
             LabeledField("Position Z", value: Binding(get: { Double(instance.position.z) }, set: { instance.position.z = Float($0) }))
+            Picker("Switch Type", selection: $instance.switchType) {
+                Text("None").tag(Int32(0))
+                Text("Global Switch").tag(Int32(1))
+            }
+            LabeledField("Switch ID", value: Binding(get: { Double(instance.switchID) }, set: { instance.switchID = Int32($0) }))
             LabeledField("Switch Value", value: $instance.switchValue)
             LabeledField("Plane Offset", value: $instance.planeOffset)
             LabeledField("Bounce Factor", value: $instance.bounceFactor)
