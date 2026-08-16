@@ -2566,9 +2566,10 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// what the user was already looking at.
     func stitchChunk(placements: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)], worldOffset: SIMD3<Float>) -> Int {
         var added = 0
+        var failedBuildCount = 0
         for (worldPosition, rotation, scale, asset) in placements {
             let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: asset.mesh, submeshMaterials: asset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
-            guard !built.submeshes.isEmpty else { continue }
+            guard !built.submeshes.isEmpty else { failedBuildCount += 1; continue }
             objects.append(GPULevelObject(
                 worldPosition: worldPosition + worldOffset,
                 rotation: rotation,
@@ -2580,6 +2581,100 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             ))
             added += 1
         }
+        // "Chunk Stitching Rendering Bug": pairs with the diagnostic in
+        // `WorkspaceViewModel.loadChunkLinkPlacements` — that one flags
+        // placements dropped before reaching here (bad transform/unresolved
+        // modelID); this one flags placements that *did* resolve to a real
+        // mesh but produced zero GPU submeshes once built (e.g. every
+        // submesh's material/texture failed to bind). Distinguishing the
+        // two matters: the first points at `AssetResolver`, the second at
+        // `buildGPUSubmeshes`.
+        if failedBuildCount > 0 {
+            print("DIAG: stitchChunk — \(failedBuildCount) of \(placements.count) resolved placements built zero GPU submeshes, dropped before rendering")
+        }
+        return added
+    }
+
+    /// "Chunk Stitching Rendering Bug": the actual missing feature behind
+    /// the report -- see `WorkspaceViewModel.loadChunkLinkActors`'s doc
+    /// comment. Uploads a stitched neighbor's real Instance/Trigger/
+    /// Camera/AIPosition records the same way `upload(...)` does for the
+    /// primary chunk's own, offset by the same `worldOffset` `stitchChunk`
+    /// already applies to scenery. Every object here is read-only
+    /// (`sourceNode` stays `nil` on `GPULevelObject`, its default) --
+    /// these nodes come from a standalone-parsed tree with no tracked
+    /// write-back path, unlike the primary chunk's own markers.
+    func stitchChunkActors(
+        instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)],
+        resolvedInstanceAssets: [UUID: ResolvedModelAsset],
+        triggers: [(node: ChunkNode, trigger: TriggerVolume)],
+        cameras: [(node: ChunkNode, camera: PlacedCamera)],
+        aiPositions: [(node: ChunkNode, marker: AIPositionMarker)],
+        worldOffset: SIMD3<Float>
+    ) -> Int {
+        var added = 0
+        let markerMesh = Self.makeMarkerCubeAsset()
+        let markerBuilt = ModelViewerRenderer.buildGPUSubmeshes(mesh: markerMesh.mesh, submeshMaterials: [markerMesh.material], device: device, fallbackTexture: context.fallbackTexture)
+        let markerRadius = Self.boundingRadius(of: markerMesh.mesh)
+
+        for (node, instance) in instanceMarkers {
+            let worldPosition = ModelViewerRenderer.mirroredWorldPosition(SIMD3(instance.position.x, instance.position.y, instance.position.z)) + worldOffset
+            var submeshes = markerBuilt.submeshes
+            var boundingRadius = markerRadius
+            if let resolvedAsset = resolvedInstanceAssets[node.id] {
+                let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: resolvedAsset.mesh, submeshMaterials: resolvedAsset.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
+                if !built.submeshes.isEmpty {
+                    submeshes = built.submeshes
+                    boundingRadius = Self.boundingRadius(of: resolvedAsset.mesh)
+                }
+            }
+            guard !submeshes.isEmpty else { continue }
+            objects.append(GPULevelObject(
+                worldPosition: worldPosition,
+                rotation: Self.quaternion(fromEulerDegrees: instance.rotationDegrees),
+                displayName: "Instance #\(instance.id) (Object \(instance.objectID))",
+                submeshes: submeshes,
+                layer: .linkedChunks,
+                boundingRadius: boundingRadius
+            ))
+            added += 1
+        }
+
+        for (_, trigger) in triggers {
+            let worldPosition = ModelViewerRenderer.mirroredWorldPosition(SIMD3(trigger.position.x, trigger.position.y, trigger.position.z)) + worldOffset
+            objects.append(GPULevelObject(
+                worldPosition: worldPosition,
+                rotation: simd_quatf(vector: trigger.rotationQuaternion),
+                displayName: "Trigger #\(trigger.id)",
+                submeshes: [],
+                layer: .linkedChunks
+            ))
+            added += 1
+        }
+
+        for (_, camera) in cameras {
+            let worldPosition = ModelViewerRenderer.mirroredWorldPosition(SIMD3(camera.position.x, camera.position.y, camera.position.z)) + worldOffset
+            objects.append(GPULevelObject(
+                worldPosition: worldPosition,
+                rotation: simd_quatf(vector: camera.rotationQuaternion),
+                displayName: "Camera #\(camera.id) (\(camera.cameraType1.displayName))",
+                submeshes: [],
+                layer: .linkedChunks
+            ))
+            added += 1
+        }
+
+        for (_, marker) in aiPositions {
+            let worldPosition = ModelViewerRenderer.mirroredWorldPosition(SIMD3(marker.position.x, marker.position.y, marker.position.z)) + worldOffset
+            objects.append(GPULevelObject(
+                worldPosition: worldPosition,
+                displayName: "AI Waypoint #\(marker.id) (\(marker.nodeType?.displayName ?? "type \(marker.rawNodeType)"))",
+                submeshes: [],
+                layer: .linkedChunks
+            ))
+            added += 1
+        }
+
         return added
     }
 

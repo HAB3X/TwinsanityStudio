@@ -2262,6 +2262,82 @@ public final class WorkspaceViewModel: ObservableObject {
     /// The real archive entry name for `sceneryEntryName`'s sibling actor
     /// file — same base name, `.sm2`→`.rm2`/`.smx`→`.rmx` — looked up
     /// against the archive's own real entry list rather than string-built,
+    /// "Chunk Stitching Rendering Bug": the missing half of chunk stitching
+    /// -- confirmed by direct investigation that `loadChunkLinkPlacements`
+    /// only ever gathers a stitched neighbor's *scenery* (`SceneryAsset`)
+    /// placements, never its `Instance`/`Trigger`/`Camera`/`AIPosition`
+    /// records. Those don't live in the `.sm2` this function resolves
+    /// `link.path` to at all -- exactly like the *primary* chunk (see
+    /// `openLevelViewer`'s own doc comment), they live in that file's
+    /// sibling `.rm2`/`.rmx` actor file, found the same way
+    /// `siblingActorFileRoot` finds one for an already-open primary chunk.
+    ///
+    /// Deliberately read-only: every returned record's `node` comes from a
+    /// **standalone-parsed** tree that's never inserted into `rootNodes`
+    /// (unlike the primary chunk's own actor file, which genuinely is
+    /// tracked there) -- `LevelViewerRenderer.stitchChunkActors` passes
+    /// `sourceNode: nil` for these, so a stitched neighbor's markers are
+    /// visible but not selectable/editable/save-able. Building real
+    /// multi-file write-back (editing a *different* file than the one
+    /// "Save Chunk Overrides…" targets) is a separate, larger feature this
+    /// doesn't attempt.
+    public func loadChunkLinkActors(for link: ChunkLink) async -> (
+        fileName: String,
+        instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)],
+        resolvedInstanceAssets: [UUID: ResolvedModelAsset],
+        triggers: [(node: ChunkNode, trigger: TriggerVolume)],
+        cameras: [(node: ChunkNode, camera: PlacedCamera)],
+        aiPositions: [(node: ChunkNode, marker: AIPositionMarker)]
+    )? {
+        let normalizedPath = link.path.replacingOccurrences(of: "\\", with: "/")
+        let targetSceneryName = normalizedPath.lowercased().hasSuffix(".sm2") ? normalizedPath : normalizedPath + ".sm2"
+
+        guard let match = archiveIndexByRootID.values.compactMap({ archiveIndex -> (ArchiveIndex, ArchiveEntry)? in
+            archiveIndex.entries.first { entry in
+                entry.name.replacingOccurrences(of: "\\", with: "/").caseInsensitiveCompare(targetSceneryName) == .orderedSame
+            }.map { (archiveIndex, $0) }
+        }).first else { return nil }
+
+        guard let siblingName = Self.siblingActorEntryName(forSceneryEntryName: match.1.name, in: match.0.entries),
+              let actorEntry = match.0.entries.first(where: { $0.name.caseInsensitiveCompare(siblingName) == .orderedSame })
+        else { return nil }
+
+        let index = match.0
+        let defaultIndex = await loadSharedDefaultAssetIndexIfNeeded()
+
+        return await Task.detached(priority: .userInitiated) { () -> (String, [(node: ChunkNode, instance: PlacedInstance)], [UUID: ResolvedModelAsset], [(node: ChunkNode, trigger: TriggerVolume)], [(node: ChunkNode, camera: PlacedCamera)], [(node: ChunkNode, marker: AIPositionMarker)])? in
+            guard let data = try? BDArchiveParser.readEntryData(actorEntry, index: index),
+                  let actorRoot = try? Self.mainTreeDriver(forExtension: (actorEntry.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: .rm2, fileName: actorEntry.name)
+            else { return nil }
+
+            var instances: [(node: ChunkNode, instance: PlacedInstance)] = []
+            var triggers: [(node: ChunkNode, trigger: TriggerVolume)] = []
+            var cameras: [(node: ChunkNode, camera: PlacedCamera)] = []
+            var aiPositions: [(node: ChunkNode, marker: AIPositionMarker)] = []
+            func walk(_ node: ChunkNode) {
+                switch node.payload {
+                case .instance(let instance): instances.append((node, instance))
+                case .trigger(let trigger): triggers.append((node, trigger))
+                case .camera(let camera): cameras.append((node, camera))
+                case .aiPosition(let marker): aiPositions.append((node, marker))
+                default: break
+                }
+                for child in node.children { walk(child) }
+            }
+            walk(actorRoot)
+
+            let assetIndex = AssetResolver.buildIndex(fileRoot: actorRoot)
+            var resolvedAssets: [UUID: ResolvedModelAsset] = [:]
+            for (markerNode, instance) in instances {
+                let selector = instance.unknownUInt32List2.first ?? 0
+                guard let resolved = AssetResolver.resolveInstanceObject(objectID: instance.objectID, instanceSelector: selector, index: assetIndex, defaultIndex: defaultIndex) else { continue }
+                resolvedAssets[markerNode.id] = resolved
+            }
+
+            return (actorEntry.name, instances, resolvedAssets, triggers, cameras, aiPositions)
+        }.value
+    }
+
     /// so this only ever returns a name that genuinely exists.
     private nonisolated static func siblingActorEntryName(forSceneryEntryName sceneryEntryName: String, in entries: [ArchiveEntry]) -> String? {
         let sceneryExt = (sceneryEntryName as NSString).pathExtension
@@ -2436,11 +2512,22 @@ public final class WorkspaceViewModel: ObservableObject {
 
             let index = AssetResolver.buildIndex(fileRoot: fileRoot)
             var results: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)] = []
+            var droppedCount = 0
             for placement in scenery.placements {
                 guard let transform = placement.worldTransform,
                       let resolved = AssetResolver.resolveModelID(placement.modelID, displayName: "Scenery Object #\(placement.modelID)", index: index)
-                else { continue }
+                else { droppedCount += 1; continue }
                 results.append((transform.position, transform.rotation, transform.scale, resolved))
+            }
+            // "Chunk Stitching Rendering Bug": these two `continue`s used to
+            // drop a stitched neighbor's scenery/terrain placements with no
+            // trace at all — indistinguishable from "stitching worked but
+            // there was nothing there." Surfacing the real count here (and
+            // in `ModelViewerRenderer.stitchChunk`'s own build-failure count)
+            // is what actually lets a real drop be diagnosed instead of
+            // guessed at.
+            if droppedCount > 0 {
+                print("DIAG: Chunk stitch \(match.1.name) — \(droppedCount) of \(scenery.placements.count) scenery placements failed to resolve (missing transform or unresolvable modelID), dropped before rendering")
             }
             return (match.1.name, results)
         }.value

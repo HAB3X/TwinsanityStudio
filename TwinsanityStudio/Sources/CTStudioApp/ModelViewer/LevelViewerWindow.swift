@@ -1167,18 +1167,31 @@ struct LevelViewerWindow: View {
         }
     }
 
+    /// "Chunk Stitching Rendering Bug": loads *both* halves of a stitched
+    /// neighbor now, not just its scenery — see `WorkspaceViewModel.
+    /// loadChunkLinkActors`'s doc comment for why actors/triggers/cameras/
+    /// AI waypoints were never wired up here before. Runs both loads
+    /// concurrently since they read two independent files (the neighbor's
+    /// `.sm2` and its sibling `.rm2`) and neither depends on the other's
+    /// result.
     private func loadAndStitch(_ link: ChunkLink) {
         stitchingLinkID = link.id
         Task {
             defer { stitchingLinkID = nil }
-            guard let result = await workspace.loadChunkLinkPlacements(for: link) else {
+            async let sceneryResult = workspace.loadChunkLinkPlacements(for: link)
+            async let actorResult = workspace.loadChunkLinkActors(for: link)
+            let (scenery, actors) = await (sceneryResult, actorResult)
+
+            guard scenery != nil || actors != nil else {
                 workspace.lastError = "Couldn't find \"\(link.path)\" in any currently open archive — open the level or archive it belongs to first."
                 return
             }
-            guard !result.placements.isEmpty else {
-                workspace.lastError = "\(result.fileName) resolved but has no scenery placements to show."
+            let hasActors = actors.map { !$0.instanceMarkers.isEmpty || !$0.triggers.isEmpty || !$0.cameras.isEmpty || !$0.aiPositions.isEmpty } ?? false
+            guard (scenery?.placements.isEmpty == false) || hasActors else {
+                workspace.lastError = "\(scenery?.fileName ?? actors?.fileName ?? link.path) resolved but has nothing to show (no scenery, instances, triggers, cameras, or AI waypoints)."
                 return
             }
+
             // "Coordinate-System Overhaul": `chunkMatrix`'s translation row
             // is raw on-disk data, same as every other position this build
             // decodes — needs the same world-space X mirror
@@ -1188,11 +1201,28 @@ struct LevelViewerWindow: View {
             let offset = link.chunkMatrix.count > 3
                 ? ModelViewerRenderer.mirroredWorldPosition(SIMD3(link.chunkMatrix[3].x, link.chunkMatrix[3].y, link.chunkMatrix[3].z))
                 : SIMD3<Float>.zero
-            let added = renderer?.stitchChunk(placements: result.placements, worldOffset: offset) ?? 0
+
+            var added = 0
+            var fileName = link.path
+            if let scenery {
+                added += renderer?.stitchChunk(placements: scenery.placements, worldOffset: offset) ?? 0
+                fileName = scenery.fileName
+            }
+            if let actors {
+                added += renderer?.stitchChunkActors(
+                    instanceMarkers: actors.instanceMarkers,
+                    resolvedInstanceAssets: actors.resolvedInstanceAssets,
+                    triggers: actors.triggers,
+                    cameras: actors.cameras,
+                    aiPositions: actors.aiPositions,
+                    worldOffset: offset
+                ) ?? 0
+                if scenery == nil { fileName = actors.fileName }
+            }
             stitchedLinkIDs.insert(link.id)
             layerVisibility.insert(.linkedChunks)
             renderer?.layerVisibility = layerVisibility
-            workspace.statusMessage = "Stitched \(added) object(s) from \(result.fileName)."
+            workspace.statusMessage = "Stitched \(added) object(s) from \(fileName)."
         }
     }
 
