@@ -275,6 +275,20 @@ struct TriggerInspectorView: View {
     @State private var rotZ = ""
     @State private var isEditingArguments = false
 
+    /// "Parity Phase G" — `Header`'s named bit flags (`Arg1_Used`..
+    /// `Arg4_Used` at bits 0xB/0x8/0x9/0xA, `UnkFlag0`..`UnkFlag6` at bits
+    /// 0–6), ported from `Trigger.cs`'s own bit-accessor properties.
+    /// `writeTriggerOrCameraPrefix` already accepts an edited `header`/
+    /// `enabledMask` — only the UI to actually change them was missing.
+    @State private var arg1Used = false
+    @State private var arg2Used = false
+    @State private var arg3Used = false
+    @State private var arg4Used = false
+    @State private var unkFlags: [Bool] = Array(repeating: false, count: 7)
+    /// `Enabled`'s 9-bit `Mask` array (`Trigger.cs`'s own `Mask` property).
+    @State private var maskBits: [Bool] = Array(repeating: false, count: 9)
+    @State private var someFloatText = ""
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Form {
@@ -291,10 +305,28 @@ struct TriggerInspectorView: View {
                     LabeledContent("Rotation Z°") { TextField("Z°", text: $rotZ).textFieldStyle(.roundedBorder) }
                 }
                 Section("Header") {
-                    LabeledContent("Header", value: "0x\(String(trigger.header, radix: 16))")
-                    LabeledContent("Enabled Mask", value: "0b\(String(trigger.enabledMask, radix: 2))")
-                    LabeledContent("Some Float", value: String(format: "%.3f", trigger.someFloat))
+                    LabeledContent("Some Float") { TextField("value", text: $someFloatText).textFieldStyle(.roundedBorder) }
+                    Toggle("Arg 1 Used", isOn: $arg1Used)
+                    Toggle("Arg 2 Used", isOn: $arg2Used)
+                    Toggle("Arg 3 Used", isOn: $arg3Used)
+                    Toggle("Arg 4 Used", isOn: $arg4Used)
+                    ForEach(0..<7, id: \.self) { i in
+                        Toggle("Unk Flag \(i)", isOn: Binding(
+                            get: { unkFlags.indices.contains(i) ? unkFlags[i] : false },
+                            set: { if unkFlags.indices.contains(i) { unkFlags[i] = $0 } }
+                        ))
+                    }
                 }
+                .toggleStyle(.checkbox)
+                Section("Enabled Mask (9 bits)") {
+                    ForEach(0..<9, id: \.self) { i in
+                        Toggle("Bit \(i)", isOn: Binding(
+                            get: { maskBits.indices.contains(i) ? maskBits[i] : false },
+                            set: { if maskBits.indices.contains(i) { maskBits[i] = $0 } }
+                        ))
+                    }
+                }
+                .toggleStyle(.checkbox)
                 Section("Arguments") {
                     LabeledContent("Arg 1", value: "\(trigger.arg1)")
                     LabeledContent("Arg 2", value: "\(trigger.arg2)")
@@ -344,16 +376,52 @@ struct TriggerInspectorView: View {
         sx = String(trigger.size.x); sy = String(trigger.size.y); sz = String(trigger.size.z)
         let degrees = eulerDegrees(from: trigger.rotationQuaternion)
         rotX = String(format: "%.2f", degrees.x); rotY = String(format: "%.2f", degrees.y); rotZ = String(format: "%.2f", degrees.z)
+        someFloatText = String(format: "%.3f", trigger.someFloat)
+
+        arg1Used = (trigger.header >> 0xB) & 1 != 0
+        arg2Used = (trigger.header >> 0x8) & 1 != 0
+        arg3Used = (trigger.header >> 0x9) & 1 != 0
+        arg4Used = (trigger.header >> 0xA) & 1 != 0
+        unkFlags = (0..<7).map { (trigger.header >> $0) & 1 != 0 }
+        maskBits = (0..<9).map { (trigger.enabledMask >> $0) & 1 != 0 }
+    }
+
+    /// Recomputes `Header` from the same bit positions `Trigger.cs`'s own
+    /// `Arg1_Used`..`Arg4_Used`/`UnkFlag0`..`UnkFlag6` setters use, keeping
+    /// every other bit (there are more than these 11 named ones) untouched
+    /// by starting from the original `trigger.header`.
+    private var editedHeader: UInt32 {
+        var value = trigger.header
+        func setBit(_ bit: UInt32, _ on: Bool) {
+            if on { value |= (1 << bit) } else { value &= ~(1 << bit) }
+        }
+        setBit(0xB, arg1Used)
+        setBit(0x8, arg2Used)
+        setBit(0x9, arg3Used)
+        setBit(0xA, arg4Used)
+        for i in 0..<7 { setBit(UInt32(i), unkFlags.indices.contains(i) ? unkFlags[i] : false) }
+        return value
+    }
+
+    /// Recomputes `Enabled` fully from `maskBits` — `Trigger.cs`'s own
+    /// `Mask` setter starts from `Enabled = 0` and ORs in each set bit,
+    /// so (unlike `editedHeader`) nothing here needs preserving from the
+    /// original value.
+    private var editedEnabledMask: UInt32 {
+        var value: UInt32 = 0
+        for i in 0..<9 where maskBits.indices.contains(i) && maskBits[i] { value |= (1 << i) }
+        return value
     }
 
     private var editedPrefix: Data? {
         guard let fx = Float(x), let fy = Float(y), let fz = Float(z), let fw = Float(w),
               let fsx = Float(sx), let fsy = Float(sy), let fsz = Float(sz),
-              let frx = Float(rotX), let fry = Float(rotY), let frz = Float(rotZ)
+              let frx = Float(rotX), let fry = Float(rotY), let frz = Float(rotZ),
+              let someFloat = Float(someFloatText)
         else { return nil }
         let quaternion = quaternionFromEuler(SIMD3(frx, fry, frz))
         return WorldPlacementWriter.writeTriggerOrCameraPrefix(
-            header: trigger.header, enabledMask: trigger.enabledMask, someFloat: trigger.someFloat,
+            header: editedHeader, enabledMask: editedEnabledMask, someFloat: someFloat,
             rotationQuaternion: quaternion, position: SIMD4(fx, fy, fz, fw), size: SIMD4(fsx, fsy, fsz, trigger.size.w)
         )
     }
@@ -388,6 +456,14 @@ struct CameraInspectorView: View {
     @State private var rotX = ""
     @State private var rotY = ""
     @State private var rotZ = ""
+
+    /// "Parity Phase F" — the fixed camera-specific block's own editable
+    /// text, keyed by field name for `fixedFieldTexts["camHeader"]` etc.
+    /// rather than one `@State` var per field: there are 18 of them, all
+    /// following the same `TextField -> parse -> patch` shape, so a
+    /// dictionary keeps `loadFields`/`editedFixedFields` from repeating
+    /// that shape 18 times over.
+    @State private var fixedFieldTexts: [String: String] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -425,17 +501,32 @@ struct CameraInspectorView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Section("Advanced / Undecoded") {
-                    DisclosureGroup("Header & Camera Fields") {
-                        LabeledContent("Header", value: "0x\(String(camera.header, radix: 16))")
-                        LabeledContent("Enabled Mask", value: "0b\(String(camera.enabledMask, radix: 2))")
-                        LabeledContent("Cam Header", value: "0x\(String(camera.camHeader, radix: 16))")
-                        LabeledContent("Coords 1", value: vectorString(camera.unkCoords1))
-                        LabeledContent("Coords 2", value: vectorString(camera.unkCoords2))
-                        Text("Every other field on this record is genuinely undocumented by the reference tool this was ported from — shown for completeness, not because its meaning is known.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
+                Section("Camera-Specific Fields") {
+                    LabeledContent("Header (read-only)", value: "0x\(String(camera.header, radix: 16))")
+                    LabeledContent("Enabled Mask (read-only)", value: "0b\(String(camera.enabledMask, radix: 2))")
+                    fixedField("camHeader", label: "Cam Header")
+                    fixedField("unkFloat1", label: "Unk Float 1")
+                    fixedField("unkFloat2", label: "Unk Float 2")
+                    fixedField("unkFloat3", label: "Unk Float 3")
+                    fixedField("unkUInt1", label: "Unk UInt 1")
+                    fixedField("unkUInt2", label: "Unk UInt 2")
+                    fixedField("unkUInt3", label: "Unk UInt 3")
+                    fixedField("unkUInt4", label: "Unk UInt 4")
+                    fixedField("unkInt5", label: "Unk Int 5")
+                    fixedField("unkInt6", label: "Unk Int 6")
+                    fixedField("unkFloat4", label: "Unk Float 4")
+                    fixedField("unkFloat5", label: "Unk Float 5")
+                    fixedField("unkFloat6", label: "Unk Float 6")
+                    fixedField("unkFloat7", label: "Unk Float 7")
+                    fixedField("unkUInt7", label: "Unk UInt 7")
+                    fixedField("unkInt8", label: "Unk Int 8")
+                    fixedField("unkUInt9", label: "Unk UInt 9")
+                    fixedField("unkFloat8", label: "Unk Float 8")
+                    Text("These are the record's own fixed-size scalar fields, real and now writable — same \"never trusted from any prior stored value, but never invented either\" naming the reference tool itself uses for its `unk`-prefixed fields. `Coords 1`/`Coords 2` and everything from the camera type onward (subtype payloads) stay read-only: changing which `CameraKind` a slot uses would reshape the trailing variable-length payload, real, separate structural work.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    LabeledContent("Coords 1 (read-only)", value: vectorString(camera.unkCoords1))
+                    LabeledContent("Coords 2 (read-only)", value: vectorString(camera.unkCoords2))
                 }
             }
             .formStyle(.grouped)
@@ -444,7 +535,7 @@ struct CameraInspectorView: View {
 
             HStack {
                 Button("Save Edited Copy…") { save() }
-                    .disabled(editedPrefix == nil || !workspace.canSaveEdits(for: node))
+                    .disabled(editedPrefix == nil || editedFixedFields == nil || !workspace.canSaveEdits(for: node))
                 Spacer()
             }
             .padding(.horizontal)
@@ -463,11 +554,43 @@ struct CameraInspectorView: View {
         }
     }
 
+    @ViewBuilder
+    private func fixedField(_ key: String, label: String) -> some View {
+        LabeledContent(label) {
+            TextField("", text: Binding(
+                get: { fixedFieldTexts[key] ?? "" },
+                set: { fixedFieldTexts[key] = $0 }
+            ))
+            .textFieldStyle(.roundedBorder)
+        }
+    }
+
     private func loadFields() {
         x = String(camera.position.x); y = String(camera.position.y); z = String(camera.position.z); w = String(camera.position.w)
         sx = String(camera.size.x); sy = String(camera.size.y); sz = String(camera.size.z)
         let degrees = eulerDegrees(from: camera.rotationQuaternion)
         rotX = String(format: "%.2f", degrees.x); rotY = String(format: "%.2f", degrees.y); rotZ = String(format: "%.2f", degrees.z)
+
+        fixedFieldTexts = [
+            "camHeader": "\(camera.camHeader)",
+            "unkFloat1": "\(camera.unkFloat1)",
+            "unkFloat2": "\(camera.unkFloat2)",
+            "unkFloat3": "\(camera.unkFloat3)",
+            "unkUInt1": "\(camera.unkUInt1)",
+            "unkUInt2": "\(camera.unkUInt2)",
+            "unkUInt3": "\(camera.unkUInt3)",
+            "unkUInt4": "\(camera.unkUInt4)",
+            "unkInt5": "\(camera.unkInt5)",
+            "unkInt6": "\(camera.unkInt6)",
+            "unkFloat4": "\(camera.unkFloat4)",
+            "unkFloat5": "\(camera.unkFloat5)",
+            "unkFloat6": "\(camera.unkFloat6)",
+            "unkFloat7": "\(camera.unkFloat7)",
+            "unkUInt7": "\(camera.unkUInt7)",
+            "unkInt8": "\(camera.unkInt8)",
+            "unkUInt9": "\(camera.unkUInt9)",
+            "unkFloat8": "\(camera.unkFloat8)"
+        ]
     }
 
     private var editedPrefix: Data? {
@@ -482,9 +605,58 @@ struct CameraInspectorView: View {
         )
     }
 
+    /// "Parity Phase F" — builds a full `PlacedCamera` reflecting every
+    /// `fixedFieldTexts` entry, so `WorldPlacementWriter.
+    /// writeCameraFixedFields` can encode the whole block in one pass;
+    /// `nil` if any field fails to parse.
+    private var editedFixedFields: Data? {
+        guard let camHeader = UInt32(fixedFieldTexts["camHeader"] ?? ""),
+              let unkFloat1 = Float(fixedFieldTexts["unkFloat1"] ?? ""),
+              let unkFloat2 = Float(fixedFieldTexts["unkFloat2"] ?? ""),
+              let unkFloat3 = Float(fixedFieldTexts["unkFloat3"] ?? ""),
+              let unkUInt1 = UInt32(fixedFieldTexts["unkUInt1"] ?? ""),
+              let unkUInt2 = UInt32(fixedFieldTexts["unkUInt2"] ?? ""),
+              let unkUInt3 = UInt32(fixedFieldTexts["unkUInt3"] ?? ""),
+              let unkUInt4 = UInt32(fixedFieldTexts["unkUInt4"] ?? ""),
+              let unkInt5 = Int32(fixedFieldTexts["unkInt5"] ?? ""),
+              let unkInt6 = Int32(fixedFieldTexts["unkInt6"] ?? ""),
+              let unkFloat4 = Float(fixedFieldTexts["unkFloat4"] ?? ""),
+              let unkFloat5 = Float(fixedFieldTexts["unkFloat5"] ?? ""),
+              let unkFloat6 = Float(fixedFieldTexts["unkFloat6"] ?? ""),
+              let unkFloat7 = Float(fixedFieldTexts["unkFloat7"] ?? ""),
+              let unkUInt7 = UInt32(fixedFieldTexts["unkUInt7"] ?? ""),
+              let unkInt8 = Int32(fixedFieldTexts["unkInt8"] ?? ""),
+              let unkUInt9 = UInt32(fixedFieldTexts["unkUInt9"] ?? ""),
+              let unkFloat8 = Float(fixedFieldTexts["unkFloat8"] ?? "")
+        else { return nil }
+        var edited = camera
+        edited.camHeader = camHeader
+        edited.unkFloat1 = unkFloat1
+        edited.unkFloat2 = unkFloat2
+        edited.unkFloat3 = unkFloat3
+        edited.unkUInt1 = unkUInt1
+        edited.unkUInt2 = unkUInt2
+        edited.unkUInt3 = unkUInt3
+        edited.unkUInt4 = unkUInt4
+        edited.unkInt5 = unkInt5
+        edited.unkInt6 = unkInt6
+        edited.unkFloat4 = unkFloat4
+        edited.unkFloat5 = unkFloat5
+        edited.unkFloat6 = unkFloat6
+        edited.unkFloat7 = unkFloat7
+        edited.unkUInt7 = unkUInt7
+        edited.unkInt8 = unkInt8
+        edited.unkUInt9 = unkUInt9
+        edited.unkFloat8 = unkFloat8
+        return WorldPlacementWriter.writeCameraFixedFields(edited, isDemo: camera.unkShort == nil)
+    }
+
     private func save() {
-        guard let encoded = editedPrefix else { return }
-        guard let patchedBytes = workspace.patchedFileBytes(replacingPrefixOf: node, with: encoded) else { return }
+        guard let prefix = editedPrefix, let fixedFields = editedFixedFields else { return }
+        guard let patchedBytes = workspace.patchedFileBytes(applyingAbsoluteByteRangePatches: [
+            (node: node, absoluteOffset: node.fileOffset, encoded: prefix),
+            (node: node, absoluteOffset: node.fileOffset + camera.fixedFieldsFileOffset, encoded: fixedFields)
+        ]) else { return }
         guard let url = ExportPanel.chooseSaveLocation(suggestedName: "\(node.displayName)_edited.rm2", message: "Save the edited copy of this file. The original file on disk is not modified.") else { return }
         Task {
             do {
