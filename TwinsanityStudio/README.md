@@ -160,6 +160,45 @@ things are deliberately out of scope rather than guessed at:
   flag to detect them by) — files are parsed as retail-format by default,
   which matches the actual Crash Twinsanity retail disc.
 
+## Saving edits & getting them onto real hardware
+
+Every edit path in this app writes to a **new file or folder**, never in
+place — the original archive/disc image on disk is never modified. What you
+get out, and how "real" each path is, differs:
+
+- **Save Chunk Overrides… / Save Edited Copy…** (per-record inspectors, the
+  Level Viewer's Instance/Trigger/Camera/AI-waypoint edits): patches only the
+  bytes of the specific record(s) you changed into a full copy of the
+  original file, leaving everything else byte-for-byte untouched. This is
+  the highest-confidence path — every writer here has a round-trip test
+  (`Tests/CTParsersTests/*WriterTests.swift`) proving `parse(write(parse(x)))
+  == parse(x)`, so the *file format* is verified correct.
+- **Export as Mod Crate…**: packages the same patched bytes into a real
+  `.crate` file, installable through
+  [CrateModLoader](https://github.com/DorratzOG/CrateModLoader) alongside
+  other Twinsanity mods, rather than a loose file you'd have to manually
+  place.
+- **Replace in Disc Image…** (for a file mounted from a `.iso`): rebuilds a
+  *complete new `.iso`* with that one file's contents replaced, via a real
+  ISO-9660 directory-record patch (`ISO9660Writer`) — not just a raw byte
+  splice. `.bin`/`.cue` raw-sector images aren't rebuildable yet, only a
+  plain `.iso`.
+- **Archive Repackager** (`.BH`/`.BD`): rebuilds a complete new archive pair
+  with one or more entries replaced, streaming every untouched entry straight
+  through from the original rather than requiring a full re-extract.
+
+**What "verified" means here, honestly**: every writer's output round-trips
+correctly back through this app's own parser, and several (the `.iso`
+rebuild, the `.BH`/`.BD` repack) preserve the exact container structure a
+real disc/archive needs. What hasn't been verified, because doing so needs
+hardware this project has no access to, is whether an edited file actually
+**boots and runs correctly on a real PS2** (or in an emulator like PCSX2) —
+no claim here should be read as "hardware-tested." If you build something
+with this tool and try it on real hardware or an emulator, that's the actual
+verification step; issues found there are genuinely useful to report; this
+tool's own test suite can only confirm the bytes are structured correctly,
+not that the game accepts them.
+
 For higher-fidelity validation beyond the synthetic test fixtures, the next
 step would be running the parsers against real extracted files from a
 `.BD`/`.BH` pair (e.g. from the ISO already in this repo) — the synthetic
