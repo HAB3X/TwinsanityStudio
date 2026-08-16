@@ -1,5 +1,6 @@
 import Foundation
 import CTCore
+import CTModels
 
 /// Encodes an AgentLab command's raw `uint32` arguments back to their
 /// on-disk form — the inverse of `CustomAgentParser.readCommandChain`'s own
@@ -20,6 +21,32 @@ public enum AgentLabWriter {
         var writer = BinaryWriter()
         for value in arguments {
             writer.writeUInt32(value)
+        }
+        return writer.data
+    }
+
+    /// Full structural re-encode of a `ScriptCommand` chain — the "AgentLab
+    /// Phase B" counterpart to `writeArguments`'s same-size patch: this one
+    /// can add or remove commands, since the on-disk chain-continuation bit
+    /// (`internalIndex & 0x1000000`) is recomputed fresh from the Swift
+    /// array's own structure (set on every command but the last) rather than
+    /// trusted from each command's own captured bits. `commandID` and
+    /// `unkShort` (the reference's own `VTableIndex`/`UnkShort`) are written
+    /// back verbatim per command; argument count always comes from
+    /// `rawArguments.count` (already the real, per-platform expected size
+    /// for that command's ID by construction — this build never lets
+    /// `rawArguments` drift out of sync with its own `commandID`).
+    public static func encodeCommandChain(_ commands: [AgentLabCommand]) -> Data {
+        var writer = BinaryWriter()
+        for (index, command) in commands.enumerated() {
+            let hasNext = index != commands.count - 1
+            var internalIndex = UInt32(command.commandID)
+            internalIndex |= UInt32(command.unkShort) << 16
+            if hasNext { internalIndex |= 0x0100_0000 }
+            writer.writeUInt32(internalIndex)
+            for argument in command.rawArguments {
+                writer.writeUInt32(argument)
+            }
         }
         return writer.data
     }

@@ -11,6 +11,12 @@ public struct AgentLabCommand: Sendable, Identifiable {
     /// silently dropped for an ID this build doesn't have a name or decoder
     /// for.
     public let commandID: UInt16
+    /// Raw `(internalIndex & 0xFFFF0000) >> 16` — `ScriptCommand.UnkShort` in
+    /// the reference. Always `0` in every real command the reference's own
+    /// constructors ever create, but captured (not dropped) so a full
+    /// chain re-encode (`AgentLabWriter.encodeCommandChain`) never silently
+    /// zeroes a value this build simply never learned the meaning of.
+    public let unkShort: UInt16
     /// Real name from `Twinsanity.DefaultEnums.CommandID`, when this ID has
     /// one — an actual gap in the reference enum (an ID nobody named, not
     /// something this build declined to look up) shows as `nil`.
@@ -27,8 +33,9 @@ public struct AgentLabCommand: Sendable, Identifiable {
     /// bytes — lets a UI jump straight to it in the hex viewer.
     public let fileOffset: Int
 
-    public init(commandID: UInt16, commandName: String?, rawArguments: [UInt32], decoded: AgentLabDecodedAction?, fileOffset: Int) {
+    public init(commandID: UInt16, unkShort: UInt16 = 0, commandName: String?, rawArguments: [UInt32], decoded: AgentLabDecodedAction?, fileOffset: Int) {
         self.commandID = commandID
+        self.unkShort = unkShort
         self.commandName = commandName
         self.rawArguments = rawArguments
         self.decoded = decoded

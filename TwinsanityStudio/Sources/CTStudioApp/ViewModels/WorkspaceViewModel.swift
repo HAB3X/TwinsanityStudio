@@ -1756,6 +1756,40 @@ public final class WorkspaceViewModel: ObservableObject {
         return bytes
     }
 
+    /// "AgentLab Phase B"'s structural counterpart to `patchedFileBytes(
+    /// replacing:with:)`: `encoded` need not be `node.byteSize` bytes —
+    /// unlike every other patch function in this file, this one can grow or
+    /// shrink `node`'s own on-disk record (adding/removing a `ScriptState`,
+    /// `ScriptStateBody`, or `ScriptCommand` changes the record's total
+    /// size). Built on the same `ChunkSectionInserter.
+    /// applyingRecordChanges` remove-then-insert-same-`id` path "Save Chunk
+    /// Overrides" already uses to append brand-new records, applied here to
+    /// replace an *existing* one in place instead — the record's own `id`
+    /// is preserved (nothing else in the file references it by index/
+    /// position, only by this `id`), so every other reference to it stays
+    /// valid.
+    public func patchedFileBytes(replacingWholeRecord node: ChunkNode, with encoded: Data) -> Data? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes),
+              let bytes = rawFileBytesByRootID[fileRoot.id]
+        else {
+            lastError = "Can't save edits here — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return nil
+        }
+        guard let targetSection = parent(of: node, inAnyOf: rootNodes) else {
+            lastError = "Internal error: couldn't find this record's containing section — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        guard let result = ChunkSectionInserter.applyingRecordChanges(
+            intoSections: [(section: targetSection, insert: [(id: node.recordID, encoded: encoded)], removeIDs: [node.recordID])],
+            fileRoot: fileRoot,
+            originalFileBytes: bytes
+        ) else {
+            lastError = "Internal error: couldn't safely apply the record change to the file structure — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        return result
+    }
+
     /// Same idea as `patchedFileBytes(replacing:with:)`, but for a record
     /// where only a *leading* fixed-layout portion is being overwritten —
     /// `Instance`'s 28-byte transform prefix (`WorldPlacementWriter.

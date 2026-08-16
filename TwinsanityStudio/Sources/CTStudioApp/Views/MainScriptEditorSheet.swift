@@ -20,12 +20,30 @@ import CTParsers
 /// variable-length `bytes`/`floats` lists stay read-only (editing their
 /// *count* would mean re-encoding this variable-length record, not a
 /// same-size patch); only `unkInt1Raw`'s packed fields are exposed here.
+///
+/// "AgentLab Phase B": adding/removing a `ScriptState`, `ScriptStateBody`,
+/// or `ScriptCommand`, and creating/deleting a `ScriptCondition`, are now
+/// real too — `editableMain` is a locally-mutated copy of the record's
+/// `MainScript`, and every structural button below (`addState`/
+/// `deleteState`/`addBody`/`deleteBody`/`createCondition`/`deleteCondition`/
+/// `addCommand`/`deleteCommand`) mutates it, then re-encodes the *entire*
+/// record via `ScriptWriter.encode` and replaces it whole in a copy of this
+/// file via `WorkspaceViewModel.patchedFileBytes(replacingWholeRecord:with:)`
+/// — unlike every fixed-offset patch above, the saved record generally
+/// isn't the same byte length as the original.
 struct MainScriptEditorSheet: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     let script: ScriptAsset
-    let mainScript: MainScript
+
+    /// Locally-mutated working copy of the record's `MainScript` — every
+    /// structural edit (add/delete state/body/command, create/delete
+    /// condition) mutates this directly; every field-level "Apply" button
+    /// above still patches straight into a copy of the *original* file
+    /// bytes, same as before, since those are all same-size patches that
+    /// don't need this record's own structure re-derived.
+    @State private var editableMain: MainScript
 
     /// Non-`nil` presents the argument-editor sheet for one command —
     /// same pattern as `AgentLabGraphView.editingCommand`.
@@ -45,20 +63,37 @@ struct MainScriptEditorSheet: View {
     @State private var type1Translates: [Int: Bool] = [:]
     @State private var type1Rotates: [Int: Bool] = [:]
     @State private var type1TracksDestination: [Int: Bool] = [:]
+    /// New-command ID text, keyed by `"stateIndex-bodyIndex"`.
+    @State private var newCommandIDTexts: [String: String] = [:]
     @State private var errorMessage: String?
     @State private var isSaving = false
 
     init(node: ChunkNode, script: ScriptAsset, mainScript: MainScript) {
         self.node = node
         self.script = script
-        self.mainScript = mainScript
+        self._editableMain = State(initialValue: mainScript)
+    }
+
+    /// Which per-platform command-size table applies to this record —
+    /// mirrors the reference's own `ParentType` check in `Script.Load`/
+    /// `CodeModel.Load` (`ScriptX`/`CustomAgentX` -> Xbox, `ScriptDemo`/
+    /// `CustomAgentDemo` -> Demo, everything else, including the
+    /// unsupported-elsewhere `ScriptMB`, -> PS2), read directly from this
+    /// leaf record's own `SectionType` rather than needing the enclosing
+    /// file's kind threaded in separately.
+    private var platform: AgentLabPlatformVariant {
+        switch node.sectionType {
+        case .scriptX: return .xbox
+        case .scriptDemo: return .demo
+        default: return .ps2
+        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Main Script — \(mainScript.name.isEmpty ? "<unnamed>" : mainScript.name)").font(.title3.bold())
-                Text("Real write-back: redirecting a state's script/slot, or editing any command's arguments, patches straight into a copy of this file.")
+                Text("Main Script — \(editableMain.name.isEmpty ? "<unnamed>" : editableMain.name)").font(.title3.bold())
+                Text("Real write-back: redirecting a state's script/slot, editing a command's arguments, or adding/removing a state/body/command/condition, each saves its own edited copy of this file.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -66,10 +101,16 @@ struct MainScriptEditorSheet: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    LabeledContent("Start Unit") { Text("\(mainScript.startUnit)") }
-                    LabeledContent("Actual State Count") { Text("\(mainScript.states.count)") }
+                    LabeledContent("Start Unit") { Text("\(editableMain.startUnit)") }
+                    HStack {
+                        LabeledContent("Actual State Count") { Text("\(editableMain.states.count)") }
+                        Spacer()
+                        Button("Add State") { addState() }
+                            .controlSize(.small)
+                            .disabled(!workspace.canSaveEdits(for: node))
+                    }
 
-                    ForEach(Array(mainScript.states.enumerated()), id: \.offset) { index, state in
+                    ForEach(Array(editableMain.states.enumerated()), id: \.offset) { index, state in
                         stateSection(index: index, state: state)
                     }
                 }
@@ -98,7 +139,16 @@ struct MainScriptEditorSheet: View {
 
     private func stateSection(index: Int, state: ScriptState) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("State #\(index)").font(.callout.bold())
+            HStack {
+                Text("State #\(index)").font(.callout.bold())
+                Spacer()
+                Button("Add Body") { addBody(stateIndex: index) }
+                    .controlSize(.small)
+                    .disabled(!workspace.canSaveEdits(for: node))
+                Button("Delete State", role: .destructive) { deleteState(index: index) }
+                    .controlSize(.small)
+                    .disabled(!workspace.canSaveEdits(for: node))
+            }
             HStack {
                 Text("Bitfield 0x\(String(UInt16(bitPattern: state.bitfieldRaw), radix: 16)) · Slot:")
                     .font(.caption)
@@ -183,15 +233,29 @@ struct MainScriptEditorSheet: View {
     }
 
     private func bodySection(stateIndex: Int, index: Int, body: ScriptStateBody) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let key = "\(stateIndex)-\(index)"
+        return VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text("Body #\(index)").font(.caption.bold())
                 if !body.isEnabled { Text("(disabled)").font(.caption2).foregroundStyle(.secondary) }
+                Spacer()
+                if body.condition == nil {
+                    Button("Create Condition") { createCondition(stateIndex: stateIndex, bodyIndex: index) }
+                        .controlSize(.small)
+                        .disabled(!workspace.canSaveEdits(for: node))
+                } else {
+                    Button("Delete Condition", role: .destructive) { deleteCondition(stateIndex: stateIndex, bodyIndex: index) }
+                        .controlSize(.small)
+                        .disabled(!workspace.canSaveEdits(for: node))
+                }
+                Button("Delete Body", role: .destructive) { deleteBody(stateIndex: stateIndex, bodyIndex: index) }
+                    .controlSize(.small)
+                    .disabled(!workspace.canSaveEdits(for: node))
             }
             if let condition = body.condition {
                 conditionSection(stateIndex: stateIndex, bodyIndex: index, condition: condition)
             }
-            ForEach(Array(body.commands.enumerated()), id: \.offset) { _, command in
+            ForEach(Array(body.commands.enumerated()), id: \.offset) { commandIndex, command in
                 HStack {
                     Text(command.commandName ?? "Command #\(command.commandID)")
                         .font(.caption.monospaced())
@@ -202,7 +266,23 @@ struct MainScriptEditorSheet: View {
                     Button("Edit Arguments…") { editingCommand = command }
                         .controlSize(.small)
                         .disabled(!workspace.canSaveEdits(for: node))
+                    Button("Delete", role: .destructive) { deleteCommand(stateIndex: stateIndex, bodyIndex: index, commandIndex: commandIndex) }
+                        .controlSize(.small)
+                        .disabled(!workspace.canSaveEdits(for: node))
                 }
+            }
+            HStack(spacing: 8) {
+                Text("New command ID:").font(.caption2)
+                TextField("", text: Binding(
+                    get: { newCommandIDTexts[key] ?? "" },
+                    set: { newCommandIDTexts[key] = $0 }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 60)
+                .font(.caption2.monospaced())
+                Button("Add Command") { addCommand(stateIndex: stateIndex, bodyIndex: index) }
+                    .controlSize(.small)
+                    .disabled(!workspace.canSaveEdits(for: node))
             }
         }
         .padding(.leading, 12)
@@ -407,6 +487,112 @@ struct MainScriptEditorSheet: View {
             do {
                 try await workspace.writeDataAsync(patchedBytes, to: url)
                 workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent) with state \(index)'s script/slot changed."
+                isSaving = false
+            } catch {
+                workspace.lastError = "Save failed: \(error)"
+                isSaving = false
+            }
+        }
+    }
+
+    // MARK: - AgentLab Phase B: structural edits
+
+    private func addState() {
+        editableMain.states.append(ScriptState(bitfieldRaw: 0, scriptIndexOrSlot: -1, type1: nil, bodies: []))
+        saveStructuralChange(description: "a new state added")
+    }
+
+    private func deleteState(index: Int) {
+        guard editableMain.states.indices.contains(index) else { return }
+        editableMain.states.remove(at: index)
+        saveStructuralChange(description: "state \(index) deleted")
+    }
+
+    private func addBody(stateIndex: Int) {
+        guard editableMain.states.indices.contains(stateIndex) else { return }
+        editableMain.states[stateIndex].bodies.append(ScriptStateBody(bitfieldRaw: 0, scriptStateListIndex: nil, condition: nil, commands: []))
+        saveStructuralChange(description: "a new body added to state \(stateIndex)")
+    }
+
+    private func deleteBody(stateIndex: Int, bodyIndex: Int) {
+        guard editableMain.states.indices.contains(stateIndex),
+              editableMain.states[stateIndex].bodies.indices.contains(bodyIndex)
+        else { return }
+        editableMain.states[stateIndex].bodies.remove(at: bodyIndex)
+        saveStructuralChange(description: "state \(stateIndex)'s body \(bodyIndex) deleted")
+    }
+
+    private func createCondition(stateIndex: Int, bodyIndex: Int) {
+        guard editableMain.states.indices.contains(stateIndex),
+              editableMain.states[stateIndex].bodies.indices.contains(bodyIndex)
+        else { return }
+        // Matches the reference's own `ScriptStateBody.CreateCondition`
+        // defaults (`unkInt1 = 0`, `Interval = 0`, `Threshold = 0.5`,
+        // `ThresholdInverse = 2.0`).
+        editableMain.states[stateIndex].bodies[bodyIndex].condition = ScriptCondition(unkInt1Raw: 0, interval: 0, threshold: 0.5, thresholdInverse: 2.0)
+        saveStructuralChange(description: "a condition created on state \(stateIndex)'s body \(bodyIndex)")
+    }
+
+    private func deleteCondition(stateIndex: Int, bodyIndex: Int) {
+        guard editableMain.states.indices.contains(stateIndex),
+              editableMain.states[stateIndex].bodies.indices.contains(bodyIndex)
+        else { return }
+        editableMain.states[stateIndex].bodies[bodyIndex].condition = nil
+        saveStructuralChange(description: "state \(stateIndex)'s body \(bodyIndex) condition deleted")
+    }
+
+    private func addCommand(stateIndex: Int, bodyIndex: Int) {
+        guard editableMain.states.indices.contains(stateIndex),
+              editableMain.states[stateIndex].bodies.indices.contains(bodyIndex)
+        else { return }
+        let key = "\(stateIndex)-\(bodyIndex)"
+        let text = (newCommandIDTexts[key] ?? "").trimmingCharacters(in: .whitespaces)
+        guard let commandID = UInt16(text) else {
+            errorMessage = "New command ID (\"\(text)\") isn't a valid 16-bit integer."
+            return
+        }
+        errorMessage = nil
+        let size = AgentLabCommandCatalog.commandSize(forID: commandID, platform: platform)
+        let argCount = size > 0x0C ? (size - 0x0C) / 4 : 0
+        let command = AgentLabCommand(
+            commandID: commandID,
+            unkShort: 0,
+            commandName: AgentLabCommandCatalog.commandName(forID: commandID),
+            rawArguments: Array(repeating: 0, count: argCount),
+            decoded: AgentLabActionDecoder.decode(commandID: commandID, arguments: Array(repeating: 0, count: argCount)),
+            fileOffset: 0
+        )
+        editableMain.states[stateIndex].bodies[bodyIndex].commands.append(command)
+        newCommandIDTexts[key] = ""
+        saveStructuralChange(description: "a new command added to state \(stateIndex)'s body \(bodyIndex)")
+    }
+
+    private func deleteCommand(stateIndex: Int, bodyIndex: Int, commandIndex: Int) {
+        guard editableMain.states.indices.contains(stateIndex),
+              editableMain.states[stateIndex].bodies.indices.contains(bodyIndex),
+              editableMain.states[stateIndex].bodies[bodyIndex].commands.indices.contains(commandIndex)
+        else { return }
+        editableMain.states[stateIndex].bodies[bodyIndex].commands.remove(at: commandIndex)
+        saveStructuralChange(description: "state \(stateIndex)'s body \(bodyIndex) command \(commandIndex) deleted")
+    }
+
+    /// Shared save path for every structural edit above: re-encodes the
+    /// *entire* current `editableMain` via `ScriptWriter.encode` and
+    /// replaces this record whole (not a fixed-offset patch) via
+    /// `WorkspaceViewModel.patchedFileBytes(replacingWholeRecord:with:)`.
+    private func saveStructuralChange(description: String) {
+        let mutatedAsset = ScriptAsset(id: script.id, inlineID: script.inlineID, mask: script.mask, flag: script.flag, content: .main(editableMain), trailingBytes: script.trailingBytes)
+        let encoded = ScriptWriter.encode(mutatedAsset)
+        guard let patchedBytes = workspace.patchedFileBytes(replacingWholeRecord: node, with: encoded) else { return }
+        guard let url = ExportPanel.chooseSaveLocation(
+            suggestedName: "\(node.displayName)_edited.rm2",
+            message: "Save the edited copy of this file, with \(description). The original file on disk is not modified."
+        ) else { return }
+        isSaving = true
+        Task {
+            do {
+                try await workspace.writeDataAsync(patchedBytes, to: url)
+                workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent) with \(description)."
                 isSaving = false
             } catch {
                 workspace.lastError = "Save failed: \(error)"

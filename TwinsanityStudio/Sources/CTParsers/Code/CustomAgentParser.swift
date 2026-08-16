@@ -71,6 +71,12 @@ public enum CustomAgentParser {
             let offset = cursor.position
             let internalIndex = try cursor.readUInt32()
             let commandID = UInt16(internalIndex & 0xFFFF)
+            // The reference's own `UnkShort` (`internalIndex`'s top 16 bits)
+            // numerically overlaps the chain-continuation flag (bit 24,
+            // `0x1000000`) — that bit is handled separately below (`hasNext`,
+            // re-derived from chain structure on encode) so it's masked out
+            // here to avoid double-applying it.
+            let unkShort = UInt16(((internalIndex & 0xFFFF0000) & ~UInt32(0x0100_0000)) >> 16)
             let size = AgentLabCommandCatalog.commandSize(forID: commandID, platform: platform)
 
             var rawArguments: [UInt32] = []
@@ -84,7 +90,7 @@ public enum CustomAgentParser {
 
             let name = AgentLabCommandCatalog.commandName(forID: commandID)
             let decoded = AgentLabActionDecoder.decode(commandID: commandID, arguments: rawArguments)
-            commands.append(AgentLabCommand(commandID: commandID, commandName: name, rawArguments: rawArguments, decoded: decoded, fileOffset: offset))
+            commands.append(AgentLabCommand(commandID: commandID, unkShort: unkShort, commandName: name, rawArguments: rawArguments, decoded: decoded, fileOffset: offset))
 
             let hasNext = (internalIndex & 0x1000000) != 0
             if !hasNext { break }

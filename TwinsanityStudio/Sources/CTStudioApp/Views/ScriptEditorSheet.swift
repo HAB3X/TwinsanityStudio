@@ -14,11 +14,13 @@ import CTParsers
 ///   `Script`'s commands are the same `[AgentLabCommand]` type
 ///   `CustomAgent` records already have write-back for).
 ///
-/// Not editable: `ScriptCondition`/`SupportType1` fields (no captured file
-/// offset, and no CrateModLoader mod this build ported ever needs to edit
-/// them), and structural changes (adding/removing states, bodies, or
-/// commands) — every write path in this app patches a fixed-size range at
-/// a captured offset, never re-encodes a whole variable-length record.
+/// Also real now (`MainScriptEditorSheet`): `ScriptCondition`/`SupportType1`
+/// field edits (`ScriptWriter.writeCondition`/`writeSupportType1UnkInt1Raw`,
+/// same-size patches at their own captured file offsets — "AgentLab Phase
+/// C"), and structural add/delete of states, bodies, commands, and
+/// conditions (`ScriptWriter.encode`, a full re-encode of the whole record
+/// via `WorkspaceViewModel.patchedFileBytes(replacingWholeRecord:with:)` —
+/// "AgentLab Phase B").
 struct ScriptEditorSheet: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.dismiss) private var dismiss
