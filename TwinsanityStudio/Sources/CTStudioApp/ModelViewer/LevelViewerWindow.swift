@@ -782,11 +782,14 @@ struct LevelViewerWindow: View {
                 return resolved
             },
             searchText: $sidebarSearchText,
-            onPin: { objectID, name in pinToHotbar(objectID: objectID, name: name) }
+            onPin: { objectID, name in pinToHotbar(objectID: objectID, name: name) },
+            armedObjectID: armedPlacement?.objectID
         ) { objectID, name in
             armedPlacement = (objectID, name)
             renderer?.pendingPlacementObjectID = objectID
         }
+        Divider()
+        ForgeSceneryPaletteView(placements: context.placements)
         Divider()
         addTriggerCameraPanel
     }
@@ -1973,6 +1976,10 @@ private struct ForgePaletteView: View {
     /// require placing one first. Declared before `onArm` so `onArm` stays
     /// the trailing closure at the call site.
     let onPin: (UInt16, String) -> Void
+    /// The object ID currently armed for placement (`LevelViewerWindow.
+    /// armedPlacement`) — highlighted yellow in the list so it's clear at
+    /// a glance which entry the next viewport click will place.
+    let armedObjectID: UInt16?
     let onArm: (UInt16, String) -> Void
 
     @State private var selectedCategory: DefaultObjectID.Category?
@@ -2030,6 +2037,7 @@ private struct ForgePaletteView: View {
 
             List(filteredEntries, id: \.id) { entry in
                 let resolvable = canResolve(entry.id) ?? true
+                let isArmed = armedObjectID == entry.id
                 HStack {
                     Button {
                         onArm(entry.id, entry.name)
@@ -2054,6 +2062,14 @@ private struct ForgePaletteView: View {
                     .buttonStyle(.borderless)
                     .help("Pin to the numbered hotbar (next open 1-9 slot)")
                 }
+                .padding(.vertical, 2)
+                .padding(.horizontal, 4)
+                .background(isArmed ? Color.yellow.opacity(0.28) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(isArmed ? Color.yellow : Color.clear, lineWidth: 1.5)
+                )
+                .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
             }
             .frame(height: 220)
             .listStyle(.bordered)
@@ -2095,6 +2111,106 @@ private struct ForgePaletteView: View {
                     thumbnailCache[objectID] = image
                 } else {
                     failedThumbnailIDs.insert(objectID)
+                }
+            }
+        }
+    }
+}
+
+/// "Forge Palette Environment Assets": the structural scenery pieces
+/// (trees, rocks, terrain chunks, ocean panels, …) that make up this
+/// level's world — real `SceneryModelPlacement`s, already resolved and
+/// rendered by the viewport's own `.scenery` layer (`context.placements`),
+/// grouped here by distinct model so browsing them doesn't mean scrolling
+/// every individual placement. Deliberately browse-only: unlike the
+/// Instance palette above, this build has no verified write path for
+/// *creating* a new `SceneryData` placement (see `selectModeContent`'s own
+/// note on this) — clicking a row here would either have to fake a save
+/// that doesn't work or silently do nothing, both worse than not offering
+/// the affordance at all. What it does offer is real: an actual thumbnail
+/// of the actual mesh, reusing the exact same `ModelThumbnailRenderer`
+/// the Instance palette already uses, not a generic placeholder icon.
+private struct ForgeScenerySummary: Identifiable {
+    var id: UInt32
+    var displayName: String
+    var placementCount: Int
+    var asset: ResolvedModelAsset
+}
+
+private struct ForgeSceneryPaletteView: View {
+    let placements: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)]
+
+    @State private var thumbnailCache: [UInt32: NSImage] = [:]
+    @State private var failedThumbnailIDs: Set<UInt32> = []
+
+    private var summaries: [ForgeScenerySummary] {
+        var byRecordID: [UInt32: (count: Int, asset: ResolvedModelAsset)] = [:]
+        for placement in placements {
+            let recordID = placement.asset.recordID
+            byRecordID[recordID, default: (0, placement.asset)].count += 1
+        }
+        return byRecordID.map { recordID, entry in
+            ForgeScenerySummary(id: recordID, displayName: entry.asset.displayName, placementCount: entry.count, asset: entry.asset)
+        }.sorted { $0.displayName < $1.displayName }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Scenery", systemImage: "tree.fill").font(.subheadline.bold())
+            Text("The real structural scenery pieces placed in this level — browse-only, since this build has no verified write path for creating a new scenery placement yet.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            if summaries.isEmpty {
+                Text("This level's own scenery data decoded to zero placements.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 64, maximum: 80), spacing: 8)], spacing: 8) {
+                        ForEach(summaries) { summary in
+                            VStack(spacing: 2) {
+                                sceneryThumbnail(for: summary)
+                                    .frame(width: 56, height: 56)
+                                    .onAppear { loadThumbnailIfNeeded(for: summary) }
+                                Text(summary.displayName).font(.caption2).lineLimit(1)
+                                Text("×\(summary.placementCount)").font(.caption2).foregroundStyle(.secondary)
+                            }
+                            .help(summary.displayName)
+                        }
+                    }
+                }
+                .frame(height: 140)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sceneryThumbnail(for summary: ForgeScenerySummary) -> some View {
+        if let thumbnail = thumbnailCache[summary.id] {
+            Image(nsImage: thumbnail)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        } else if failedThumbnailIDs.contains(summary.id) {
+            Image(systemName: "questionmark.square.dashed")
+                .foregroundStyle(.secondary)
+        } else {
+            ProgressView().controlSize(.mini)
+        }
+    }
+
+    private func loadThumbnailIfNeeded(for summary: ForgeScenerySummary) {
+        guard thumbnailCache[summary.id] == nil, !failedThumbnailIDs.contains(summary.id) else { return }
+        let asset = summary.asset
+        let id = summary.id
+        Task.detached(priority: .userInitiated) {
+            let image = ModelThumbnailRenderer.render(asset, size: 64)
+            await MainActor.run {
+                if let image {
+                    thumbnailCache[id] = image
+                } else {
+                    failedThumbnailIDs.insert(id)
                 }
             }
         }
