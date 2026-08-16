@@ -398,6 +398,86 @@ public enum WOCContainerParser {
         return result
     }
 
+    /// One "arc" -- the real fine-grained vertex-batch unit inside an
+    /// `OBJ0` chunk, found by a dedicated follow-up investigation once
+    /// chunk-to-entry grouping was solved. A chunk is not one flat vertex
+    /// list; it's a sequence of these, each with its own 36-byte header
+    /// and its own vertex count.
+    ///
+    /// **CONFIRMED** (independently re-verified against real bytes, not
+    /// just the investigation's own report -- byte-exact header match and
+    /// a working end-to-end walk with small, bounded drift, on
+    /// `AIRSHIP.GSC`/`FARM.GSC`/`DROID.GSC`): the 36-byte header is a
+    /// fixed byte template --
+    /// `d2 80 01 6c [N] 80 00 00 00 40 02 30 12 05 00 00 00 00 00 00 02 80 01 6d [N*3 as u32LE] 00 00 00 00 00 00 00 03 01 00 01`
+    /// -- where byte 4 is the vertex count `N` (confirmed exactly on 16
+    /// arcs spanning N=3...42) and the `u32` at byte 24 is exactly `N*3`
+    /// (16/16 exact). The header sits at `chunk.markerOffset + 20` for
+    /// the first arc (confirmed identical across all 3 files despite
+    /// their different marker-to-chunk-start distances), immediately
+    /// followed by `N` real ``VertexQuadword``s (the same 16-byte
+    /// `control:u32 + position:xyz Float` layout `parseVertexQuadwords`
+    /// already established, now confirmed to span a whole arc rather than
+    /// an arbitrary prefix), then a `28 + 12*N`-byte trailing block whose
+    /// contents are *not* decoded (see ``parseOBJ0ChunkArcs(_:chunk:)``'s
+    /// doc comment) before the next arc's header.
+    ///
+    /// **Visually verified**, not just numerically plausible: rendering
+    /// full real entries as point clouds/wireframes (multiple entries
+    /// across `AIRSHIP.GSC`/`DROID.GSC`) showed genuinely coherent
+    /// geometry -- a smoothly curved dome/fan surface, a clean circular
+    /// ring of vertices, and several individually closed-loop mesh
+    /// pieces in a larger multi-part assembly -- not noise.
+    public struct OBJ0Arc {
+        public let vertexCount: Int
+        public let vertices: [VertexQuadword]
+    }
+
+    /// Walks one `OBJ0Chunk`'s real arcs -- see ``OBJ0Arc``'s doc comment
+    /// for the confirmed header/vertex layout. Stops (returning whatever
+    /// arcs were found so far) when the next candidate header doesn't
+    /// match the confirmed template, or would run past the chunk's own
+    /// end -- this always happens once per chunk, at a small, bounded
+    /// remainder after the last real arc (median ~12-92 bytes across the
+    /// 3 files checked, never seen over ~160), matching what the chunk-
+    /// length walk (``walkOBJ0Chunks(_:)``) already leaves unconsumed at
+    /// the very end of a payload. That remainder's own contents are
+    /// **not decoded** -- neither is each arc's own `28 + 12*N`-byte
+    /// trailing block (a follow-up investigation found a per-vertex Y-
+    /// position-shaped 16-bit field in it on two small arcs, at a scale
+    /// factor that did *not* reproduce on a larger arc, so a general
+    /// decode -- plausibly UV coordinates, given it doesn't fit a global
+    /// constant -- remains open).
+    public static func parseOBJ0ChunkArcs(_ payload: Data, chunk: OBJ0Chunk) -> [OBJ0Arc] {
+        let bytes = [UInt8](payload)
+        let arcMagic: [UInt8] = [0xD2, 0x80, 0x01, 0x6C]
+        var arcs: [OBJ0Arc] = []
+        var offset = chunk.markerOffset + 20
+        let chunkEnd = chunk.byteOffset + chunk.length
+        while offset + 36 <= chunkEnd, offset + 36 <= bytes.count {
+            guard Array(bytes[offset..<(offset + 4)]) == arcMagic else { break }
+            let n = Int(bytes[offset + 4])
+            let n3 = leUInt32(bytes, offset + 24)
+            guard n3 == UInt32(n * 3) else { break }
+            let vertexStart = offset + 36
+            guard vertexStart + n * 16 <= bytes.count else { break }
+            var vertices: [VertexQuadword] = []
+            vertices.reserveCapacity(n)
+            for i in 0..<n {
+                let base = vertexStart + i * 16
+                let control = leUInt32(bytes, base)
+                let x = leFloat32(bytes, base + 4)
+                let y = leFloat32(bytes, base + 8)
+                let z = leFloat32(bytes, base + 12)
+                vertices.append(VertexQuadword(control: control, position: SIMD3(x, y, z)))
+            }
+            arcs.append(OBJ0Arc(vertexCount: n, vertices: vertices))
+            let vertexEnd = vertexStart + n * 16
+            offset = vertexEnd + 28 + 12 * n
+        }
+        return arcs
+    }
+
     /// A single `IABL` record ("Instance Attribute BLock"?): a 96-byte
     /// fixed record where only one field is decoded -- see
     /// ``parseAttributeBlock(_:)``.

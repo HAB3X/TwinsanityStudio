@@ -1,5 +1,6 @@
 import Foundation
 import CTParsers
+import CTModels
 
 /// A fully-loaded, already-decoded WoC level, ready to hand to a viewer.
 /// Loading happens once, off the main actor (`WOCLevelLoader.load`); this
@@ -30,6 +31,21 @@ public struct WOCLevelAsset: Identifiable {
     public let distinctObjectCount: Int
     public let textures: [WOCDecodedTexture]
     public let sectionTags: [String]
+    /// Real per-object mesh geometry, indexed exactly like `OBJ0` itself
+    /// (`objects[i].objectIndex` looks up here) -- see `WOCMeshDecoder`'s
+    /// doc comment for the confirmed byte layout this is built from
+    /// (`OBJ0`'s "arc" vertex batches, grouped into entries). Empty when
+    /// this file's chunk walk hit the known marker-reuse bug (`CASTLE_C.
+    /// GSC`/`HUB.GSC`-shaped files -- see `WOCContainerParser.
+    /// groupOBJ0ChunksIntoEntries`) and grouping was refused rather than
+    /// guessed at; the viewer falls back to a position marker in that
+    /// case, same as before this existed. Positions only, no rotation
+    /// applied yet -- `INST`'s own rotation matrix is real, decoded data
+    /// (`WOCContainerParser.Instance.matrix`) but this viewer doesn't
+    /// apply it yet, matching the point-cloud renderer's own existing
+    /// position-only behavior rather than introducing a new, unverified
+    /// claim about this format's matrix convention.
+    public let objectMeshes: [MeshAsset]
 
     /// From the sibling `.AI` file, if present: real enemy/AI entity
     /// spawns with patrol waypoint paths. Fully decoded (see
@@ -121,8 +137,10 @@ public enum WOCLevelLoader {
         }
 
         var distinctObjectCount = 0
+        var objectMeshes: [MeshAsset] = []
         if let obj0 = file.sections.first(where: { $0.tag == "OBJ0" }) {
             distinctObjectCount = (try? WOCContainerParser.leadingCount(obj0.payload)) ?? 0
+            objectMeshes = WOCMeshDecoder.buildEntryMeshes(objectPayload: obj0.payload) ?? []
         }
 
         var textures: [WOCDecodedTexture] = []
@@ -189,6 +207,7 @@ public enum WOCLevelLoader {
             distinctObjectCount: distinctObjectCount,
             textures: textures,
             sectionTags: file.sections.map(\.tag),
+            objectMeshes: objectMeshes,
             entities: entities,
             foliage: foliage,
             animations: animations,
