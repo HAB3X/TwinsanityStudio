@@ -753,6 +753,13 @@ public enum WOCContainerParser {
     public struct OBJ0Chunk {
         public let byteOffset: Int
         public let length: Int
+        /// Absolute payload offset of this chunk's own `56 00 01 6C`
+        /// marker -- kept (not just `byteOffset`/`length`) because
+        /// ``groupOBJ0ChunksIntoEntries(_:)``'s entry-boundary flag is
+        /// defined relative to the *marker*, not the chunk start (real
+        /// files have a real, varying marker-to-chunk-start distance, so
+        /// only the marker's own position is a safe anchor).
+        public let markerOffset: Int
     }
 
     /// A validated multi-chunk walk over an `OBJ0` payload. A bare "scan
@@ -768,21 +775,32 @@ public enum WOCContainerParser {
     /// it, skipping to the next marker occurrence instead when a
     /// candidate fails validation.
     ///
-    /// Re-verified with this safeguard across 4 real files of very
-    /// different sizes: `AIRSHIP.GSC` 100.00% (222 chunks), `FARM.GSC`
-    /// 99.99% (745 chunks), `CASTLE_C.GSC` 99.95% (1975 chunks),
-    /// `HUB.GSC` 99.94% (2317 chunks) -- each walk stops a few hundred to
-    /// a few thousand bytes short of the true end (out of multi-megabyte
-    /// payloads), rather than the naive version's complete divergence on
-    /// the same files. The residual gap is unexplained (likely some
-    /// chunks don't carry this marker at all, or use a different shape)
-    /// but is small enough that the chunks found are real, individually
-    /// checkable data, not noise.
+    /// **Known real bug, not yet fixed** (found by a dedicated follow-up
+    /// investigation into ``groupOBJ0ChunksIntoEntries(_:)`` below): on
+    /// files whose chunks don't all share one constant marker-to-chunk-
+    /// start distance (heterogeneous chunk *types* in the same file --
+    /// confirmed on `CASTLE_C.GSC`/`HUB.GSC`), this walk can validate the
+    /// *same* literal marker occurrence against dozens to hundreds of
+    /// consecutive fabricated "chunks" at a constant stride, because
+    /// nothing here requires a validated marker to actually be near the
+    /// chunk it's validating. Concretely observed on `HUB.GSC`: one
+    /// marker at payload offset 751032 reused to "validate" 255 different
+    /// chunks at a flat 384-byte stride. This means the previously-quoted
+    /// **coverage numbers below for `CASTLE_C.GSC`/`HUB.GSC` are not
+    /// trustworthy as real chunk boundaries** -- most of those "chunks"
+    /// are walk artifacts, not real per-chunk data. Left unfixed rather
+    /// than guessed at (see that function's own doc comment for what a
+    /// real fix would need); `groupOBJ0ChunksIntoEntries(_:)` detects and
+    /// refuses to group a walk that hit this bug rather than silently
+    /// producing a wrong grouping from it.
     ///
-    /// Still unknown: these "chunks" are a finer granularity than `OBJ0`'s
-    /// own per-object entries (e.g. `AIRSHIP.GSC` has 222 chunks but only
-    /// 41 `OBJ0` entries per its own leading count field) -- how chunks
-    /// group into entries is unsolved.
+    /// Re-verified with the plausibility safeguard across 4 real files of
+    /// very different sizes: `AIRSHIP.GSC` 100.00% (222 chunks, marker-
+    /// reuse-free), `FARM.GSC` 99.99% (745 chunks, marker-reuse-free),
+    /// `CASTLE_C.GSC` 99.95% (1975 chunks, but see the marker-reuse bug
+    /// above), `HUB.GSC` 99.94% (2317 chunks, same caveat) -- each walk
+    /// stops a few hundred to a few thousand bytes short of the true end
+    /// (out of multi-megabyte payloads) rather than diverging completely.
     public static func walkOBJ0Chunks(_ payload: Data) -> [OBJ0Chunk] {
         let marker = Data([0x56, 0x00, 0x01, 0x6C])
         let maxReasonableChunkLength = 200_000
@@ -791,23 +809,91 @@ public enum WOCContainerParser {
         var searchFrom = offset
         while offset < payload.count {
             var candidate = searchFrom
-            var validated: Int?
+            var validated: (length: Int, markerOffset: Int)?
             searchLoop: while let markerRange = payload.range(of: marker, in: candidate..<payload.count) {
                 let markerOffset = markerRange.lowerBound - payload.startIndex
                 let lengthFieldOffset = markerOffset - 20
                 if lengthFieldOffset >= offset, let chunkLength = try? obj0ChunkLength(payload, markerOffset: markerOffset),
                    chunkLength > 0, chunkLength <= maxReasonableChunkLength, offset + chunkLength <= payload.count + 4096 {
-                    validated = chunkLength
+                    validated = (chunkLength, markerOffset)
                     break searchLoop
                 }
                 candidate = markerOffset + 4
             }
-            guard let chunkLength = validated else { break }
-            chunks.append(OBJ0Chunk(byteOffset: offset, length: chunkLength))
+            guard let (chunkLength, markerOffset) = validated else { break }
+            chunks.append(OBJ0Chunk(byteOffset: offset, length: chunkLength, markerOffset: markerOffset))
             offset += chunkLength
             searchFrom = offset
         }
         return chunks
+    }
+
+    /// Groups `walkOBJ0Chunks(_:)`'s fine-grained chunks into `OBJ0`'s own
+    /// coarser per-object entries -- the boundary this format needed to
+    /// become usable for real mesh rendering (see this file's own doc
+    /// comment: `OBJ0`'s per-entry format holds real embedded mesh
+    /// geometry, but until now entry *boundaries* were unsolved, e.g.
+    /// `AIRSHIP.GSC` has 222 real chunks but only 41 top-level entries per
+    /// its own leading count field).
+    ///
+    /// **CONFIRMED rule**: a `UInt32LE` field sitting at exactly
+    /// `chunk.markerOffset - 112` (112 bytes *before* the chunk's own
+    /// marker -- not before the chunk's start, which varies file to
+    /// file) takes only values `0`/`1`. `1` means "this chunk starts a
+    /// new top-level entry"; `0` means "this chunk continues the current
+    /// entry." The very first chunk always starts entry 0 regardless of
+    /// its own flag (nothing precedes it to need a boundary marker).
+    /// Validated with **15/15 exact matches** (grouped entry count ==
+    /// `OBJ0`'s own leading-count field, zero mismatches) against real
+    /// files ranging from 40 to 1198 declared entries -- and the 112-byte
+    /// distance was confirmed unique: every other 4-byte-aligned offset
+    /// from 4 to 296 was swept on 3 sample files and only 112 ever
+    /// produced a matching count, ruling out coincidence.
+    ///
+    /// **Scope limitation, stated honestly rather than silently wrong**:
+    /// this rule was only validated on files where `walkOBJ0Chunks(_:)`
+    /// itself stays reliable -- a real, separate bug in that walk (see
+    /// its own doc comment) fabricates chunks via marker reuse on files
+    /// with heterogeneous per-chunk header sizes, confirmed on
+    /// `CASTLE_C.GSC`/`HUB.GSC`. Grouping a walk that hit that bug would
+    /// produce a wrong-but-plausible-looking entry count, which this
+    /// codebase's discipline treats as worse than an honest `nil`. This
+    /// function detects that case the same way the bug was found -- the
+    /// same absolute `markerOffset` being reused across more than one
+    /// walked chunk -- and returns `nil` rather than a result it can't
+    /// stand behind.
+    ///
+    /// - Returns: One array of chunks per top-level `OBJ0` entry, in
+    ///   order, or `nil` when `walkOBJ0Chunks(_:)`'s marker-reuse bug was
+    ///   detected on this payload (the grouping isn't safe to trust).
+    public static func groupOBJ0ChunksIntoEntries(_ payload: Data) -> [[OBJ0Chunk]]? {
+        let chunks = walkOBJ0Chunks(payload)
+        guard !chunks.isEmpty else { return [] }
+
+        var seenMarkerOffsets = Set<Int>()
+        for chunk in chunks {
+            guard seenMarkerOffsets.insert(chunk.markerOffset).inserted else { return nil }
+        }
+
+        let bytes = [UInt8](payload)
+        var groups: [[OBJ0Chunk]] = []
+        for chunk in chunks {
+            let flagOffset = chunk.markerOffset - 112
+            let startsNewEntry: Bool
+            if groups.isEmpty {
+                startsNewEntry = true // the first chunk always starts entry 0
+            } else if flagOffset >= 0, flagOffset + 4 <= bytes.count {
+                startsNewEntry = leUInt32(bytes, flagOffset) == 1
+            } else {
+                startsNewEntry = false
+            }
+            if startsNewEntry || groups.isEmpty {
+                groups.append([chunk])
+            } else {
+                groups[groups.count - 1].append(chunk)
+            }
+        }
+        return groups
     }
 
     // MARK: - helpers
