@@ -123,6 +123,7 @@ public enum ScriptParser {
         let unkByte1 = try cursor.readUInt8() // byte-list count
         let unkByte2 = try cursor.readUInt8() // float-list count
         let unkUShort1 = try cursor.readUInt16()
+        let unkInt1RawFileOffset = cursor.position
         let unkInt1Raw = try cursor.readUInt32()
 
         let beforeFloats = cursor.position
@@ -154,16 +155,17 @@ public enum ScriptParser {
         // override read (or the position never left it, if there were no
         // overrides) — no explicit re-seek needed.
 
-        return SupportType1(bytes: bytes, floats: floats, unkUShort1: unkUShort1, unkInt1Raw: unkInt1Raw)
+        return SupportType1(bytes: bytes, floats: floats, unkUShort1: unkUShort1, unkInt1Raw: unkInt1Raw, unkInt1RawFileOffset: unkInt1RawFileOffset)
     }
 
     // MARK: - ScriptCondition
 
     private static func parseCondition(_ cursor: inout BinaryCursor) throws -> ScriptCondition {
+        let fileOffset = cursor.position
         let unkInt1Raw = try cursor.readInt32()
         let interval = try cursor.readFloat32()
         let threshold = try cursor.readFloat32()
         let thresholdInverse = try cursor.readFloat32()
-        return ScriptCondition(unkInt1Raw: unkInt1Raw, interval: interval, threshold: threshold, thresholdInverse: thresholdInverse)
+        return ScriptCondition(unkInt1Raw: unkInt1Raw, interval: interval, threshold: threshold, thresholdInverse: thresholdInverse, fileOffset: fileOffset)
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import CTCore
+import CTModels
 
 /// Write-back for `Script` records — same "capture a fixed-offset field
 /// once, patch a same-size range there" discipline as `WorldPlacementWriter`
@@ -30,6 +31,34 @@ public enum ScriptWriter {
         var writer = BinaryWriter()
         writer.writeInt32(mainScriptIndex)
         writer.writeUInt32(unkInt2)
+        return writer.data
+    }
+
+    /// Encodes `SupportType1.unkInt1Raw` back to its on-disk 4-byte form,
+    /// meant to be patched at `SupportType1.unkInt1RawFileOffset` — makes
+    /// every `resolved*`/flag accessor on that type (space, motion,
+    /// continuous-rotate, translates/rotates/tracksDestination/etc.)
+    /// writable without touching the variable-length `bytes`/`floats`
+    /// lists that follow it in the same record.
+    public static func writeSupportType1UnkInt1Raw(_ value: UInt32) -> Data {
+        var writer = BinaryWriter()
+        writer.writeUInt32(value)
+        return writer.data
+    }
+
+    /// Encodes a full `ScriptCondition` back to its on-disk 16-byte form
+    /// (`unkInt1Raw`, `interval`, `threshold`, `thresholdInverse`, 4 bytes
+    /// each, in that exact sequential order), meant to be patched at
+    /// `ScriptCondition.fileOffset` — one patch covers all four fields
+    /// (including `vTableIndex`/`parameter`/`notGate`, which are just
+    /// `unkInt1Raw`'s own packed bits) since they're already contiguous
+    /// and always rewritten together.
+    public static func writeCondition(_ condition: ScriptCondition) -> Data {
+        var writer = BinaryWriter()
+        writer.writeInt32(condition.unkInt1Raw)
+        writer.writeFloat32(condition.interval)
+        writer.writeFloat32(condition.threshold)
+        writer.writeFloat32(condition.thresholdInverse)
         return writer.data
     }
 }

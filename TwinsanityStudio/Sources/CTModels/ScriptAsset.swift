@@ -166,12 +166,21 @@ public struct SupportType1: Sendable {
     /// Version, "always 6" per the reference's own comment.
     public var unkUShort1: UInt16
     public var unkInt1Raw: UInt32
+    /// Byte offset of `unkInt1Raw` (4 bytes, immediately after `unkUShort1`),
+    /// relative to the enclosing `Script` record's own start — captured
+    /// during parse the same "fixed offset, patch in place" way as
+    /// `ScriptState.scriptIndexOrSlotFileOffset`. `unkInt1Raw` packs every
+    /// `resolved*`/flag accessor on this type, so this one offset is enough
+    /// to make all of them writable without touching the variable-length
+    /// `bytes`/`floats` lists that follow.
+    public var unkInt1RawFileOffset: Int
 
-    public init(bytes: [UInt8], floats: [Float], unkUShort1: UInt16, unkInt1Raw: UInt32) {
+    public init(bytes: [UInt8], floats: [Float], unkUShort1: UInt16, unkInt1Raw: UInt32, unkInt1RawFileOffset: Int = 0) {
         self.bytes = bytes
         self.floats = floats
         self.unkUShort1 = unkUShort1
         self.unkInt1Raw = unkInt1Raw
+        self.unkInt1RawFileOffset = unkInt1RawFileOffset
     }
 
     public var resolvedSpace: SpaceType? { SpaceType(rawValue: UInt8(unkInt1Raw & 7)) }
@@ -195,10 +204,10 @@ public struct SupportType1: Sendable {
     public var contRotatesInWorldSpace: Bool { (unkInt1Raw >> 0x1A) & 1 != 0 }
     public var stalls: Bool { (unkInt1Raw >> 0x1F) & 1 != 0 }
 
-    public enum SpaceType: UInt8, Sendable {
+    public enum SpaceType: UInt8, Sendable, CaseIterable {
         case worldSpace = 0, initialSpace, currentSpace, targetSpace, parentSpace, initialPos, currentPos, storedSpace
     }
-    public enum MotionType: UInt8, Sendable {
+    public enum MotionType: UInt8, Sendable, CaseIterable {
         case noMotion = 0, constantVel, accelerated, spring, projectile, linearInterp, smoothPath, faceDestOnly, drive, groundChase, airChase
     }
     public enum ContinuousRotate: UInt8, Sendable {
@@ -243,12 +252,21 @@ public struct ScriptCondition: Sendable {
     public var interval: Float
     public var threshold: Float
     public var thresholdInverse: Float
+    /// Byte offset of `unkInt1Raw`, relative to the enclosing `Script`
+    /// record's own start — the four fields here are fixed-size and
+    /// written in this exact sequential order (`unkInt1Raw`, `interval`,
+    /// `threshold`, `thresholdInverse`, 4 bytes each), so `fileOffset +
+    /// 0/4/8/12` addresses each one directly for a same-size patch,
+    /// same "capture once, patch in place" pattern as `ScriptState.
+    /// scriptIndexOrSlotFileOffset`.
+    public var fileOffset: Int
 
-    public init(unkInt1Raw: Int32, interval: Float, threshold: Float, thresholdInverse: Float) {
+    public init(unkInt1Raw: Int32, interval: Float, threshold: Float, thresholdInverse: Float, fileOffset: Int = 0) {
         self.unkInt1Raw = unkInt1Raw
         self.interval = interval
         self.threshold = threshold
         self.thresholdInverse = thresholdInverse
+        self.fileOffset = fileOffset
     }
 
     public var vTableIndex: UInt16 { UInt16(truncatingIfNeeded: unkInt1Raw & 0xFFFF) }

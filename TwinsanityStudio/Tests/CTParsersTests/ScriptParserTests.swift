@@ -320,6 +320,98 @@ final class ScriptParserTests: XCTestCase {
         XCTAssertEqual(patched.count, originalBytes.count)
     }
 
+    /// AgentLab Phase C: `ScriptCondition.fileOffset` + `ScriptWriter.
+    /// writeCondition` — same "capture once, patch a same-size range"
+    /// discipline as `scriptIndexOrSlotFileOffset`, now covering the
+    /// condition's own four fields (which also carry vTableIndex/
+    /// parameter/notGate, packed into `unkInt1Raw`) in one patch.
+    func testScriptConditionFileOffsetRoundTripsThroughWriter() throws {
+        var w = BinaryWriter()
+        w.writeUInt16(1)
+        w.writeUInt8(0)
+        w.writeUInt8(0)
+        Self.writeName(&w, "")
+        w.writeInt32(1) // statesAmountRaw
+        w.writeInt32(0) // startUnit
+        w.writeInt16(0x1) // state bitfield: declaredBodyCount = 1
+        w.writeInt16(0) // scriptIndexOrSlot
+        w.writeInt32(0x200) // body bitfield: condition present only
+        w.writeInt32(Int32(bitPattern: 0x10005)) // unkInt1Raw: vTableIndex=5, notGate set
+        w.writeFloat32(0.25)
+        w.writeFloat32(0.5)
+        w.writeFloat32(2.0)
+
+        let originalBytes = w.data
+        var cursor = BinaryCursor(data: originalBytes)
+        let asset = try ScriptParser.parse(&cursor, recordID: 11, size: w.count, platform: .ps2)
+        guard case .main(let main) = asset.content else { return XCTFail("expected .main") }
+        let condition = try XCTUnwrap(main.states[0].bodies[0].condition)
+        XCTAssertEqual(condition.vTableIndex, 5)
+
+        var probe = BinaryCursor(data: originalBytes)
+        _ = try probe.seek(to: condition.fileOffset)
+        XCTAssertEqual(try probe.readInt32(), Int32(bitPattern: 0x10005))
+
+        let replacement = ScriptCondition(unkInt1Raw: 9, interval: 1.0, threshold: 2.0, thresholdInverse: 3.0)
+        var patched = originalBytes
+        let offset = condition.fileOffset
+        patched.replaceSubrange(offset..<(offset + 16), with: ScriptWriter.writeCondition(replacement))
+        var reparseCursor = BinaryCursor(data: patched)
+        let reparsed = try ScriptParser.parse(&reparseCursor, recordID: 11, size: patched.count, platform: .ps2)
+        guard case .main(let reparsedMain) = reparsed.content else { return XCTFail("expected .main") }
+        let reparsedCondition = try XCTUnwrap(reparsedMain.states[0].bodies[0].condition)
+        XCTAssertEqual(reparsedCondition.unkInt1Raw, 9)
+        XCTAssertEqual(reparsedCondition.interval, 1.0)
+        XCTAssertEqual(reparsedCondition.threshold, 2.0)
+        XCTAssertEqual(reparsedCondition.thresholdInverse, 3.0)
+        XCTAssertEqual(patched.count, originalBytes.count)
+    }
+
+    /// AgentLab Phase C: `SupportType1.unkInt1RawFileOffset` + `ScriptWriter.
+    /// writeSupportType1UnkInt1Raw` — makes every `resolved*`/flag accessor
+    /// on `SupportType1` writable via one 4-byte patch, without touching
+    /// the variable-length `bytes`/`floats` lists that follow it.
+    func testSupportType1UnkInt1RawFileOffsetRoundTripsThroughWriter() throws {
+        var w = BinaryWriter()
+        w.writeUInt16(1)
+        w.writeUInt8(0)
+        w.writeUInt8(0)
+        Self.writeName(&w, "")
+        w.writeInt32(1) // statesAmountRaw
+        w.writeInt32(0) // startUnit
+        w.writeInt16(0x4000) // state bitfield: type1 present, no body, no next state
+        w.writeInt16(0) // scriptIndexOrSlot
+        // SupportType1: 0 bytes, 0 floats, unkUShort1=6, unkInt1Raw=1.
+        w.writeUInt8(0)
+        w.writeUInt8(0)
+        w.writeUInt16(6)
+        w.writeUInt32(1)
+
+        let originalBytes = w.data
+        var cursor = BinaryCursor(data: originalBytes)
+        let asset = try ScriptParser.parse(&cursor, recordID: 12, size: w.count, platform: .ps2)
+        guard case .main(let main) = asset.content else { return XCTFail("expected .main") }
+        let type1 = try XCTUnwrap(main.states[0].type1)
+        XCTAssertEqual(type1.unkInt1Raw, 1)
+
+        var probe = BinaryCursor(data: originalBytes)
+        _ = try probe.seek(to: type1.unkInt1RawFileOffset)
+        XCTAssertEqual(try probe.readUInt32(), 1)
+
+        var patched = originalBytes
+        let offset = type1.unkInt1RawFileOffset
+        let newValue: UInt32 = (1 << 3) // resolvedMotion = constantVel
+        patched.replaceSubrange(offset..<(offset + 4), with: ScriptWriter.writeSupportType1UnkInt1Raw(newValue))
+        var reparseCursor = BinaryCursor(data: patched)
+        let reparsed = try ScriptParser.parse(&reparseCursor, recordID: 12, size: patched.count, platform: .ps2)
+        guard case .main(let reparsedMain) = reparsed.content else { return XCTFail("expected .main") }
+        let reparsedType1 = try XCTUnwrap(reparsedMain.states[0].type1)
+        XCTAssertEqual(reparsedType1.unkInt1Raw, newValue)
+        XCTAssertEqual(reparsedType1.resolvedMotion, .constantVel)
+        XCTAssertEqual(reparsedType1.unkUShort1, 6, "the field right before unkInt1Raw must be untouched")
+        XCTAssertEqual(patched.count, originalBytes.count)
+    }
+
     func testHugeDeclaredHeaderPairCountThrowsInsteadOfOverAllocating() {
         var w = BinaryWriter()
         w.writeUInt16(1)
