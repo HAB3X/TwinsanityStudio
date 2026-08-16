@@ -96,7 +96,7 @@ struct InspectorView: View {
                             case .soundEffect(let sound):
                                 SoundEffectInspectorView(node: node, displayName: node.displayName, sound: sound)
                             case .gameObject(let gameObject):
-                                GameObjectInspectorView(gameObject: gameObject)
+                                GameObjectInspectorView(node: node, gameObject: gameObject)
                             case .chunkLinks(let chunkLinks):
                                 ChunkLinksInspectorView(node: node, chunkLinks: chunkLinks)
                             case .aiPosition(let marker):
@@ -293,12 +293,26 @@ struct MaterialInspectorView: View {
 /// the `OGIs` list is decoded (name + OGI links only, not the script
 /// bytecode tail this codebase doesn't decode anywhere else either).
 struct GameObjectInspectorView: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    let node: ChunkNode
     let gameObject: GameObjectInfo
+    @State private var showEditor = false
 
     var body: some View {
         Form {
+            Section {
+                Button("Edit GameObject…") { showEditor = true }
+                    .disabled(!workspace.canSaveEdits(for: node))
+            }
             LabeledContent("Name", value: gameObject.name)
             LabeledContent("Object ID", value: "\(gameObject.id)")
+            if let type = gameObject.resolvedObjectType {
+                LabeledContent("Object Type", value: String(describing: type))
+            }
+            if let mobile = gameObject.resolvedMobileType {
+                LabeledContent("Mobile Type", value: String(describing: mobile))
+            }
+            LabeledContent("Script Commands", value: "\(gameObject.scriptCommands.count)")
             if !gameObject.ogiIDs.isEmpty {
                 DisclosureGroup("Graphics Info Links (\(gameObject.ogiIDs.count))") {
                     ForEach(Array(gameObject.ogiIDs.enumerated()), id: \.offset) { index, ogiID in
@@ -306,8 +320,19 @@ struct GameObjectInspectorView: View {
                     }
                 }
             }
+            if gameObject.instanceProperties != nil {
+                LabeledContent("Instance Properties", value: "present")
+            }
+            if let linked = gameObject.linkedIDs {
+                let counts: [Int] = [linked.objects.count, linked.ogis.count, linked.anims.count, linked.codeModels.count, linked.scripts.count, linked.unk.count, linked.sounds.count]
+                let total: Int = counts.reduce(0, +)
+                LabeledContent("Linked Resource IDs", value: "\(total) total")
+            }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $showEditor) {
+            GameObjectEditorSheet(node: node, gameObject: gameObject)
+        }
     }
 }
 

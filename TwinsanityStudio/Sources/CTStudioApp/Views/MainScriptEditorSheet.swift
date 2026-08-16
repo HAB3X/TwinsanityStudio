@@ -265,7 +265,8 @@ struct MainScriptEditorSheet: View {
                     Spacer()
                     Button("Edit Arguments…") { editingCommand = command }
                         .controlSize(.small)
-                        .disabled(!workspace.canSaveEdits(for: node))
+                        .disabled(!workspace.canSaveEdits(for: node) || command.fileOffset == 0)
+                        .help(command.fileOffset == 0 ? "Save, then reopen the saved file, before editing this newly-added command's arguments — it has no real on-disk offset yet." : "")
                     Button("Delete", role: .destructive) { deleteCommand(stateIndex: stateIndex, bodyIndex: index, commandIndex: commandIndex) }
                         .controlSize(.small)
                         .disabled(!workspace.canSaveEdits(for: node))
