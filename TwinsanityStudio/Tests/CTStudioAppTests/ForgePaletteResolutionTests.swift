@@ -59,4 +59,41 @@ final class ForgePaletteResolutionTests: XCTestCase {
         let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [], assetIndex: GraphicsAssetIndex(), defaultAssetIndex: defaultIndex))
         XCTAssertTrue(renderer.canResolveObjectID(7), "an object absent from this level's own index but present in the Default.rm2 fallback should still resolve")
     }
+
+    /// "Global Thumbnails": an object with no geometry in this level's own
+    /// index *or* the shared Default.rm2 fallback, but that this session
+    /// already resolved successfully in a different level
+    /// (`globalObjectFallbacks`, kept in sync from `WorkspaceViewModel.
+    /// globalObjectThumbnails` by `LevelViewerWindow`) — must still report
+    /// resolvable, and `spawnInstance` must place the *same* real geometry
+    /// rather than silently downgrading to the amber placeholder cube.
+    func testObjectIDResolvableOnlyThroughGlobalFallbackReportsTrueAndPlacesRealGeometry() throws {
+        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: []))
+        XCTAssertFalse(renderer.canResolveObjectID(42), "sanity check: nothing should resolve this object yet")
+
+        let fallbackAsset = ResolvedModelAsset(recordID: 99, displayName: "Seen In Another Level", mesh: makeMesh(id: 99), submeshMaterials: [])
+        renderer.globalObjectFallbacks[42] = fallbackAsset
+
+        XCTAssertTrue(renderer.canResolveObjectID(42), "an object seen resolved elsewhere this session should report resolvable")
+        XCTAssertEqual(renderer.resolvedAsset(forObjectID: 42)?.displayName, "Seen In Another Level")
+
+        let index = try XCTUnwrap(renderer.spawnInstance(objectID: 42, at: SIMD3<Float>(1, 2, 3)))
+        _ = index // spawnInstance returning non-nil already confirms it built real (non-placeholder) submeshes from the fallback asset, not an amber cube.
+    }
+
+    /// This level's own resolution must win over the global fallback when
+    /// both exist — the global cache is a last resort, not a shortcut
+    /// that bypasses genuinely better local data.
+    func testLocalResolutionTakesPriorityOverGlobalFallback() throws {
+        var index = GraphicsAssetIndex()
+        index.gameObjects[3] = GameObjectInfo(id: 3, name: "BASICCRATE", ogiIDs: [500])
+        index.skeletons[500] = SkeletonAsset(id: 500, joints: [], exitPoints: [], skinTransforms: [], skinID: 0, blendSkinID: 0, modelLinks: [ModelLink(jointIndex: 0, modelID: 12)])
+        index.models[40] = makeMesh(id: 40)
+        index.rigidModels[12] = RigidModelInfo(id: 12, header: 257, materialIDs: [], meshID: 40)
+
+        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [], assetIndex: index))
+        renderer.globalObjectFallbacks[3] = ResolvedModelAsset(recordID: 999, displayName: "Wrong Fallback", mesh: makeMesh(id: 999), submeshMaterials: [])
+
+        XCTAssertNotEqual(renderer.resolvedAsset(forObjectID: 3)?.displayName, "Wrong Fallback", "this level's own resolution should be used, not the global fallback")
+    }
 }

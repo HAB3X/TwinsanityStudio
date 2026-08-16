@@ -761,8 +761,26 @@ struct LevelViewerWindow: View {
     private var placeModeContent: some View {
         ForgePaletteView(
             placedThisSession: renderer?.pendingNewInstances.count ?? 0,
-            canResolve: { renderer?.canResolveObjectID($0) },
-            resolveForThumbnail: { renderer?.resolvedAsset(forObjectID: $0) },
+            // "Global Thumbnails": prefer this level's own resolution when
+            // it has one, but fall back to any object this session has
+            // already resolved successfully in a *different* level — see
+            // `WorkspaceViewModel.globalObjectThumbnails`'s doc comment.
+            // `renderer?.globalObjectFallbacks` is kept in sync here
+            // (cheap COW reference assignment) rather than the renderer
+            // holding a `workspace` reference of its own — `spawnInstance`
+            // consults the same dictionary, so what a thumbnail promises
+            // and what actually gets placed always agree.
+            canResolve: { objectID in
+                renderer?.globalObjectFallbacks = workspace.globalObjectThumbnails
+                if let can = renderer?.canResolveObjectID(objectID), can { return true }
+                return renderer == nil ? nil : false
+            },
+            resolveForThumbnail: { objectID in
+                renderer?.globalObjectFallbacks = workspace.globalObjectThumbnails
+                guard let resolved = renderer?.resolvedAsset(forObjectID: objectID) else { return nil }
+                workspace.recordGlobalObjectThumbnail(objectID: objectID, asset: resolved)
+                return resolved
+            },
             searchText: $sidebarSearchText,
             onPin: { objectID, name in pinToHotbar(objectID: objectID, name: name) }
         ) { objectID, name in
@@ -2005,9 +2023,10 @@ private struct ForgePaletteView: View {
             .labelsHidden()
             .pickerStyle(.segmented)
 
-            Toggle("Hide objects with no geometry in this level", isOn: $hideUnavailable)
+            Toggle("Hide objects with no known geometry", isOn: $hideUnavailable)
                 .font(.caption2)
                 .toggleStyle(.checkbox)
+                .help("\"Global Thumbnails\": counts as available if this level's own data resolves it, or if you've already seen it resolve in a different level this session — either way, placing it here gives the same real geometry the thumbnail shows.")
 
             List(filteredEntries, id: \.id) { entry in
                 let resolvable = canResolve(entry.id) ?? true

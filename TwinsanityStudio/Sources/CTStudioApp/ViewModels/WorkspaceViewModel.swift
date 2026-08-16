@@ -354,6 +354,34 @@ public final class WorkspaceViewModel: ObservableObject {
     /// never requires manually parsing/resolving a specific chunk first.
     @Published public var modelsHub: [ResolvedModelAsset] = []
     @Published public var isModelsHubPresented = false
+    /// "Global Thumbnails": every `Instance.objectID` this session has
+    /// ever successfully resolved to real geometry in *any* opened level,
+    /// keyed by that `objectID` — grows every time `placeModeContent`'s
+    /// Forge Palette resolves one (see `recordGlobalObjectThumbnail`), so
+    /// an object seen once in level A still shows its real thumbnail (and
+    /// counts as "available") when browsing the palette in level B, even
+    /// though B's own file has no geometry for it. Deliberately session-
+    /// only, not persisted to `ScanCache` or eagerly built by scanning
+    /// every archive up front — `objectID -> GameObject -> mesh` isn't
+    /// data any existing scan pass already computes (unlike `modelsHub`,
+    /// which resolves `RigidModel`/`Skeleton` records directly by their
+    /// own on-disk ID), and eagerly resolving every real `GameObject` in
+    /// every scanned file just to pre-fill this would risk the same
+    /// scan-time memory/perf cost class the codebase already hit once
+    /// with over-eager `ScanCache` persistence. Grows for free instead,
+    /// piggybacking on resolution work the palette was doing anyway.
+    @Published public private(set) var globalObjectThumbnails: [UInt16: ResolvedModelAsset] = [:]
+
+    /// Records a real, already-resolved object so later Forge Palette
+    /// views (in a different level) can show its thumbnail too. Never
+    /// overwrites an existing entry — first successful resolution is as
+    /// good as any other for a thumbnail, and re-storing the same
+    /// (mesh+texture-carrying) value on every re-render would be pure
+    /// waste.
+    public func recordGlobalObjectThumbnail(objectID: UInt16, asset: ResolvedModelAsset) {
+        guard globalObjectThumbnails[objectID] == nil else { return }
+        globalObjectThumbnails[objectID] = asset
+    }
     /// "Textures Hub" (QoL sweep) — every decoded texture across every
     /// scanned file, populated alongside `modelsHub` the same way.
     @Published public var texturesHub: [TextureHubEntry] = []

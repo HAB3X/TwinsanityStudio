@@ -1833,6 +1833,17 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// file. See `AssetResolver.resolveInstanceObject`'s doc comment for
     /// where this data actually comes from.
     private var defaultAssetIndex: GraphicsAssetIndex = GraphicsAssetIndex()
+    /// "Global Thumbnails": mirrors `WorkspaceViewModel.globalObjectThumbnails`
+    /// (kept in sync by `LevelViewerWindow`, which owns the `workspace`
+    /// reference this renderer deliberately doesn't have) — every object
+    /// this *session* has resolved successfully in some *other* level.
+    /// Checked only after this level's own `assetIndex`/`defaultAssetIndex`
+    /// both fail, by `canResolveObjectID`/`resolvedAsset(forObjectID:)`
+    /// *and* `spawnInstance` alike, so what the Forge Palette's thumbnail
+    /// promises and what actually gets placed always agree — a thumbnail
+    /// sourced from elsewhere in the workspace is never a "looks
+    /// available, places as an amber cube anyway" trap.
+    var globalObjectFallbacks: [UInt16: ResolvedModelAsset] = [:]
     /// Every synthetic ID handed out this session for a placed-but-unsaved
     /// object, one higher than the highest real `Instance.id` seen at
     /// upload time — see `spawnInstance`'s doc comment.
@@ -2762,8 +2773,10 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// palette say so upfront instead of the user only finding out after
     /// already placing an amber placeholder cube.
     func canResolveObjectID(_ objectID: UInt16) -> Bool {
-        guard let resolved = AssetResolver.resolveInstanceObject(objectID: objectID, instanceSelector: 0, index: assetIndex, defaultIndex: defaultAssetIndex) else { return false }
-        return !resolved.mesh.submeshes.isEmpty
+        if let resolved = AssetResolver.resolveInstanceObject(objectID: objectID, instanceSelector: 0, index: assetIndex, defaultIndex: defaultAssetIndex), !resolved.mesh.submeshes.isEmpty {
+            return true
+        }
+        return globalObjectFallbacks[objectID] != nil
     }
 
     /// "Drag-and-Drop Asset Palette & Tray" (roadmap 6.2): the same real
@@ -2772,10 +2785,11 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// `ForgePaletteView` feeds to `ModelThumbnailRenderer` for a real
     /// offscreen 3D thumbnail per entry, not a fabricated preview.
     func resolvedAsset(forObjectID objectID: UInt16) -> ResolvedModelAsset? {
-        guard let resolved = AssetResolver.resolveInstanceObject(objectID: objectID, instanceSelector: 0, index: assetIndex, defaultIndex: defaultAssetIndex),
-              !resolved.mesh.submeshes.isEmpty
-        else { return nil }
-        return resolved
+        if let resolved = AssetResolver.resolveInstanceObject(objectID: objectID, instanceSelector: 0, index: assetIndex, defaultIndex: defaultAssetIndex),
+           !resolved.mesh.submeshes.isEmpty {
+            return resolved
+        }
+        return globalObjectFallbacks[objectID]
     }
 
     @discardableResult
@@ -2784,7 +2798,13 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         var submeshes = ModelViewerRenderer.buildGPUSubmeshes(mesh: markerMesh.mesh, submeshMaterials: [markerMesh.material], device: device, fallbackTexture: context.fallbackTexture).submeshes
         var radius = Self.boundingRadius(of: markerMesh.mesh)
         var displayName = "New Object #\(objectID)"
-        if let resolved = AssetResolver.resolveInstanceObject(objectID: objectID, instanceSelector: 0, index: assetIndex, defaultIndex: defaultAssetIndex) {
+        // "Global Thumbnails": fall back to an object resolved elsewhere
+        // in the workspace this session (`globalObjectFallbacks`) only
+        // after this level's own data comes up empty — keeps this in
+        // lockstep with `canResolveObjectID`/`resolvedAsset(forObjectID:)`
+        // so a thumbnail that looked available actually places as real
+        // geometry, not a silent downgrade to the amber placeholder.
+        if let resolved = AssetResolver.resolveInstanceObject(objectID: objectID, instanceSelector: 0, index: assetIndex, defaultIndex: defaultAssetIndex) ?? globalObjectFallbacks[objectID] {
             let built = ModelViewerRenderer.buildGPUSubmeshes(mesh: resolved.mesh, submeshMaterials: resolved.submeshMaterials, device: device, fallbackTexture: context.fallbackTexture)
             if !built.submeshes.isEmpty {
                 submeshes = built.submeshes
