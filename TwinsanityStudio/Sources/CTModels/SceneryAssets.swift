@@ -13,13 +13,28 @@ public struct SceneryModelPlacement: Sendable {
     public var boundingBoxMax: SIMD4<Float>
     /// 4 rows — a full affine transform for this placement.
     public var modelMatrix: [SIMD4<Float>]
+    /// Byte offset of this placement's own 4-row `modelMatrix` block,
+    /// relative to the enclosing `SceneryData` record's own start (same
+    /// convention as `cameraControlPointFileOffset`: combine with the
+    /// record's `ChunkNode.fileOffset` for an absolute file position).
+    /// `nil` for a placement not parsed from a real record with tracked
+    /// offsets (e.g. a hand-built value in a test). This is what makes
+    /// "move an existing scenery placement, save" possible without
+    /// re-encoding the whole (large, deeply nested) `SceneryData` tree --
+    /// same "patch just the known-size field that changed" pattern this
+    /// codebase already uses for `Position`/`Instance`/camera control
+    /// points, not a claim that *creating a new* placement is supported
+    /// (that needs real insertion into the nested group tree, which
+    /// isn't built yet).
+    public var matrixFileOffset: Int?
 
-    public init(modelID: UInt32, isSpecial: Bool, boundingBoxMin: SIMD4<Float>, boundingBoxMax: SIMD4<Float>, modelMatrix: [SIMD4<Float>]) {
+    public init(modelID: UInt32, isSpecial: Bool, boundingBoxMin: SIMD4<Float>, boundingBoxMax: SIMD4<Float>, modelMatrix: [SIMD4<Float>], matrixFileOffset: Int? = nil) {
         self.modelID = modelID
         self.isSpecial = isSpecial
         self.boundingBoxMin = boundingBoxMin
         self.boundingBoxMax = boundingBoxMax
         self.modelMatrix = modelMatrix
+        self.matrixFileOffset = matrixFileOffset
     }
 
     /// Row 3 of the matrix is the translation column in every other 4-row

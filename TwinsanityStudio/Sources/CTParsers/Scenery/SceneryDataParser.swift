@@ -158,8 +158,11 @@ public enum SceneryDataParser {
                     modelIDs.append(try cursor.readUInt32())
                 }
                 var matrices: [[SIMD4<Float>]] = []
+                var matrixOffsets: [Int] = []
                 matrices.reserveCapacity(total)
+                matrixOffsets.reserveCapacity(total)
                 for _ in 0..<total {
+                    matrixOffsets.append(cursor.position)
                     var rows: [SIMD4<Float>] = []
                     rows.reserveCapacity(4)
                     for _ in 0..<4 { rows.append(try cursor.readVector4()) }
@@ -171,7 +174,8 @@ public enum SceneryDataParser {
                         isSpecial: i > modelCount - 1,
                         boundingBoxMin: boxes[i].0,
                         boundingBoxMax: boxes[i].1,
-                        modelMatrix: matrices[i]
+                        modelMatrix: matrices[i],
+                        matrixFileOffset: matrixOffsets[i]
                     ))
                 }
             }
