@@ -167,6 +167,18 @@ public final class WorkspaceViewModel: ObservableObject {
     /// other. Only real file leaves are registered (never directories —
     /// nothing to extract for those, they're just tree structure).
     private var discEntryByNodeID: [UUID: CTModels.DiscEntryHolder] = [:]
+    /// One real, not-yet-decoded clip inside a mounted WoC sound archive
+    /// (`SFX.DAT`/`ATS.DAT`), keyed by the synthetic leaf `ChunkNode.id`
+    /// `expandWOCSoundArchive` mints for it. Decoding all ~782 real clips
+    /// up front (hundreds of MB of PCM) isn't reasonable just to populate
+    /// a browsable tree -- this is the same "lazy, decode on click"
+    /// pattern `discEntryByNodeID`/`expandArchiveEntry` already use for a
+    /// `.BH` archive's unopened entries, just keyed to one numbered record
+    /// inside an already-extracted archive file rather than a whole
+    /// separate file. See `ChunkNode.isLazyLoadable` for how these leaves
+    /// stay visible under "Smart File Filtering" despite having no real
+    /// file extension to key off of.
+    private var wocSoundClipPending: [UUID: (archiveURL: URL, entry: WOCSoundParser.Entry)] = [:]
     /// "ISO/ROM Rebuild" (roadmap 7): the source `.iso` file each mounted
     /// disc's top-level `ChunkNode.id` was actually read from — only
     /// populated for a plain `.iso` mount, never a `.bin`/`.cue` pair
@@ -1282,6 +1294,20 @@ public final class WorkspaceViewModel: ObservableObject {
             self.selectedNode = node
             guard let node else { return }
 
+            // One real, unopened clip inside an already-extracted WoC
+            // sound archive (see `expandWOCSoundArchive`) — decode just
+            // this one clip and swap its payload in, rather than the
+            // whole-file "extract and open" path below (there's no
+            // separate file to extract; the archive was already pulled
+            // once when its own node was clicked).
+            if let pending = self.wocSoundClipPending[node.id] {
+                self.wocSoundClipPending.removeValue(forKey: node.id)
+                Task { [weak self] in
+                    await self?.decodeWOCSoundClip(node, archiveURL: pending.archiveURL, entry: pending.entry)
+                }
+                return
+            }
+
             // A disc-mounted file leaf (see `mountDiscImage`) — extract and
             // open it the same one-click way an archive entry expands,
             // rather than requiring a second explicit action. Checked
@@ -1292,6 +1318,24 @@ public final class WorkspaceViewModel: ObservableObject {
             if let holder = self.discEntryByNodeID[node.id],
                let entry = holder.entry as? ISO9660Entry,
                let source = holder.source as? any LogicalSectorSource {
+                // WoC's own real, decoded formats (see `WOCLevelLoader`/
+                // `WOCSoundParser`) — routed to their own expansion instead
+                // of `openDiscEntry`'s generic "extract, then run through
+                // the Twinsanity-only `open(url:)` pipeline" path, which
+                // doesn't understand any WoC extension and would just fail
+                // silently. `.GSC` gets the full per-level tree (objects,
+                // textures, AI, foliage, animations, paths, terrain);
+                // `SFX.DAT`/`ATS.DAT` get their real per-clip table.
+                let ext = (entry.name as NSString).pathExtension.uppercased()
+                if ext == "GSC" {
+                    Task { [weak self] in await self?.expandWOCLevelEntry(node, entry: entry, source: source) }
+                    return
+                }
+                let upperName = entry.name.uppercased()
+                if upperName == "SFX.DAT" || upperName == "ATS.DAT" {
+                    Task { [weak self] in await self?.expandWOCSoundArchive(node, entry: entry, source: source) }
+                    return
+                }
                 self.openDiscEntry(entry, source: source)
                 return
             }
@@ -1402,6 +1446,163 @@ public final class WorkspaceViewModel: ObservableObject {
         case .failure(let error):
             lastError = "\(entry.name): \(error)"
         }
+    }
+
+    /// The WoC counterpart to `expandArchiveEntry`: a mounted disc's real
+    /// `.GSC` level file, clicked for the first time. Extracts its real
+    /// bytes, plus any real sibling `.AI`/`.GRA`/`.ANM`/`.PAD`/`.TER` bytes
+    /// found in the same disc directory (looked up by walking `node`'s
+    /// parent's other children — WoC has no separate archive index the
+    /// way `.BH` does, so there's no index to look siblings up in), and
+    /// hands them to `WOCDiscTreeBuilder`, which runs them through the
+    /// same `WOCLevelLoader` pipeline `WOCWorkspace` uses for a real
+    /// mounted folder. Replaces `node` in place, same identity-swap
+    /// pattern as `expandArchiveEntry`.
+    private func expandWOCLevelEntry(_ node: ChunkNode, entry: ISO9660Entry, source: any LogicalSectorSource) async {
+        isLoading = true
+        defer { isLoading = false }
+
+        guard let gscData = ISO9660Reader.readFile(entry, from: source) else {
+            lastError = "Couldn't read \(entry.name)'s real bytes from the mounted image."
+            return
+        }
+        let levelName = (entry.name as NSString).deletingPathExtension
+
+        var siblingData: [String: Data] = [:]
+        if let parentNode = parent(of: node, inAnyOf: rootNodes) {
+            for sibling in parentNode.children where sibling !== node {
+                let ext = (sibling.displayName as NSString).pathExtension.uppercased()
+                guard Self.wocSiblingExtensions.contains(ext) else { continue }
+                guard (sibling.displayName as NSString).deletingPathExtension.caseInsensitiveCompare(levelName) == .orderedSame else { continue }
+                guard let siblingHolder = discEntryByNodeID[sibling.id],
+                      let siblingEntry = siblingHolder.entry as? ISO9660Entry,
+                      let siblingSource = siblingHolder.source as? any LogicalSectorSource,
+                      let data = ISO9660Reader.readFile(siblingEntry, from: siblingSource) else { continue }
+                siblingData[ext] = data
+            }
+        }
+
+        let outcome: Result<ChunkNode, Error> = await Task.detached(priority: .userInitiated) {
+            do {
+                let replacement = try WOCDiscTreeBuilder.buildLevelNode(
+                    recordID: node.recordID, displayName: node.displayName, byteSize: node.byteSize, fileOffset: node.fileOffset,
+                    gscData: gscData, siblingData: siblingData, levelName: levelName
+                )
+                return .success(replacement)
+            } catch {
+                return .failure(error)
+            }
+        }.value
+
+        switch outcome {
+        case .success(let replacement):
+            rootNodes = rootNodes.map { replacingDescendant(node, with: replacement, in: $0) }
+            if selectedNode === node { selectedNode = replacement }
+        case .failure(let error):
+            lastError = "\(entry.name): \(error)"
+        }
+    }
+
+    /// Extension list for WoC's per-level sibling loose files this build
+    /// currently understands — see `WOCLevelAsset`'s doc comment. `.GSC`
+    /// itself isn't in this list; it's the file being expanded, not a
+    /// sibling of itself.
+    private static let wocSiblingExtensions: Set<String> = ["AI", "GRA", "ANM", "PAD", "TER"]
+
+    /// A mounted `SFX.DAT`/`ATS.DAT`, clicked for the first time: extracts
+    /// the whole real archive to a temp file once (same one-time-extract
+    /// cost `openDiscEntry` already pays for any disc file), reads its
+    /// real offset table (cheap — header + table only, no per-clip decode
+    /// yet), and builds one real leaf per clip. Each leaf's own PCM decode
+    /// is deferred to `decodeWOCSoundClip`, triggered by actually clicking
+    /// that specific clip (see `wocSoundClipPending`) — decoding all ~782
+    /// real clips up front would mean holding the better part of a
+    /// gigabyte of PCM resident just to populate a browsable list.
+    private func expandWOCSoundArchive(_ node: ChunkNode, entry: ISO9660Entry, source: any LogicalSectorSource) async {
+        isLoading = true
+        defer { isLoading = false }
+
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent(entry.name)
+        let outcome: Result<(URL, [WOCSoundParser.Entry]), Error> = await Task.detached(priority: .userInitiated) {
+            guard let data = ISO9660Reader.readFile(entry, from: source) else {
+                return .failure(CocoaError(.fileReadUnknown))
+            }
+            do {
+                try FileManager.default.createDirectory(at: tempURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: tempURL)
+                let entries = try WOCSoundParser.parseTable(fileURL: tempURL)
+                return .success((tempURL, entries))
+            } catch {
+                return .failure(error)
+            }
+        }.value
+
+        switch outcome {
+        case .success(let (archiveURL, soundEntries)):
+            var children: [ChunkNode] = []
+            children.reserveCapacity(soundEntries.count)
+            for soundEntry in soundEntries {
+                let clipNode = ChunkNode(
+                    recordID: UInt32(soundEntry.index), sectionType: .null,
+                    displayName: "Clip #\(soundEntry.index)", byteSize: Int(soundEntry.size), fileOffset: Int(soundEntry.offset),
+                    isLazyLoadable: true
+                )
+                wocSoundClipPending[clipNode.id] = (archiveURL, soundEntry)
+                children.append(clipNode)
+            }
+            let replacement = ChunkNode(recordID: node.recordID, sectionType: node.sectionType, displayName: node.displayName, byteSize: node.byteSize, fileOffset: node.fileOffset, children: children)
+            rootNodes = rootNodes.map { replacingDescendant(node, with: replacement, in: $0) }
+            if selectedNode === node { selectedNode = replacement }
+        case .failure(let error):
+            lastError = "\(entry.name): \(error)"
+        }
+    }
+
+    /// One real WoC sound clip, decoded on click (see `wocSoundClipPending`'s
+    /// doc comment). Reuses `SoundEffectAsset` — the decoded PCM genuinely
+    /// fits that type's contract — so the existing `SoundEffectInspectorView`
+    /// (waveform, play/stop, WAV export) renders it with no new UI needed.
+    /// `sourceAudioByteRange` stays `nil`: this build has no verified WoC
+    /// sound *write* path, so "Replace with Audio…" correctly stays
+    /// unavailable rather than offering an edit this can't actually save.
+    private func decodeWOCSoundClip(_ node: ChunkNode, archiveURL: URL, entry: WOCSoundParser.Entry) async {
+        isLoading = true
+        defer { isLoading = false }
+
+        let outcome: Result<WOCSoundParser.DecodedClip, Error> = await Task.detached(priority: .userInitiated) {
+            do { return .success(try WOCSoundParser.decode(entry, fileURL: archiveURL)) }
+            catch { return .failure(error) }
+        }.value
+
+        switch outcome {
+        case .success(let clip):
+            let asset = SoundEffectAsset(id: UInt32(entry.index), sampleRateHz: UInt16(clamping: clip.sampleRate), pcmSamples: clip.samples)
+            let replacement = ChunkNode(recordID: node.recordID, sectionType: node.sectionType, displayName: node.displayName, byteSize: node.byteSize, fileOffset: node.fileOffset, payload: .soundEffect(asset))
+            rootNodes = rootNodes.map { replacingDescendant(node, with: replacement, in: $0) }
+            if selectedNode === node { selectedNode = replacement }
+        case .failure(let error):
+            lastError = "Clip #\(entry.index): \(error)"
+        }
+    }
+
+    /// `target`'s immediate parent, searched across every root tree —
+    /// `ChunkNode` has no back-pointer, so this is a plain depth-first
+    /// walk. Used by `expandWOCLevelEntry` to find a `.GSC`'s real sibling
+    /// files (same disc folder, same base name) without WoC having any
+    /// archive-index concept to look them up in the way `.BH` entries do.
+    private func parent(of target: ChunkNode, inAnyOf roots: [ChunkNode]) -> ChunkNode? {
+        for root in roots {
+            if let found = parent(of: target, in: root) { return found }
+        }
+        return nil
+    }
+
+    private func parent(of target: ChunkNode, in root: ChunkNode) -> ChunkNode? {
+        for child in root.children {
+            if child === target { return root }
+            if let found = parent(of: target, in: child) { return found }
+        }
+        return nil
     }
 
     /// Returns a tree equal to `root` except that `target` (found anywhere

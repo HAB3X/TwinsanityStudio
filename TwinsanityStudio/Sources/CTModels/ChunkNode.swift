@@ -175,6 +175,18 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
     /// Absolute byte offset of this record's data in the originating file, kept
     /// for the inspector's "jump to hex" affordance and for re-injection.
     public var fileOffset: Int
+    /// A generic escape hatch alongside `looksLikeChunkFileName`'s
+    /// extension-based check in `prunedOfRawContent` below: a real record
+    /// this build knows exists and can lazily decode on selection, but
+    /// whose display name carries no recognizable file extension to key
+    /// off of (e.g. one numbered clip inside a mounted sound archive, not
+    /// a file in its own right). Without this, "Smart File Filtering"'s
+    /// default pruning would hide such a node before it could ever be
+    /// clicked to trigger its own lazy load -- the same "unexpanded but
+    /// real" carve-out the extension check already makes for an unparsed
+    /// `.RM2`/`.GSC` file, generalized past "has a file extension."
+    /// `false` for every ordinary node.
+    public var isLazyLoadable: Bool
 
     public init(
         id: UUID = UUID(),
@@ -184,7 +196,8 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
         byteSize: Int,
         fileOffset: Int,
         children: [ChunkNode] = [],
-        payload: ChunkPayload? = nil
+        payload: ChunkPayload? = nil,
+        isLazyLoadable: Bool = false
     ) {
         self.id = id
         self.recordID = recordID
@@ -194,6 +207,7 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
         self.fileOffset = fileOffset
         self.children = children
         self.payload = payload
+        self.isLazyLoadable = isLazyLoadable
     }
 
     public var isLeaf: Bool { children.isEmpty }
@@ -232,7 +246,8 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
             byteSize: byteSize,
             fileOffset: fileOffset,
             children: matchesSelf ? children : matchingChildren,
-            payload: payload
+            payload: payload,
+            isLazyLoadable: isLazyLoadable
         )
         return node
     }
@@ -255,7 +270,8 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
             byteSize: byteSize,
             fileOffset: fileOffset,
             children: matchesSelf ? children : matchingChildren,
-            payload: payload
+            payload: payload,
+            isLazyLoadable: isLazyLoadable
         )
     }
 
@@ -282,7 +298,7 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
             // isExpandableArchiveEntry`), and every archive starts with
             // hundreds of these before scanning finishes. Pruning it away
             // would hide the entire unscanned tree, not just raw junk.
-            if payload == nil, byteSize > 0, Self.looksLikeChunkFileName(displayName) {
+            if payload == nil, byteSize > 0, (Self.looksLikeChunkFileName(displayName) || isLazyLoadable) {
                 return self
             }
             switch payload {
@@ -300,7 +316,8 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
             byteSize: byteSize,
             fileOffset: fileOffset,
             children: keptChildren,
-            payload: payload
+            payload: payload,
+            isLazyLoadable: isLazyLoadable
         )
     }
 
@@ -312,6 +329,12 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
     /// boundaries wasn't worth it; this one only needs a display name.
     private static func looksLikeChunkFileName(_ name: String) -> Bool {
         let ext = (name as NSString).pathExtension.uppercased()
-        return ["RM2", "SM2", "RMX", "SMX"].contains(ext)
+        if ["RM2", "SM2", "RMX", "SMX", "GSC"].contains(ext) { return true }
+        // WoC's centralized sound archives -- not chunk-headered like the
+        // rest of this list, but the same "real file, not yet expanded"
+        // shape applies once mounted from a disc image (see
+        // `WorkspaceViewModel.expandWOCSoundArchive`).
+        let upper = name.uppercased()
+        return upper == "SFX.DAT" || upper == "ATS.DAT"
     }
 }
