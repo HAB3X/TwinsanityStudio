@@ -31,10 +31,10 @@ final class WOCMeshDecoderTests: XCTestCase {
         let obj0 = try XCTUnwrap(file.sections.first { $0.tag == "OBJ0" })
         let chunks = WOCContainerParser.walkOBJ0Chunks(obj0.payload)
         let firstChunk = try XCTUnwrap(chunks.first)
-        let arcs = WOCContainerParser.parseOBJ0ChunkArcs(obj0.payload, chunk: firstChunk)
-        let firstArc = try XCTUnwrap(arcs.first)
-        XCTAssertEqual(firstArc.vertexCount, 39)
-        XCTAssertEqual(firstArc.vertices.count, 39)
+        let arcResults = WOCContainerParser.parseOBJ0ChunkArcs(obj0.payload, chunk: firstChunk)
+        let firstArcResult = try XCTUnwrap(arcResults.first)
+        XCTAssertEqual(firstArcResult.vertices.count, 39)
+        
     }
 
     /// The confirmed connectivity convention (`(control >> 8) & 0xFF ==
@@ -52,10 +52,12 @@ final class WOCMeshDecoderTests: XCTestCase {
         var checkedArcs = 0
         for group in groups.prefix(5) {
             for chunk in group {
-                for arc in WOCContainerParser.parseOBJ0ChunkArcs(obj0.payload, chunk: chunk) {
+                let arcResults = WOCContainerParser.parseOBJ0ChunkArcs(obj0.payload, chunk: chunk)
+                for arcResult in arcResults {
                     checkedArcs += 1
-                    for vertex in arc.vertices.prefix(3) {
-                        let byte1 = (vertex.control >> 8) & 0xFF
+                    let vertex = arcResult.vertices.prefix(3)
+                    for v in vertex {
+                        let byte1 = (v.control >> 8) & 0xFF
                         XCTAssertEqual(byte1, 0x80, "first 3 vertices of every arc should be strip restarts")
                     }
                 }

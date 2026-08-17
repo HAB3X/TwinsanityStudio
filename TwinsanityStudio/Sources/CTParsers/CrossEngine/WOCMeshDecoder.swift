@@ -49,11 +49,35 @@ public enum WOCMeshDecoder {
 
     private static func buildMesh(objectPayload: Data, chunks: [WOCContainerParser.OBJ0Chunk], entryIndex: Int) -> MeshAsset {
         let submeshes = chunks.compactMap { chunk -> MeshSubmesh? in
-            let arcs = WOCContainerParser.parseOBJ0ChunkArcs(objectPayload, chunk: chunk)
-            let quadwords = arcs.flatMap(\.vertices)
-            guard !quadwords.isEmpty else { return nil }
-            let vertices = quadwords.map { StaticVertex(position: $0.position) }
-            let connectivity = quadwords.map { (($0.control >> 8) & 0xFF) != 0x80 }
+            let arcResults = WOCContainerParser.parseOBJ0ChunkArcs(objectPayload, chunk: chunk)
+            guard !arcResults.isEmpty else { return nil }
+
+            // Combine all vertices and normals from arcs
+            var allVertices: [WOCContainerParser.VertexQuadword] = []
+            var allNormals: [SIMD3<Float>] = []
+
+            for result in arcResults {
+                allVertices.append(contentsOf: result.vertices)
+                allNormals.append(contentsOf: result.normals)
+            }
+
+            guard !allVertices.isEmpty else { return nil }
+
+            // Ensure we have normals for all vertices (pad with zeros if needed)
+            while allNormals.count < allVertices.count {
+                allNormals.append(.zero)
+            }
+
+            // Trim normals if we somehow have too many
+            if allNormals.count > allVertices.count {
+                allNormals.removeSubrange(allVertices.count..<allNormals.count)
+            }
+
+            let vertices = zip(allVertices, allNormals).map { vertexQuadword, normal in
+                StaticVertex(position: vertexQuadword.position, normal: normal)
+            }
+
+            let connectivity = allVertices.map { (($0.control >> 8) & 0xFF) != 0x80 }
             return MeshSubmesh(vertices: vertices, connectivity: connectivity, materialID: nil)
         }
         return MeshAsset(id: UInt32(entryIndex), isSkinned: false, submeshes: submeshes)

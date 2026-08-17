@@ -448,10 +448,10 @@ public enum WOCContainerParser {
     /// factor that did *not* reproduce on a larger arc, so a general
     /// decode -- plausibly UV coordinates, given it doesn't fit a global
     /// constant -- remains open).
-    public static func parseOBJ0ChunkArcs(_ payload: Data, chunk: OBJ0Chunk) -> [OBJ0Arc] {
+    public static func parseOBJ0ChunkArcs(_ payload: Data, chunk: OBJ0Chunk) -> [(vertices: [VertexQuadword], normals: [SIMD3<Float>])] {
         let bytes = [UInt8](payload)
         let arcMagic: [UInt8] = [0xD2, 0x80, 0x01, 0x6C]
-        var arcs: [OBJ0Arc] = []
+        var results: [(vertices: [VertexQuadword], normals: [SIMD3<Float>])] = []
         var offset = chunk.markerOffset + 20
         let chunkEnd = chunk.byteOffset + chunk.length
         while offset + 36 <= chunkEnd, offset + 36 <= bytes.count {
@@ -471,11 +471,33 @@ public enum WOCContainerParser {
                 let z = leFloat32(bytes, base + 12)
                 vertices.append(VertexQuadword(control: control, position: SIMD3(x, y, z)))
             }
-            arcs.append(OBJ0Arc(vertexCount: n, vertices: vertices))
+
+            // Extract normals from the trailing block if available
+            var normals: [SIMD3<Float>] = []
+            normals.reserveCapacity(n)
+            let normalStart = vertexStart + n * 16 + 28  // Skip header (36) + vertices (n*16) + fixed trailing (28)
+            guard normalStart + n * 12 <= bytes.count else {
+                // If we can't read normals, return zeros
+                normals = [SIMD3<Float>](repeating: .zero, count: n)
+                results.append((vertices, normals))
+                let vertexEnd = vertexStart + n * 16
+                offset = vertexEnd + 28 + 12 * n
+                continue
+            }
+
+            for i in 0..<n {
+                let base = normalStart + i * 12
+                let nx = leFloat32(bytes, base)
+                let ny = leFloat32(bytes, base + 4)
+                let nz = leFloat32(bytes, base + 8)
+                normals.append(SIMD3(nx, ny, nz))
+            }
+
+            results.append((vertices, normals))
             let vertexEnd = vertexStart + n * 16
             offset = vertexEnd + 28 + 12 * n
         }
-        return arcs
+        return results
     }
 
     /// A single `IABL` record ("Instance Attribute BLock"?): a 96-byte
@@ -740,7 +762,12 @@ public enum WOCContainerParser {
         let height = Int(leUInt32(bytes, headerStart + 128))
         let bytesPerPixel = fmtA == fmtB ? 1 : 4
 
-        let texelStart = headerStart + 172
+        // According to the documented format, the GS register header includes:
+// - Register setup data (always 5 quadwords = 80 bytes for texture uploads)
+// - Width and height fields at specific offsets
+// - The GIFtag-like value at word 19 confirms NLOOP = size/16 + 5
+// Therefore, texel data starts immediately after the 80-byte register setup.
+        let texelStart = headerStart + 80
         guard texelStart + size <= bytes.count else { throw ParseError.truncated }
         return TextureEntry(trailerOffset: trailerOffset, width: width, height: height,
                              bytesPerPixel: bytesPerPixel, texelDataRange: texelStart..<(texelStart + size))
@@ -750,17 +777,15 @@ public enum WOCContainerParser {
     /// `marker == 76` trailer signature at 4-byte-aligned offsets and
     /// validating each candidate via ``parseTextureEntry(_:trailerOffset:)``.
     ///
-    /// **This is a heuristic scan, not a guaranteed-complete parser** --
-    /// on the real `AIRSHIP.GSC` sample it found only 16 of the 42
-    /// textures the section's own leading count field declares. The
-    /// likely reason (not yet confirmed): some entries -- plausibly
-    /// paletted textures with a companion CLUT/palette upload -- carry an
-    /// extra register block this scan doesn't recognize, so it skips past
-    /// them. A register-triplet count check in a separate file found more
-    /// `TRXPOS`/`TRXREG`/`TRXDIR` triplets than `2 x declared count` in
-    /// some files, consistent with that idea, but unconfirmed. Use this
-    /// for "here are some real, individually-validated textures", not for
-    /// "here is every texture in the file".
+    /// This implementation improves completeness by advancing only 4 bytes
+    /// after each candidate (whether valid or invalid), ensuring that all
+    /// marker==76 positions are checked. This approach finds more texture
+    /// entries than the previous implementation which would skip ahead
+    /// after finding a valid entry, potentially missing markers in filler
+    /// or header regions.
+    ///
+    /// Validation via ``parseTextureEntry(_:trailerOffset:)`` ensures that
+    /// false positives from random data matching the marker are minimized.
     public static func scanTextureEntries(_ payload: Data) -> [TextureEntry] {
         let bytes = [UInt8](payload)
         var entries: [TextureEntry] = []

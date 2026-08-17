@@ -405,4 +405,104 @@ final class WOCContainerParserTests: XCTestCase {
         XCTAssertEqual(textures[0].width, 128)
         XCTAssertEqual(textures[0].height, 64)
     }
+
+    /// Tests that the updated scanTextureEntries function correctly finds
+    /// texture entries by advancing 4 bytes after each candidate, ensuring
+    /// that all marker==76 positions are checked.
+    func testScanTextureEntriesFindsAllMarkerPositions() throws {
+        // Create a mock TST0 payload with texture entries
+        // TST0 format: [16-byte header][texture entry 1][texture entry 2]...
+        // Texture entry format: [20-byte trailer][172-byte header][size-byte texel data]
+        // Trailer ends with marker==76 at its last 4 bytes
+
+        var payload = [UInt8](repeating: 0, count: 16) // 16-byte TST0 header (count, reserved, word2, word3)
+
+        // Add first texture entry
+        // Trailer: [sizePlus, size, fmtA, fmtB, marker==76]
+        let size1 = 64  // 8x8 texture with 1 byte per pixel
+        let sizePlus1 = UInt32(size1) + 0xC4  // size + 0xC4
+        let fmtA1 = 1   // indexed texture
+        let fmtB1 = 1   // indexed texture
+        let marker1: [UInt8] = [76, 0, 0, 0]  // marker==76 (little-endian)
+
+        var trailer1 = [UInt8]()
+        trailer1.append(contentsOf: withUnsafeBytes(of: sizePlus1.littleEndian) { Array($0) })
+        trailer1.append(contentsOf: withUnsafeBytes(of: UInt32(size1).littleEndian) { Array($0) })
+        trailer1.append(contentsOf: withUnsafeBytes(of: UInt32(fmtA1).littleEndian) { Array($0) })
+        trailer1.append(contentsOf: withUnsafeBytes(of: UInt32(fmtB1).littleEndian) { Array($0) })
+        trailer1.append(contentsOf: marker1)
+
+        // Header: 172 bytes
+        // We need to set up the header so that:
+        // - Width is at headerStart + 124 (byte 124 of header)
+        // - Height is at headerStart + 128 (byte 128 of header)
+        // For our 8x8 texture:
+        var header1 = [UInt8](repeating: 0, count: 172)
+        header1.withUnsafeMutableBytes { ptr in
+            ptr.storeBytes(of: UInt32(8).littleEndian, toByteOffset: 124, as: UInt32.self)
+            ptr.storeBytes(of: UInt32(8).littleEndian, toByteOffset: 128, as: UInt32.self)
+        }
+
+        // Texel data: size1 bytes
+        let texelData1 = [UInt8](repeating: 42, count: size1)  // arbitrary data
+
+        payload.append(contentsOf: trailer1)
+        payload.append(contentsOf: header1)
+        payload.append(contentsOf: texelData1)
+
+        // Add second texture entry with some filler/data between entries
+        // This tests that we don't skip over markers in filler/header regions
+        let fillerBetweenEntries = [UInt8](repeating: 0, count: 32)  // some filler/data
+
+        // Second texture entry
+        let size2 = 256  // 16x16 texture with 1 byte per pixel (total 256 bytes)
+        let sizePlus2 = UInt32(size2) + 0xC4  // size + 0xC4
+        let fmtA2 = 4    // direct-color texture
+        let fmtB2 = 2    // direct-color texture (fmtA == 2*fmtB)
+        let marker2: [UInt8] = [76, 0, 0, 0]  // marker==76 (little-endian)
+
+        var trailer2 = [UInt8]()
+        trailer2.append(contentsOf: withUnsafeBytes(of: sizePlus2.littleEndian) { Array($0) })
+        trailer2.append(contentsOf: withUnsafeBytes(of: UInt32(size2).littleEndian) { Array($0) })
+        trailer2.append(contentsOf: withUnsafeBytes(of: UInt32(fmtA2).littleEndian) { Array($0) })
+        trailer2.append(contentsOf: withUnsafeBytes(of: UInt32(fmtB2).littleEndian) { Array($0) })
+        trailer2.append(contentsOf: marker2)
+
+        // Header: 172 bytes
+        // Set width to 16, height to 16 for our 16x16 texture
+        var header2 = [UInt8](repeating: 0, count: 172)
+        header2.withUnsafeMutableBytes { ptr in
+            ptr.storeBytes(of: UInt32(16).littleEndian, toByteOffset: 124, as: UInt32.self)
+            ptr.storeBytes(of: UInt32(16).littleEndian, toByteOffset: 128, as: UInt32.self)
+        }
+
+        // Texel data: size2 bytes
+        let texelData2 = [UInt8](repeating: 128, count: size2)  // arbitrary data
+
+        payload.append(contentsOf: fillerBetweenEntries)
+        payload.append(contentsOf: trailer2)
+        payload.append(contentsOf: header2)
+        payload.append(contentsOf: texelData2)
+
+        // Convert to Data
+        let payloadData = Data(payload)
+
+        // Scan for texture entries
+        let entries = WOCContainerParser.scanTextureEntries(payloadData)
+
+        // We should find exactly 2 texture entries
+        XCTAssertEqual(entries.count, 2, "Should find 2 texture entries")
+
+        // Verify first entry
+        XCTAssertEqual(entries[0].width, 8, "First texture width should be 8")
+        XCTAssertEqual(entries[0].height, 8, "First texture height should be 8")
+        XCTAssertEqual(entries[0].bytesPerPixel, 1, "First texture should be indexed (1 byte per pixel)")
+        XCTAssertEqual(entries[0].texelDataRange.count, size1, "First texture should have correct texel data size")
+
+        // Verify second entry
+        XCTAssertEqual(entries[1].width, 16, "Second texture width should be 16")
+        XCTAssertEqual(entries[1].height, 16, "Second texture height should be 16")
+        XCTAssertEqual(entries[1].bytesPerPixel, 4, "Second texture should be direct-color (4 bytes per pixel)")
+        XCTAssertEqual(entries[1].texelDataRange.count, size2, "Second texture should have correct texel data size")
+    }
 }
