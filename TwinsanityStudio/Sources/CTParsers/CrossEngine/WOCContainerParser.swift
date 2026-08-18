@@ -448,10 +448,10 @@ public enum WOCContainerParser {
     /// factor that did *not* reproduce on a larger arc, so a general
     /// decode -- plausibly UV coordinates, given it doesn't fit a global
     /// constant -- remains open).
-    public static func parseOBJ0ChunkArcs(_ payload: Data, chunk: OBJ0Chunk) -> [(vertices: [VertexQuadword], normals: [SIMD3<Float>])] {
+    public static func parseOBJ0ChunkArcs(_ payload: Data, chunk: OBJ0Chunk) -> [OBJ0Arc] {
         let bytes = [UInt8](payload)
         let arcMagic: [UInt8] = [0xD2, 0x80, 0x01, 0x6C]
-        var results: [(vertices: [VertexQuadword], normals: [SIMD3<Float>])] = []
+        var arcs: [OBJ0Arc] = []
         var offset = chunk.markerOffset + 20
         let chunkEnd = chunk.byteOffset + chunk.length
         while offset + 36 <= chunkEnd, offset + 36 <= bytes.count {
@@ -471,33 +471,11 @@ public enum WOCContainerParser {
                 let z = leFloat32(bytes, base + 12)
                 vertices.append(VertexQuadword(control: control, position: SIMD3(x, y, z)))
             }
-
-            // Extract normals from the trailing block if available
-            var normals: [SIMD3<Float>] = []
-            normals.reserveCapacity(n)
-            let normalStart = vertexStart + n * 16 + 28  // Skip header (36) + vertices (n*16) + fixed trailing (28)
-            guard normalStart + n * 12 <= bytes.count else {
-                // If we can't read normals, return zeros
-                normals = [SIMD3<Float>](repeating: .zero, count: n)
-                results.append((vertices, normals))
-                let vertexEnd = vertexStart + n * 16
-                offset = vertexEnd + 28 + 12 * n
-                continue
-            }
-
-            for i in 0..<n {
-                let base = normalStart + i * 12
-                let nx = leFloat32(bytes, base)
-                let ny = leFloat32(bytes, base + 4)
-                let nz = leFloat32(bytes, base + 8)
-                normals.append(SIMD3(nx, ny, nz))
-            }
-
-            results.append((vertices, normals))
+            arcs.append(OBJ0Arc(vertexCount: n, vertices: vertices))
             let vertexEnd = vertexStart + n * 16
             offset = vertexEnd + 28 + 12 * n
         }
-        return results
+        return arcs
     }
 
     /// A single `IABL` record ("Instance Attribute BLock"?): a 96-byte
@@ -750,25 +728,45 @@ public enum WOCContainerParser {
     /// the other 6 files. Left for a future session with a fresh angle.
     public static func parseTextureEntry(_ payload: Data, trailerOffset: Int) throws -> TextureEntry {
         let bytes = [UInt8](payload)
-        guard trailerOffset >= 0, trailerOffset + 20 + 172 <= bytes.count else { throw ParseError.truncated }
-        let sizePlus = leUInt32(bytes, trailerOffset)
-        let size = Int(leUInt32(bytes, trailerOffset + 4))
-        let fmtA = leUInt32(bytes, trailerOffset + 8)
-        let fmtB = leUInt32(bytes, trailerOffset + 12)
-        guard sizePlus == UInt32(size) + 0xC4 else { throw ParseError.truncated }
 
-        let headerStart = trailerOffset + 20
-        let width = Int(leUInt32(bytes, headerStart + 124))
-        let height = Int(leUInt32(bytes, headerStart + 128))
+        // Compute the texture header start offset based on trailerOffset sign
+        let textureHeaderStart: Int
+        if trailerOffset >= 0 {
+            // Padded variant: header is 20 bytes after the trailer
+            textureHeaderStart = trailerOffset + 20
+        } else {
+            // Unpadded variant: header start is -(trailerOffset + 1)
+            textureHeaderStart = -(trailerOffset + 1)
+        }
+
+        // Guard that we can read the header (172 bytes)
+        guard textureHeaderStart >= 0, textureHeaderStart + 172 <= bytes.count else {
+            throw ParseError.truncated
+        }
+
+        // Read width and height from the header
+        let width = Int(leUInt32(bytes, textureHeaderStart + 124))
+        let height = Int(leUInt32(bytes, textureHeaderStart + 128))
+
+        // Read fmtA and fmtB from the trailer location (may be out of bounds for unpadded if trailerOffset too negative)
+        let fmtATrailerOffset = trailerOffset + 8
+        let fmtBTrailerOffset = trailerOffset + 12
+        guard fmtATrailerOffset >= 0, fmtATrailerOffset + 4 <= bytes.count,
+              fmtBTrailerOffset >= 0, fmtBTrailerOffset + 4 <= bytes.count else {
+            throw ParseError.truncated
+        }
+        let fmtA = leUInt32(bytes, fmtATrailerOffset)
+        let fmtB = leUInt32(bytes, fmtBTrailerOffset)
+
         let bytesPerPixel = fmtA == fmtB ? 1 : 4
+        let size = width * height * bytesPerPixel
 
-        // According to the documented format, the GS register header includes:
-// - Register setup data (always 5 quadwords = 80 bytes for texture uploads)
-// - Width and height fields at specific offsets
-// - The GIFtag-like value at word 19 confirms NLOOP = size/16 + 5
-// Therefore, texel data starts immediately after the 80-byte register setup.
-        let texelStart = headerStart + 80
-        guard texelStart + size <= bytes.count else { throw ParseError.truncated }
+        // Compute texel data start and guard that it fits
+        let texelStart = textureHeaderStart + 172
+        guard texelStart >= 0, texelStart + size <= bytes.count else {
+            throw ParseError.truncated
+        }
+
         return TextureEntry(trailerOffset: trailerOffset, width: width, height: height,
                              bytesPerPixel: bytesPerPixel, texelDataRange: texelStart..<(texelStart + size))
     }
@@ -777,28 +775,59 @@ public enum WOCContainerParser {
     /// `marker == 76` trailer signature at 4-byte-aligned offsets and
     /// validating each candidate via ``parseTextureEntry(_:trailerOffset:)``.
     ///
-    /// This implementation improves completeness by advancing only 4 bytes
-    /// after each candidate (whether valid or invalid), ensuring that all
-    /// marker==76 positions are checked. This approach finds more texture
-    /// entries than the previous implementation which would skip ahead
-    /// after finding a valid entry, potentially missing markers in filler
-    /// or header regions.
-    ///
-    /// Validation via ``parseTextureEntry(_:trailerOffset:)`` ensures that
-    /// false positives from random data matching the marker are minimized.
+    /// **This is a heuristic scan, not a guaranteed-complete parser** --
+    /// on the real `AIRSHIP.GSC` sample it found only 16 of the 42
+    /// textures the section's own leading count field declares. The
+    /// likely reason (not yet confirmed): some entries -- plausibly
+    /// paletted textures with a companion CLUT/palette upload -- carry an
+    /// extra register block this scan doesn't recognize, so it skips past
+    /// them. A register-triplet count check in a separate file found more
+    /// `TRXPOS`/`TRXREG`/`TRXDIR` triplets than `2 x declared count` in
+    /// some files, consistent with that idea, but unconfirmed. Use this
+    /// for "here are some real, individually-validated textures", not for
+    /// "here is every texture in the file".
     public static func scanTextureEntries(_ payload: Data) -> [TextureEntry] {
         let bytes = [UInt8](payload)
+        var entriesSet = Set<Int>() // to avoid duplicate entries by trailerOffset
         var entries: [TextureEntry] = []
+
+        // Helper to try adding an entry given a trailerOffset
+        func tryAddEntry(trailerOffset: Int) {
+            guard !entriesSet.contains(trailerOffset) else { return }
+            if let entry = try? parseTextureEntry(payload, trailerOffset: trailerOffset) {
+                entriesSet.insert(trailerOffset)
+                entries.append(entry)
+            }
+        }
+
+        // 1. Marker-based scan (padded variants with proper marker)
         var offset = 16 // past the 16-byte TST0 header (count, reserved, word2, word3)
         while offset + 4 <= bytes.count {
             if leUInt32(bytes, offset) == 76, offset >= 16 {
                 let trailerOffset = offset - 16
-                if let entry = try? parseTextureEntry(payload, trailerOffset: trailerOffset) {
-                    entries.append(entry)
-                }
+                tryAddEntry(trailerOffset: trailerOffset)
             }
             offset += 4
         }
+
+        // 2. Header-based scan: look for TRXREG GS register (value 82) at 4-byte-aligned offsets
+        // This finds the header start regardless of trailer format.
+        offset = 0
+        while offset + 4 <= bytes.count {
+            if leUInt32(bytes, offset) == 82, offset % 4 == 0 {
+                let headerStart = offset - 33 * 4 // word 33 of header is TRXREG
+                // Candidate 1: padded variant (trailerOffset = headerStart - 20)
+                if headerStart >= 20 {
+                    let trailerOffsetPadded = headerStart - 20
+                    tryAddEntry(trailerOffset: trailerOffsetPadded)
+                }
+                // Candidate 2: unpadded variant (trailerOffset = -(headerStart + 1))
+                let trailerOffsetUnpadded = -(headerStart + 1)
+                tryAddEntry(trailerOffset: trailerOffsetUnpadded)
+            }
+            offset += 4
+        }
+
         return entries
     }
 

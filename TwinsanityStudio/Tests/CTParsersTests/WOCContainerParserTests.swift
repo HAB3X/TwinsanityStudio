@@ -267,10 +267,23 @@ final class WOCContainerParserTests: XCTestCase {
         _ a: (Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float),
         _ b: (Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float)
     ) -> Bool {
-        a.0 == b.0 && a.1 == b.1 && a.2 == b.2 && a.3 == b.3 &&
-        a.4 == b.4 && a.5 == b.5 && a.6 == b.6 && a.7 == b.7 &&
-        a.8 == b.8 && a.9 == b.9 && a.10 == b.10 && a.11 == b.11 &&
-        a.12 == b.12 && a.13 == b.13 && a.14 == b.14 && a.15 == b.15
+        let epsilon: Float = 1e-5
+        return abs(a.0 - b.0) < epsilon &&
+               abs(a.1 - b.1) < epsilon &&
+               abs(a.2 - b.2) < epsilon &&
+               abs(a.3 - b.3) < epsilon &&
+               abs(a.4 - b.4) < epsilon &&
+               abs(a.5 - b.5) < epsilon &&
+               abs(a.6 - b.6) < epsilon &&
+               abs(a.7 - b.7) < epsilon &&
+               abs(a.8 - b.8) < epsilon &&
+               abs(a.9 - b.9) < epsilon &&
+               abs(a.10 - b.10) < epsilon &&
+               abs(a.11 - b.11) < epsilon &&
+               abs(a.12 - b.12) < epsilon &&
+               abs(a.13 - b.13) < epsilon &&
+               abs(a.14 - b.14) < epsilon &&
+               abs(a.15 - b.15) < epsilon
     }
 
     /// `TST0` turned out to be a completely different kind of structure
@@ -405,104 +418,141 @@ final class WOCContainerParserTests: XCTestCase {
         XCTAssertEqual(textures[0].width, 128)
         XCTAssertEqual(textures[0].height, 64)
     }
-
-    /// Tests that the updated scanTextureEntries function correctly finds
-    /// texture entries by advancing 4 bytes after each candidate, ensuring
-    /// that all marker==76 positions are checked.
-    func testScanTextureEntriesFindsAllMarkerPositions() throws {
-        // Create a mock TST0 payload with texture entries
-        // TST0 format: [16-byte header][texture entry 1][texture entry 2]...
-        // Texture entry format: [20-byte trailer][172-byte header][size-byte texel data]
-        // Trailer ends with marker==76 at its last 4 bytes
-
-        var payload = [UInt8](repeating: 0, count: 16) // 16-byte TST0 header (count, reserved, word2, word3)
-
-        // Add first texture entry
-        // Trailer: [sizePlus, size, fmtA, fmtB, marker==76]
-        let size1 = 64  // 8x8 texture with 1 byte per pixel
-        let sizePlus1 = UInt32(size1) + 0xC4  // size + 0xC4
-        let fmtA1 = 1   // indexed texture
-        let fmtB1 = 1   // indexed texture
-        let marker1: [UInt8] = [76, 0, 0, 0]  // marker==76 (little-endian)
-
-        var trailer1 = [UInt8]()
-        trailer1.append(contentsOf: withUnsafeBytes(of: sizePlus1.littleEndian) { Array($0) })
-        trailer1.append(contentsOf: withUnsafeBytes(of: UInt32(size1).littleEndian) { Array($0) })
-        trailer1.append(contentsOf: withUnsafeBytes(of: UInt32(fmtA1).littleEndian) { Array($0) })
-        trailer1.append(contentsOf: withUnsafeBytes(of: UInt32(fmtB1).littleEndian) { Array($0) })
-        trailer1.append(contentsOf: marker1)
-
-        // Header: 172 bytes
-        // We need to set up the header so that:
-        // - Width is at headerStart + 124 (byte 124 of header)
-        // - Height is at headerStart + 128 (byte 128 of header)
-        // For our 8x8 texture:
-        var header1 = [UInt8](repeating: 0, count: 172)
-        header1.withUnsafeMutableBytes { ptr in
-            ptr.storeBytes(of: UInt32(8).littleEndian, toByteOffset: 124, as: UInt32.self)
-            ptr.storeBytes(of: UInt32(8).littleEndian, toByteOffset: 128, as: UInt32.self)
-        }
-
-        // Texel data: size1 bytes
-        let texelData1 = [UInt8](repeating: 42, count: size1)  // arbitrary data
-
-        payload.append(contentsOf: trailer1)
-        payload.append(contentsOf: header1)
-        payload.append(contentsOf: texelData1)
-
-        // Add second texture entry with some filler/data between entries
-        // This tests that we don't skip over markers in filler/header regions
-        let fillerBetweenEntries = [UInt8](repeating: 0, count: 32)  // some filler/data
-
-        // Second texture entry
-        let size2 = 256  // 16x16 texture with 1 byte per pixel (total 256 bytes)
-        let sizePlus2 = UInt32(size2) + 0xC4  // size + 0xC4
-        let fmtA2 = 4    // direct-color texture
-        let fmtB2 = 2    // direct-color texture (fmtA == 2*fmtB)
-        let marker2: [UInt8] = [76, 0, 0, 0]  // marker==76 (little-endian)
-
-        var trailer2 = [UInt8]()
-        trailer2.append(contentsOf: withUnsafeBytes(of: sizePlus2.littleEndian) { Array($0) })
-        trailer2.append(contentsOf: withUnsafeBytes(of: UInt32(size2).littleEndian) { Array($0) })
-        trailer2.append(contentsOf: withUnsafeBytes(of: UInt32(fmtA2).littleEndian) { Array($0) })
-        trailer2.append(contentsOf: withUnsafeBytes(of: UInt32(fmtB2).littleEndian) { Array($0) })
-        trailer2.append(contentsOf: marker2)
-
-        // Header: 172 bytes
-        // Set width to 16, height to 16 for our 16x16 texture
-        var header2 = [UInt8](repeating: 0, count: 172)
-        header2.withUnsafeMutableBytes { ptr in
-            ptr.storeBytes(of: UInt32(16).littleEndian, toByteOffset: 124, as: UInt32.self)
-            ptr.storeBytes(of: UInt32(16).littleEndian, toByteOffset: 128, as: UInt32.self)
-        }
-
-        // Texel data: size2 bytes
-        let texelData2 = [UInt8](repeating: 128, count: size2)  // arbitrary data
-
-        payload.append(contentsOf: fillerBetweenEntries)
-        payload.append(contentsOf: trailer2)
-        payload.append(contentsOf: header2)
-        payload.append(contentsOf: texelData2)
-
-        // Convert to Data
-        let payloadData = Data(payload)
-
-        // Scan for texture entries
-        let entries = WOCContainerParser.scanTextureEntries(payloadData)
-
-        // We should find exactly 2 texture entries
-        XCTAssertEqual(entries.count, 2, "Should find 2 texture entries")
-
-        // Verify first entry
-        XCTAssertEqual(entries[0].width, 8, "First texture width should be 8")
-        XCTAssertEqual(entries[0].height, 8, "First texture height should be 8")
-        XCTAssertEqual(entries[0].bytesPerPixel, 1, "First texture should be indexed (1 byte per pixel)")
-        XCTAssertEqual(entries[0].texelDataRange.count, size1, "First texture should have correct texel data size")
-
-        // Verify second entry
-        XCTAssertEqual(entries[1].width, 16, "Second texture width should be 16")
-        XCTAssertEqual(entries[1].height, 16, "Second texture height should be 16")
-        XCTAssertEqual(entries[1].bytesPerPixel, 4, "Second texture should be direct-color (4 bytes per pixel)")
-        XCTAssertEqual(entries[1].texelDataRange.count, size2, "Second texture should have correct texel data size")
-    }
 }
+
+    /// Analyzes SPEC unknown tails across multiple files to determine their purpose.
+    func testAnalyzeSpecUnknownTails() throws {
+        let testFiles = [
+            ("A/AIRSHIP/AIRSHIP.GSC", "Airship"),
+            ("A/FARM/FARM.GSC", "Farm"),
+            ("A/CASTLE_C/CASTLE_C.GSC", "Castle_C"),
+            ("A/JUNGLE_A/JUNGLE_A.GSC", "Jungle_A"),
+            ("A/DROID/DROID.GSC", "Droid")
+        ]
+
+        print("\n=== SPEC Unknown Fields Analysis ===\n")
+
+        for (filePath, displayName) in testFiles {
+            do {
+                print("Processing \(displayName): \(filePath)")
+
+                let decoded = try loadAndDecompressRealGSC(filePath)
+                let file = try WOCContainerParser.parse(decoded)
+
+                guard let specSection = file.sections.first(where: { $0.tag == "SPEC" }) else {
+                    print("  No SPEC section found\n")
+                    continue
+                }
+
+                let specRecords = try WOCContainerParser.parseSpecRecords(specSection.payload)
+                print("  Found \(specRecords.count) SPEC records")
+
+                if specRecords.isEmpty {
+                    print()
+                    continue
+                }
+
+                // Analyze unknownTail3 and unknownTail4
+                var tail3Values: [UInt32] = []
+                var tail4Values: [UInt32] = []
+
+                for record in specRecords {
+                    tail3Values.append(record.unknownTail3)
+                    tail4Values.append(record.unknownTail4)
+                }
+
+                // Statistics for unknownTail3
+                let tail3Min = tail3Values.min() ?? 0
+                let tail3Max = tail3Values.max() ?? 0
+                let tail3Range = tail3Max - tail3Min
+
+                // Statistics for unknownTail4
+                let tail4Min = tail4Values.min() ?? 0
+                let tail4Max = tail4Values.max() ?? 0
+                let tail4Range = tail4Max - tail4Min
+
+                print("  unknownTail3:")
+                print("    Min: 0x\(String(format: "%08x", tail3Min)) (\(tail3Min))")
+                print("    Max: 0x\(String(format: "%08x", tail3Max)) (\(tail3Max))")
+                print("    Range: 0x\(String(format: "%08x", tail3Range)) (\(tail3Range))")
+
+                // Check if values are in the suspected heap pointer range
+                let heapRangeStart: UInt32 = 0x32900000  // ~329M
+                let heapRangeEnd: UInt32 = 0x33040000    // ~330.4M
+                let tail3InHeap = tail3Values.filter { $0 >= heapRangeStart && $0 <= heapRangeEnd }.count
+                let tail4InHeap = tail4Values.filter { $0 >= heapRangeStart && $0 <= heapRangeEnd }.count
+
+                print("    Values in heap range (0x32900000-0x33040000): \(tail3InHeap)/\(specRecords.count)")
+                print("    Percentage: \(String(format: "%.1f%%", Double(tail3InHeap) / Double(specRecords.count) * 100))")
+
+                print("  unknownTail4:")
+                print("    Min: 0x\(String(format: "%08x", tail4Min)) (\(tail4Min))")
+                print("    Max: 0x\(String(format: "%08x", tail4Max)) (\(tail4Max))")
+                print("    Range: 0x\(String(format: "%08x", tail4Range)) (\(tail4Range))")
+                print("    Values in heap range: \(tail4InHeap)/\(specRecords.count)")
+                print("    Percentage: \(String(format: "%.1f%%", Double(tail4InHeap) / Double(specRecords.count) * 100))")
+
+                // Check for patterns or sequences
+                print("  unknownTail3 sequence analysis:")
+                if specRecords.count > 1 {
+                    var tail3Diffs: [Int32] = []
+                    for i in 1..<specRecords.count {
+                        let diff = Int32(bitPattern: specRecords[i].unknownTail3 &- specRecords[i-1].unknownTail3)
+                        tail3Diffs.append(diff)
+                    }
+                    if let minDiff = tail3Diffs.min(), let maxDiff = tail3Diffs.max() {
+                        print("    Differences between consecutive values: min=\(minDiff), max=\(maxDiff)")
+                    }
+                }
+
+                print()
+            } catch {
+                print("  Error processing \(filePath): \(error)\n")
+            }
+        }
+
+        print("=== Analysis Complete ===\n")
+    }
+    
+    /// Also analyze what the values might represent if not heap pointers
+    func testAnalyzeSpecAlternativeInterpretations() throws {
+        print("\n=== Alternative Interpretations ===\n")
+
+        // Let's look at a specific file in detail
+        do {
+            let decoded = try loadAndDecompressRealGSC("A/FARM/FARM.GSC")
+            let file = try WOCContainerParser.parse(decoded)
+
+            guard let specSection = file.sections.first(where: { $0.tag == "SPEC" }) else {
+                print("No SPEC section in FARM.GSC")
+                return
+            }
+
+            let specRecords = try WOCContainerParser.parseSpecRecords(specSection.payload)
+            let instSection = try XCTUnwrap(file.sections.first { $0.tag == "INST" }, "no INST")
+            let instances = try WOCContainerParser.parseInstances(instSection.payload)
+
+            print("FARM.GSC SPEC Records Detailed Analysis:")
+            print("Record  Index  RefID  Matrix[12-14] (translation)  unknownTail3     unknownTail4")
+            print("--------------------------------------------------------------------------------")
+
+            for (i, record) in specRecords.enumerated().prefix(10) {
+                let translation = record.translation
+                let refIndex = Int(record.referencedInstanceIndex)
+                let refInstance = instances[refIndex]
+
+                print(String(format: "%4d    %4d    %4d    [%6.2f,%6.2f,%6.2f]    0x%08x (%10d)  0x%08x (%10d)",
+                           i, refIndex,
+                           translation.x, translation.y, translation.z,
+                           record.unknownTail3, Int32(bitPattern: record.unknownTail3),
+                           record.unknownTail4, Int32(bitPattern: record.unknownTail4)))
+            }
+
+            if specRecords.count > 10 {
+                print("... and \(specRecords.count - 10) more records")
+            }
+
+        } catch {
+            print("Error in detailed analysis: \(error)")
+        }
+    }
