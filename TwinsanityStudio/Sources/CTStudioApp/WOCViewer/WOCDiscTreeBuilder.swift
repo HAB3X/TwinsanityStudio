@@ -119,10 +119,10 @@ enum WOCDiscTreeBuilder {
             children.append(folder("Animations (\(animationChildren.count))", animationChildren))
         }
 
-        if let pathRecordCount = asset.pathRecordCount {
+        if let pathFile = asset.pathFile {
             children.append(ChunkNode(
                 recordID: 0, sectionType: .null,
-                displayName: "Paths (\(pathRecordCount) records, semantics undecoded)", byteSize: 0, fileOffset: 0,
+                displayName: "Paths (\(pathFile.records.count) records, heading angle + parameter bytes decoded)", byteSize: 0, fileOffset: 0,
                 payload: .raw(byteCount: 0)
             ))
         }

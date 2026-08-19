@@ -147,6 +147,12 @@ struct ContentView: View {
                         Label("Wrath of Cortex Sounds", systemImage: "waveform")
                     }
                     .disabled(wocWorkspace.soundArchiveURL == nil)
+                    Button {
+                        wocWorkspace.isCharacterBrowserPresented = true
+                    } label: {
+                        Label("Wrath of Cortex Characters", systemImage: "person.fill")
+                    }
+                    .disabled(wocWorkspace.characterArchiveURL == nil)
                 } label: {
                     Label("Library", systemImage: "books.vertical.fill")
                 }
@@ -260,6 +266,11 @@ struct ContentView: View {
         .sheet(isPresented: $wocWorkspace.isSoundBrowserPresented) {
             if let soundArchiveURL = wocWorkspace.soundArchiveURL {
                 WOCSoundBrowserView(archiveURL: soundArchiveURL)
+            }
+        }
+        .sheet(isPresented: $wocWorkspace.isCharacterBrowserPresented) {
+            if let characterArchiveURL = wocWorkspace.characterArchiveURL {
+                WOCCharacterArchiveBrowserView(archiveURL: characterArchiveURL)
             }
         }
         .sheet(isPresented: $workspace.isSoundBanksHubPresented) {

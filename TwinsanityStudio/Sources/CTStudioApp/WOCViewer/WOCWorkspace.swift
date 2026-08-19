@@ -36,6 +36,7 @@ public final class WOCWorkspace: ObservableObject {
     @Published public var statusMessage: String?
     @Published public var isLevelsHubPresented = false
     @Published public var isSoundBrowserPresented = false
+    @Published public var isCharacterBrowserPresented = false
 
     /// `SFX.DAT` lives at the disc's top level, a sibling of `LEVELS/` --
     /// not inside it. Checked both directly under `rootURL` (root chosen
@@ -43,11 +44,22 @@ public final class WOCWorkspace: ObservableObject {
     /// `LEVELS/` folder directly, per `chooseRoot()`'s prompt) so either
     /// choice `WOCLevelsHubView`'s picker allows also finds the archive.
     public var soundArchiveURL: URL? {
+        archiveURL(named: "SFX.DAT")
+    }
+
+    /// Same top-level placement and lookup rule as `soundArchiveURL`, for
+    /// `CHARS.DAT` (see `WOCCharacterArchiveParser`'s doc comment for
+    /// what's decoded).
+    public var characterArchiveURL: URL? {
+        archiveURL(named: "CHARS.DAT")
+    }
+
+    private func archiveURL(named fileName: String) -> URL? {
         guard let rootURL else { return nil }
         let fm = FileManager.default
-        let direct = rootURL.appendingPathComponent("SFX.DAT")
+        let direct = rootURL.appendingPathComponent(fileName)
         if fm.fileExists(atPath: direct.path) { return direct }
-        let sibling = rootURL.deletingLastPathComponent().appendingPathComponent("SFX.DAT")
+        let sibling = rootURL.deletingLastPathComponent().appendingPathComponent(fileName)
         if fm.fileExists(atPath: sibling.path) { return sibling }
         return nil
     }

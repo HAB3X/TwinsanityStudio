@@ -64,16 +64,52 @@ public struct WOCLevelAsset: Identifiable {
     /// like `TOONARMY.ANM`) -- surfaced so the UI can say "present, not
     /// yet decoded" instead of just "none".
     public let animationFileExistsButUnparsed: Bool
-    /// From the sibling `.PAD` file, if present: real record count and
-    /// framing, but record *semantics* are unresolved (see
-    /// `WOCPadParser`) -- exposed as a raw count, not interpreted data.
-    public let pathRecordCount: Int?
+    /// From the sibling `.PAD` file, if present: real decoded records --
+    /// a confirmed continuously-sampled heading angle plus gated
+    /// parameter bytes per record (see `WOCPadParser`'s doc comment for
+    /// exactly what's confirmed; what actually consumes this data --
+    /// AI patrol, a vehicle rail, a camera path -- is still unresolved).
+    public let pathFile: WOCPadParser.File?
     /// From the sibling `.TER` file, if present: confirmed outer framing
     /// only. The bulk of real terrain/collision geometry (the "main
     /// block") is not decoded -- `terrainMainBlockByteCount` says how
     /// much real data is there without pretending to show its content.
     public let terrainMainBlockByteCount: Int?
     public let terrainTailRecordCount: Int?
+
+    /// From the `.GSC`'s own `TAS0` section, if present: real texture
+    /// indices this level uses, cross-confirmed against `textures` (every
+    /// index is a valid index into that array in every real file
+    /// checked). See `WOCContainerParser.parseTextureAssignments`'s doc
+    /// comment for exactly what is and isn't confirmed about the
+    /// per-entry-to-index mapping.
+    public let textureAssignments: WOCContainerParser.TextureAssignmentSet?
+    /// From the sibling `.PTL` file, if present AND it fits the
+    /// confirmed fixed-839-byte "simple" record template: real particle
+    /// effect definitions (name, lifetime, rotation range, max size --
+    /// see `WOCParticleParser`'s doc comment for exactly which fields are
+    /// confirmed). Complex variable-length `.PTL` files (a different,
+    /// undecoded record shape) leave this empty; see
+    /// `particleFileExistsButUnparsed`.
+    public let particleEffects: [WOCParticleParser.ParticleRecord]
+    public let particleFileExistsButUnparsed: Bool
+    /// From the sibling `.CPT` file, if present AND it fits the same
+    /// confirmed record template `.PTL` uses (no trailer, unlike
+    /// `.PTL`'s 4-byte one -- see `WOCParticleParser`'s doc comment).
+    public let checkpointEffects: [WOCParticleParser.ParticleRecord]
+    public let checkpointFileExistsButUnparsed: Bool
+    /// From the sibling `.OBJ` file, if present: real interactive object
+    /// placements (levers, pistons, hammers, gates, ...). A resync scan
+    /// recovers every declared object on the full real corpus checked
+    /// (373/373 across 16 files) -- `interactiveObjects.count` can still
+    /// fall short of `interactiveObjectDeclaredCount` on a truncated or
+    /// corrupt file, an honest partial result rather than an error; see
+    /// `WOCObjectParser`'s doc comment. Each object's own type-specific
+    /// tail data (named actuator-state sub-blocks, effect references)
+    /// isn't decoded at the field level yet -- exposed raw in
+    /// `paramBlock`/skipped over, not guessed at.
+    public let interactiveObjects: [WOCObjectParser.ObjectRecord]
+    public let interactiveObjectDeclaredCount: Int
 
     public var textureCount: Int { textures.count }
 }
@@ -105,23 +141,26 @@ public struct WOCObjectInstance: Identifiable {
 }
 
 public enum WOCLevelLoader {
-    public enum LoadError: Error, Equatable {
-        case notRNCCompressed
-    }
-
-    /// Decompresses and decodes every currently-understood section of a
-    /// real `.GSC` file, plus every sibling loose file this codebase
-    /// currently understands (looked up by swapping the extension on the
-    /// same URL -- these are real, separate files on disk, not embedded
-    /// in the `.GSC`). Synchronous and potentially slow (RNC
-    /// decompression of a multi-megabyte file) -- callers should run this
-    /// off the main actor.
+    /// Decompresses (when needed) and decodes every currently-understood
+    /// section of a real `.GSC` file, plus every sibling loose file this
+    /// codebase currently understands (looked up by swapping the
+    /// extension on the same URL -- these are real, separate files on
+    /// disk, not embedded in the `.GSC`). Synchronous and potentially
+    /// slow (RNC decompression of a multi-megabyte file) -- callers
+    /// should run this off the main actor.
     public static func load(gscURL: URL, name: String) throws -> WOCLevelAsset {
         let raw = try Data(contentsOf: gscURL)
         let bytes = [UInt8](raw)
-        guard RNCDecompressor.isRNCStream(bytes) else { throw LoadError.notRNCCompressed }
-        let decoded = try RNCDecompressor.decompress(bytes, verifyCRC: true)
-        let file = try WOCContainerParser.parse(decoded)
+        // A minority of real .GSC files (confirmed directly against real
+        // disc bytes: `CORAL_C/CORAL.GSC`, `SNOW_B/SPACE_B.GSC`, and
+        // others found in a disc-wide survey -- 6 of 60 real files) carry
+        // no RNC compression at all: they're already a raw `NU20`
+        // container. Decompress only when the RNC signature is actually
+        // present; otherwise hand the raw bytes straight to
+        // WOCContainerParser.parse, which throws its own `.badMagic` if
+        // the file turns out not to be a real NU20 container either.
+        let containerBytes = RNCDecompressor.isRNCStream(bytes) ? try RNCDecompressor.decompress(bytes, verifyCRC: true) : bytes
+        let file = try WOCContainerParser.parse(containerBytes)
 
         var objectNames: [String] = []
         if let ntbl = file.sections.first(where: { $0.tag == "NTBL" }) {
@@ -162,6 +201,11 @@ public enum WOCLevelLoader {
             }
         }
 
+        var textureAssignments: WOCContainerParser.TextureAssignmentSet?
+        if let tas0 = file.sections.first(where: { $0.tag == "TAS0" }) {
+            textureAssignments = try? WOCContainerParser.parseTextureAssignments(tas0.payload)
+        }
+
         let baseURL = gscURL.deletingPathExtension()
 
         var entities: [WOCAIParser.Entity] = []
@@ -184,9 +228,9 @@ public enum WOCLevelLoader {
             }
         }
 
-        var pathRecordCount: Int?
+        var pathFile: WOCPadParser.File?
         if let padData = try? Data(contentsOf: baseURL.appendingPathExtension("PAD")) {
-            pathRecordCount = (try? WOCPadParser.parse(padData))?.records.count
+            pathFile = try? WOCPadParser.parse(padData)
         }
 
         var terrainMainBlockByteCount: Int?
@@ -195,6 +239,35 @@ public enum WOCLevelLoader {
             if let parsed = try? WOCTerrainParser.parse(terData) {
                 terrainMainBlockByteCount = parsed.mainBlock.count
                 terrainTailRecordCount = parsed.tailRecords.count
+            }
+        }
+
+        var particleEffects: [WOCParticleParser.ParticleRecord] = []
+        var particleFileExistsButUnparsed = false
+        if let ptlData = try? Data(contentsOf: baseURL.appendingPathExtension("PTL")) {
+            if let parsed = try? WOCParticleParser.parse(ptlData) {
+                particleEffects = parsed.records
+            } else {
+                particleFileExistsButUnparsed = true
+            }
+        }
+
+        var checkpointEffects: [WOCParticleParser.ParticleRecord] = []
+        var checkpointFileExistsButUnparsed = false
+        if let cptData = try? Data(contentsOf: baseURL.appendingPathExtension("CPT")) {
+            if let parsed = try? WOCParticleParser.parse(cptData) {
+                checkpointEffects = parsed.records
+            } else {
+                checkpointFileExistsButUnparsed = true
+            }
+        }
+
+        var interactiveObjects: [WOCObjectParser.ObjectRecord] = []
+        var interactiveObjectDeclaredCount = 0
+        if let objData = try? Data(contentsOf: baseURL.appendingPathExtension("OBJ")) {
+            if let parsed = try? WOCObjectParser.parseObjects(objData) {
+                interactiveObjects = parsed.objects
+                interactiveObjectDeclaredCount = parsed.declaredCount
             }
         }
 
@@ -212,9 +285,16 @@ public enum WOCLevelLoader {
             foliage: foliage,
             animations: animations,
             animationFileExistsButUnparsed: animationFileExistsButUnparsed,
-            pathRecordCount: pathRecordCount,
+            pathFile: pathFile,
             terrainMainBlockByteCount: terrainMainBlockByteCount,
-            terrainTailRecordCount: terrainTailRecordCount
+            terrainTailRecordCount: terrainTailRecordCount,
+            textureAssignments: textureAssignments,
+            particleEffects: particleEffects,
+            particleFileExistsButUnparsed: particleFileExistsButUnparsed,
+            checkpointEffects: checkpointEffects,
+            checkpointFileExistsButUnparsed: checkpointFileExistsButUnparsed,
+            interactiveObjects: interactiveObjects,
+            interactiveObjectDeclaredCount: interactiveObjectDeclaredCount
         )
     }
 }

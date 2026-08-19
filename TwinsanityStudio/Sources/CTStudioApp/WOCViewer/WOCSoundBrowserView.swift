@@ -22,6 +22,11 @@ struct WOCSoundBrowserView: View {
     @State private var player: AVAudioPlayer?
     @State private var playerDelegate: PlaybackEndDelegate?
 
+    @State private var musicTracks: [WOCSoundParser.MusicTrack]?
+    @State private var isLoadingMusic = false
+    @State private var musicLoadError: String?
+    @State private var playingMusicTrackID: Int?
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -41,6 +46,7 @@ struct WOCSoundBrowserView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 statusBar
+                musicSection
                 Divider()
                 List(entries) { entry in
                     row(for: entry)
@@ -60,6 +66,118 @@ struct WOCSoundBrowserView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Real background-music tracks are just unusually large entries in
+    /// this same archive, each one's left/right stereo channel stored as
+    /// two consecutive table entries (see `WOCSoundParser.MusicTrack`'s
+    /// doc comment for how this was confirmed). Finding them costs one
+    /// small extra read per archive entry, so it's opt-in rather than
+    /// paid on every browser open.
+    @ViewBuilder
+    private var musicSection: some View {
+        Divider()
+        if let musicTracks {
+            if musicTracks.isEmpty {
+                Text("No music tracks found in this archive.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Music Tracks (\(musicTracks.count))")
+                        .font(.caption.bold())
+                    ForEach(musicTracks) { track in
+                        HStack {
+                            Text("#\(track.left.index)/\(track.right.index)")
+                                .font(.caption.monospaced())
+                            Spacer()
+                            Text(byteCountFormatted(track.left.size + track.right.size))
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                            Button {
+                                toggleMusic(track)
+                            } label: {
+                                Image(systemName: playingMusicTrackID == track.id ? "stop.fill" : "play.fill")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+        } else {
+            HStack {
+                if isLoadingMusic {
+                    ProgressView().controlSize(.small)
+                    Text("Scanning for music tracks…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("Find Music Tracks") {
+                        Task { await loadMusicTracks() }
+                    }
+                    .font(.caption)
+                    if let musicLoadError {
+                        Text(musicLoadError)
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    }
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private func loadMusicTracks() async {
+        isLoadingMusic = true
+        musicLoadError = nil
+        let capturedEntries = entries
+        do {
+            let tracks = try await Task.detached {
+                try WOCSoundParser.findMusicTracks(in: capturedEntries, fileURL: archiveURL)
+            }.value
+            musicTracks = tracks
+        } catch {
+            musicLoadError = "\(error)"
+        }
+        isLoadingMusic = false
+    }
+
+    private func toggleMusic(_ track: WOCSoundParser.MusicTrack) {
+        if playingMusicTrackID == track.id {
+            player?.stop()
+            playingMusicTrackID = nil
+            return
+        }
+        player?.stop()
+        playingIndex = nil
+        playingMusicTrackID = nil
+        Task {
+            do {
+                let (left, right) = try await Task.detached {
+                    let left = try WOCSoundParser.decode(track.left, fileURL: archiveURL)
+                    let right = try WOCSoundParser.decode(track.right, fileURL: archiveURL)
+                    return (left, right)
+                }.value
+                let wav = WAVEncoder.encodeStereo(left: left.samples, right: right.samples, sampleRateHz: UInt16(clamping: left.sampleRate))
+                let newPlayer = try AVAudioPlayer(data: wav)
+                let delegate = PlaybackEndDelegate { playingMusicTrackID = nil }
+                newPlayer.delegate = delegate
+                playerDelegate = delegate
+                player = newPlayer
+                newPlayer.prepareToPlay()
+                if newPlayer.play() {
+                    playingMusicTrackID = track.id
+                }
+            } catch {
+                musicLoadError = "Couldn't decode track #\(track.left.index)/\(track.right.index): \(error)"
+            }
+        }
     }
 
     private func row(for entry: WOCSoundParser.Entry) -> some View {
@@ -109,6 +227,7 @@ struct WOCSoundBrowserView: View {
         }
         player?.stop()
         playingIndex = nil
+        playingMusicTrackID = nil
         decodeError = nil
         decodingIndex = entry.index
         Task {

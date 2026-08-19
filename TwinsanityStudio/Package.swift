@@ -11,7 +11,7 @@ let package = Package(
         .library(name: "CTParsers", targets: ["CTParsers"]),
         .library(name: "CTModels", targets: ["CTModels"]),
         .library(name: "CTExport", targets: ["CTExport"]),
-        .executable(name: "TwinsanityStudio", targets: ["CTStudioApp"])
+        .executable(name: "TwinsanityStudio", targets: ["CTStudioApp"]),
     ],
     targets: [
         // MARK: - Core: binary I/O, endianness, generic chunk system

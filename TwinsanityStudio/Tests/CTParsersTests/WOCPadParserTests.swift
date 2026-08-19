@@ -24,7 +24,39 @@ final class WOCPadParserTests: XCTestCase {
             let file = try WOCPadParser.parse(data)
             XCTAssertEqual(file.records.count, sample.expectedCount, "record count for \(sample.path)")
             XCTAssertEqual(file.magic, sample.expectedMagic, "magic for \(sample.path)")
-            XCTAssertTrue(file.records.allSatisfy { $0.count == 20 })
+            XCTAssertTrue(file.records.allSatisfy { $0.raw.count == 20 })
+        }
+    }
+
+    /// Real-data regression for the confirmed `angleDegrees` field: spans
+    /// essentially the full -180...180 range and varies smoothly
+    /// record-to-record (not scattered/random).
+    func testAngleFieldSpansFullRangeAndVariesSmoothly() throws {
+        let data = try loadReal("A/VOLCANO/VOLCANO.PAD")
+        let file = try WOCPadParser.parse(data)
+        let angles = file.records.map(\.angleDegrees)
+        XCTAssertLessThan(angles.min() ?? 0, -150)
+        XCTAssertGreaterThan(angles.max() ?? 0, 150)
+
+        var deltas: [Float] = []
+        for i in 1..<angles.count {
+            deltas.append(abs(angles[i] - angles[i - 1]))
+        }
+        let median = deltas.sorted()[deltas.count / 2]
+        XCTAssertLessThan(median, 5, "consecutive angle deltas should mostly be small (smooth sampling), not scattered")
+    }
+
+    /// Real-data regression for the confirmed reserved bytes: relative
+    /// offsets 4-8, 12, 14-16 should be exactly zero in every record of a
+    /// real file.
+    func testReservedBytesAreAlwaysZero() throws {
+        let data = try loadReal("A/GARDEN/GARDEN.PAD")
+        let file = try WOCPadParser.parse(data)
+        for record in file.records {
+            let bytes = [UInt8](record.raw)
+            for offset in [4, 5, 6, 7, 8, 12, 14, 15, 16] {
+                XCTAssertEqual(bytes[offset], 0, "relative offset \(offset) should always be 0")
+            }
         }
     }
 }

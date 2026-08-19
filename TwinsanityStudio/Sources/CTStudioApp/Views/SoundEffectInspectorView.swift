@@ -33,6 +33,37 @@ enum WAVEncoder {
         }
         return data
     }
+
+    /// Interleaves two independently-decoded mono channels (e.g. a real
+    /// `WOCSoundParser.MusicTrack`'s left/right entries) into one stereo
+    /// WAV. Truncates to the shorter channel if lengths differ slightly
+    /// rather than padding with fabricated silence.
+    static func encodeStereo(left: [Int16], right: [Int16], sampleRateHz: UInt16) -> Data {
+        var data = Data()
+        let frameCount = min(left.count, right.count)
+        let dataByteCount = UInt32(frameCount * 4)
+        let byteRate = UInt32(sampleRateHz) * 2 * 2
+        let blockAlign: UInt16 = 4
+
+        data.append(contentsOf: Array("RIFF".utf8))
+        data.append(littleEndian: UInt32(36) + dataByteCount)
+        data.append(contentsOf: Array("WAVE".utf8))
+        data.append(contentsOf: Array("fmt ".utf8))
+        data.append(littleEndian: UInt32(16))
+        data.append(littleEndian: UInt16(1))  // PCM
+        data.append(littleEndian: UInt16(2))  // stereo
+        data.append(littleEndian: UInt32(sampleRateHz))
+        data.append(littleEndian: byteRate)
+        data.append(littleEndian: blockAlign)
+        data.append(littleEndian: UInt16(16))
+        data.append(contentsOf: Array("data".utf8))
+        data.append(littleEndian: dataByteCount)
+        for i in 0..<frameCount {
+            data.append(littleEndian: UInt16(bitPattern: left[i]))
+            data.append(littleEndian: UInt16(bitPattern: right[i]))
+        }
+        return data
+    }
 }
 
 private extension Data {

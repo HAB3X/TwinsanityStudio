@@ -102,21 +102,27 @@ import Foundation
 ///   `ALIB`-indices-never-referenced-by-`IABL` matches the exact set of
 ///   `ALIB`'s own empty-sentinel records. Record *internals* (once
 ///   boundaries are known) are still undecoded.
-/// - `OBJ0`, `TAS0` -- not decoded. `OBJ0` is the next highest-value
-///   target: its per-entry format holds real embedded mesh geometry (a
-///   16-byte vertex quadword pattern was confirmed and visually verified
-///   -- see ``parseVertexQuadwords(_:byteOffset:count:)``), its `count`
-///   is confirmed (54-file sweep) to be exactly the number of distinct
+/// - `OBJ0` -- not fully decoded, the highest-value remaining target:
+///   its per-entry format holds real embedded mesh geometry (a 16-byte
+///   vertex quadword pattern was confirmed and visually verified -- see
+///   ``parseVertexQuadwords(_:byteOffset:count:)``), its `count` is
+///   confirmed (54-file sweep) to be exactly the number of distinct
 ///   objects `INST` instances reference, and a finer-grained "chunk"
 ///   framing inside it is confirmed across 4 files via a validated walk
 ///   (see ``walkOBJ0Chunks(_:)``) -- but entry *boundaries* (`OBJ0`'s own
-///   per-object count) are still unsolved. `TAS0` (13 of 54 files have
-///   it): a `count:u32 + reserved:u32` header divides cleanly to the SAME
-///   width -- 48 bytes -- in 5 of those 13 files (counts 1/1/2/2/3, all
-///   landing on 48 exactly), but the other 8 files give inconsistent
-///   widths (44, 96, 112, or no clean division at all), so this is a real
-///   partial lead, not a confirmed universal record size -- left
-///   undecoded rather than implemented on a 5/13 hit rate.
+///   per-object count) are only solved for files with homogeneous chunk
+///   headers; files that mix header shapes (`CASTLE_C.GSC`/`HUB.GSC`)
+///   only get partial coverage (see `walkOBJ0Chunks`'s own doc comment).
+/// - `TAS0` -- see ``parseTextureAssignments(_:)``. Present in 12 of 54
+///   files. An earlier investigation guessed a 44/48/96/112-byte record
+///   width from a plain division and called it inconsistent; the real
+///   record is a fixed 32 bytes, confirmed by exact byte-accounting
+///   (zero exceptions) across all 12 files. This is the first confirmed
+///   texture/mesh-binding data found in the format: a trailing `UInt16`
+///   list whose every value is a valid index into that same file's own
+///   decoded texture list (``scanTextureEntries(_:)``) -- but the
+///   per-entry-to-texture-index mapping isn't nailed down (see that
+///   function's own doc comment for exactly what is and isn't confirmed).
 ///
 /// Every section not listed above as decoded is exposed as raw
 /// ``WOCSection/payload`` bytes rather than guessed at.
@@ -252,6 +258,115 @@ public enum WOCContainerParser {
             records.append(Data(bytes[start..<(start + width)]))
         }
         return (records, width)
+    }
+
+    /// One 32-byte record from a `TAS0` section's fixed-width entry table
+    /// -- see ``parseTextureAssignments(_:)``'s doc comment for the
+    /// overall section layout this belongs to.
+    ///
+    /// Only `referencedIndex` (at relative offset 16) is decoded: it's
+    /// strictly increasing across a `TAS0` section's own entry list in
+    /// every real file checked -- the same curated-ascending-pointer shape
+    /// already confirmed for `SPEC.referencedInstanceIndex`, but whether
+    /// it targets `OBJ0` or `INST` is NOT disambiguated (every file
+    /// checked has enough entries in both that bounds-checking alone
+    /// can't tell them apart). The rest of the entry (including a
+    /// recurring duplicated-value field that looks like the same
+    /// leftover-heap-pointer pattern already documented on
+    /// `Instance.unknownTail1`/`SpecRecord.unknownTail3`) is exposed raw
+    /// rather than guessed at.
+    public struct TextureAssignmentEntry {
+        public let referencedIndex: UInt32
+        public let raw: Data
+    }
+
+    /// Decodes a `TAS0` section's payload -- **which references a
+    /// file's decoded texture list** (see ``scanTextureEntries(_:)``),
+    /// making this the first confirmed texture/mesh binding found in this
+    /// format. Present in 12 of the 54 real files checked (others may
+    /// simply not use it -- `TAS0` itself is already documented elsewhere
+    /// in this file as present-in-some/absent-in-others).
+    ///
+    /// **CONFIRMED layout** (exact byte-accounting, zero exceptions
+    /// across all 12 real files that have this section, including files
+    /// an earlier, narrower investigation had flagged as "inconsistent"
+    /// against a wrong assumed record width):
+    /// ```
+    /// TAS0 := count:UInt32LE reserved:UInt32LE
+    ///         Entry(count)                        -- 32 bytes each, see TextureAssignmentEntry
+    ///         listCount:UInt32LE
+    ///         UInt16LE(listCount)                 -- texture-index list
+    ///         trailer: Bytes(0...14)               -- not decoded
+    /// ```
+    /// `reserved` is `0` in all 12 files checked but not enforced here
+    /// (read, not guarded) in case a future file uses it for something
+    /// real. The entry width is 32 bytes, not the 44/48/96/112 an earlier
+    /// investigation guessed from a plain `(payloadLength - 8) / count`
+    /// division -- that division looked clean by coincidence on a handful
+    /// of small-`count` files; the real formula that holds exactly on all
+    /// 12 files (including the ones that broke the old guess) is
+    /// `8 + count*32 + 4 + listCount*2 + trailer.count == payload.count`.
+    ///
+    /// **Texture-index evidence**: every value in the `UInt16` list is
+    /// strictly less than that same file's own real texture count (12/12
+    /// files, zero exceptions), and in 5 of 12 files the list's own max
+    /// value lands within 1-2 of that count's upper bound -- e.g.
+    /// `SPACE_B.GSC`: max index 50 of 51 real textures; `WEATH_B.GSC`:
+    /// max 20 of 21; `SNOW_B.GSC`: max 21 of 22. Two `ICEBERG.GSC` sections
+    /// show a clean, unambiguous `0..<32` run; `VOLCANO.GSC` shows
+    /// `16..<48`.
+    ///
+    /// **Not confirmed, stated honestly rather than guessed**: which
+    /// texture indices belong to which entry. `listCount` is NOT split
+    /// evenly by `count` in every file -- 5 of 7 multi-entry files show a
+    /// clean constant `listCount / count` ratio (each entry apparently
+    /// claiming an equal-size sub-range), but `STATION.GSC` (9 entries,
+    /// 28 indices in unequal groups of 4/6/8/5/5) breaks that formula, so
+    /// no per-entry sub-range is exposed here -- callers get the flat,
+    /// real index list and the flat, real entry list, not a guessed
+    /// mapping between them. `TAS0.count` also never matches `OBJ0`'s or
+    /// `INST`'s own leading count in any file (single digits vs hundreds)
+    /// -- this is a small curated subset, not a full per-object table,
+    /// consistent with `SPEC`'s own already-documented curated-subset
+    /// shape.
+    public struct TextureAssignmentSet {
+        public let entries: [TextureAssignmentEntry]
+        public let textureIndices: [UInt16]
+        public let trailer: Data
+    }
+
+    public static func parseTextureAssignments(_ payload: Data) throws -> TextureAssignmentSet {
+        let bytes = [UInt8](payload)
+        guard bytes.count >= 8 else { throw ParseError.truncated }
+        let count = Int(leUInt32(bytes, 0))
+        var offset = 8
+        guard count >= 0, offset + count * 32 <= bytes.count else { throw ParseError.truncated }
+
+        var entries: [TextureAssignmentEntry] = []
+        entries.reserveCapacity(count)
+        for i in 0..<count {
+            let base = offset + i * 32
+            entries.append(TextureAssignmentEntry(
+                referencedIndex: leUInt32(bytes, base + 16),
+                raw: Data(bytes[base..<(base + 32)])
+            ))
+        }
+        offset += count * 32
+
+        guard offset + 4 <= bytes.count else { throw ParseError.truncated }
+        let listCount = Int(leUInt32(bytes, offset))
+        offset += 4
+        guard listCount >= 0, offset + listCount * 2 <= bytes.count else { throw ParseError.truncated }
+
+        var textureIndices: [UInt16] = []
+        textureIndices.reserveCapacity(listCount)
+        for i in 0..<listCount {
+            let base = offset + i * 2
+            textureIndices.append(UInt16(bytes[base]) | (UInt16(bytes[base + 1]) << 8))
+        }
+        offset += listCount * 2
+
+        return TextureAssignmentSet(entries: entries, textureIndices: textureIndices, trailer: Data(bytes[offset...]))
     }
 
     /// A single placed object instance from an `INST` section: a 4x4
@@ -759,7 +874,16 @@ public enum WOCContainerParser {
         let fmtB = leUInt32(bytes, fmtBTrailerOffset)
 
         let bytesPerPixel = fmtA == fmtB ? 1 : 4
-        let size = width * height * bytesPerPixel
+
+        // width/height come from a heuristic scan and may land on a false
+        // positive whose "header" is really unrelated file data, so these
+        // can be garbage large values -- multiply with overflow checking
+        // rather than trapping (this was the source of a SIGTRAP crash
+        // when scanning AIRSHIP.GSC).
+        let (rowBytes, rowOverflow) = width.multipliedReportingOverflow(by: height)
+        guard !rowOverflow else { throw ParseError.truncated }
+        let (size, sizeOverflow) = rowBytes.multipliedReportingOverflow(by: bytesPerPixel)
+        guard !sizeOverflow else { throw ParseError.truncated }
 
         // Compute texel data start and guard that it fits
         let texelStart = textureHeaderStart + 172
@@ -909,31 +1033,44 @@ public enum WOCContainerParser {
     /// it, skipping to the next marker occurrence instead when a
     /// candidate fails validation.
     ///
-    /// **Known real bug, not yet fixed** (found by a dedicated follow-up
-    /// investigation into ``groupOBJ0ChunksIntoEntries(_:)`` below): on
-    /// files whose chunks don't all share one constant marker-to-chunk-
-    /// start distance (heterogeneous chunk *types* in the same file --
-    /// confirmed on `CASTLE_C.GSC`/`HUB.GSC`), this walk can validate the
-    /// *same* literal marker occurrence against dozens to hundreds of
-    /// consecutive fabricated "chunks" at a constant stride, because
-    /// nothing here requires a validated marker to actually be near the
-    /// chunk it's validating. Concretely observed on `HUB.GSC`: one
-    /// marker at payload offset 751032 reused to "validate" 255 different
-    /// chunks at a flat 384-byte stride. This means the previously-quoted
-    /// **coverage numbers below for `CASTLE_C.GSC`/`HUB.GSC` are not
-    /// trustworthy as real chunk boundaries** -- most of those "chunks"
-    /// are walk artifacts, not real per-chunk data. Left unfixed rather
-    /// than guessed at (see that function's own doc comment for what a
-    /// real fix would need); `groupOBJ0ChunksIntoEntries(_:)` detects and
-    /// refuses to group a walk that hit this bug rather than silently
-    /// producing a wrong grouping from it.
+    /// **Marker-reuse bug, fixed via a containment check** (found by a
+    /// dedicated follow-up investigation into
+    /// ``groupOBJ0ChunksIntoEntries(_:)`` below): on files whose chunks
+    /// don't all share one constant marker-to-chunk-start distance
+    /// (heterogeneous chunk *types* in the same file -- confirmed on
+    /// `CASTLE_C.GSC`/`HUB.GSC`), this walk used to validate the *same*
+    /// literal marker occurrence against dozens to hundreds of consecutive
+    /// fabricated "chunks" at a constant stride, because nothing required
+    /// a validated marker to actually be near the chunk it was validating.
+    /// Concretely observed on `HUB.GSC`: one marker at payload offset
+    /// 751032 got reused to "validate" 255 different chunks at a flat
+    /// 384-byte stride.
+    ///
+    /// The fix: a candidate's own marker must fall *within* the byte span
+    /// it's claiming to validate (`markerOffset < offset + chunkLength`),
+    /// which a genuinely-distant reused marker never satisfies. This is
+    /// deliberately looser than requiring one single constant distance
+    /// file-wide -- an earlier attempt at that was empirically too strict
+    /// (`CASTLE_C.GSC` dropped to 4 real chunks), confirming these files
+    /// really do mix multiple legitimately different chunk header shapes,
+    /// not just walk noise. Re-verified real-file impact: zero change on
+    /// the 3 previously-clean files (`AIRSHIP.GSC`/`FARM.GSC`/`DROID.GSC`,
+    /// byte-for-byte identical chunk lists, no regression), and zero
+    /// duplicate marker reuse on `CASTLE_C.GSC`/`HUB.GSC` afterward -- but
+    /// coverage on those two honestly drops way down (to 8 and 27 real
+    /// chunks respectively, vs the previous 1975/2317 fabricated ones) --
+    /// **still far short of those files' true chunk counts** (`OBJ0`'s own
+    /// leading counts: 1113/700 entries). The remaining heterogeneous
+    /// chunk header shapes on these two files are not understood; this
+    /// fix trades "silently wrong, high coverage" for "honestly partial,
+    /// real coverage" -- it does not solve `OBJ0` boundaries for them.
     ///
     /// Re-verified with the plausibility safeguard across 4 real files of
     /// very different sizes: `AIRSHIP.GSC` 100.00% (222 chunks, marker-
     /// reuse-free), `FARM.GSC` 99.99% (745 chunks, marker-reuse-free),
-    /// `CASTLE_C.GSC` 99.95% (1975 chunks, but see the marker-reuse bug
-    /// above), `HUB.GSC` 99.94% (2317 chunks, same caveat) -- each walk
-    /// stops a few hundred to a few thousand bytes short of the true end
+    /// `CASTLE_C.GSC` -- see containment-fix note above for real coverage,
+    /// `HUB.GSC` -- same -- each walk on the clean files stops a few
+    /// hundred to a few thousand bytes short of the true end
     /// (out of multi-megabyte payloads) rather than diverging completely.
     public static func walkOBJ0Chunks(_ payload: Data) -> [OBJ0Chunk] {
         let marker = Data([0x56, 0x00, 0x01, 0x6C])
@@ -948,7 +1085,8 @@ public enum WOCContainerParser {
                 let markerOffset = markerRange.lowerBound - payload.startIndex
                 let lengthFieldOffset = markerOffset - 20
                 if lengthFieldOffset >= offset, let chunkLength = try? obj0ChunkLength(payload, markerOffset: markerOffset),
-                   chunkLength > 0, chunkLength <= maxReasonableChunkLength, offset + chunkLength <= payload.count + 4096 {
+                   chunkLength > 0, chunkLength <= maxReasonableChunkLength, offset + chunkLength <= payload.count + 4096,
+                   markerOffset < offset + chunkLength {
                     validated = (chunkLength, markerOffset)
                     break searchLoop
                 }
@@ -985,21 +1123,24 @@ public enum WOCContainerParser {
     /// produced a matching count, ruling out coincidence.
     ///
     /// **Scope limitation, stated honestly rather than silently wrong**:
-    /// this rule was only validated on files where `walkOBJ0Chunks(_:)`
-    /// itself stays reliable -- a real, separate bug in that walk (see
-    /// its own doc comment) fabricates chunks via marker reuse on files
-    /// with heterogeneous per-chunk header sizes, confirmed on
-    /// `CASTLE_C.GSC`/`HUB.GSC`. Grouping a walk that hit that bug would
-    /// produce a wrong-but-plausible-looking entry count, which this
-    /// codebase's discipline treats as worse than an honest `nil`. This
-    /// function detects that case the same way the bug was found -- the
-    /// same absolute `markerOffset` being reused across more than one
-    /// walked chunk -- and returns `nil` rather than a result it can't
-    /// stand behind.
+    /// this rule was only validated at full strength (grouped count ==
+    /// `OBJ0`'s own leading-count field) on files where `walkOBJ0Chunks(_:)`
+    /// covers close to 100% of the payload. `CASTLE_C.GSC`/`HUB.GSC` have
+    /// heterogeneous per-chunk header sizes that `walkOBJ0Chunks(_:)` only
+    /// partially understands (see its own doc comment on the containment
+    /// fix) -- grouping those files' chunks still works and is real, but
+    /// covers far fewer entries than `OBJ0`'s own declared count (e.g.
+    /// `HUB.GSC`: ~27 real entries found vs 700 declared). The
+    /// `seenMarkerOffsets` check below stays in place as a defense-in-depth
+    /// safety net -- if a marker-reuse bug is ever reintroduced upstream,
+    /// this still refuses to guess rather than silently producing a wrong
+    /// grouping from it.
     ///
-    /// - Returns: One array of chunks per top-level `OBJ0` entry, in
-    ///   order, or `nil` when `walkOBJ0Chunks(_:)`'s marker-reuse bug was
-    ///   detected on this payload (the grouping isn't safe to trust).
+    /// - Returns: One array of chunks per top-level `OBJ0` entry found, in
+    ///   order -- possibly far fewer than `OBJ0`'s own declared entry count
+    ///   on a file `walkOBJ0Chunks(_:)` only partially covers -- or `nil`
+    ///   if a marker gets reused across walked chunks (a walk-level bug
+    ///   this function refuses to build a grouping from).
     public static func groupOBJ0ChunksIntoEntries(_ payload: Data) -> [[OBJ0Chunk]]? {
         let chunks = walkOBJ0Chunks(payload)
         guard !chunks.isEmpty else { return [] }
@@ -1048,5 +1189,99 @@ public enum WOCContainerParser {
             guard isUpper || isDigit else { return nil }
         }
         return String(decoding: b[o..<(o + 4)], as: UTF8.self)
+    }
+
+    // MARK: - Matrix Validation
+    
+    /// Compares two 4x4 matrices for equality within a tolerance.
+    /// This function safely handles floating-point comparisons by using
+    /// an epsilon-based approach to avoid issues with NaN values or
+    /// floating-point precision errors that could cause SIGTRAP.
+    /// - Parameters:
+    ///   - a: First matrix as a 16-element tuple
+    ///   - b: Second matrix as a 16-element tuple
+    /// - Returns: True if matrices are equal within epsilon tolerance
+    private static func matricesEqual(
+        _ a: (Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float),
+        _ b: (Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float)
+    ) -> Bool {
+        let epsilon: Float = 1e-5
+        return abs(a.0 - b.0) < epsilon &&
+               abs(a.1 - b.1) < epsilon &&
+               abs(a.2 - b.2) < epsilon &&
+               abs(a.3 - b.3) < epsilon &&
+               abs(a.4 - b.4) < epsilon &&
+               abs(a.5 - b.5) < epsilon &&
+               abs(a.6 - b.6) < epsilon &&
+               abs(a.7 - b.7) < epsilon &&
+               abs(a.8 - b.8) < epsilon &&
+               abs(a.9 - b.9) < epsilon &&
+               abs(a.10 - b.10) < epsilon &&
+               abs(a.11 - b.11) < epsilon &&
+               abs(a.12 - b.12) < epsilon &&
+               abs(a.13 - b.13) < epsilon &&
+               abs(a.14 - b.14) < epsilon &&
+               abs(a.15 - b.15) < epsilon
+    }
+    
+    /// Validates that all SPEC records have matrices that are byte-identical
+    /// to their corresponding INST records (as referenced by referencedInstanceIndex).
+    /// This function replicates the validation performed in the test suite.
+    /// - Parameters:
+    ///   - instances: Array of Instance objects from INST section
+    ///   - specRecords: Array of SpecRecord objects from SPEC section
+    /// - Throws: ValidationError if any matrix mismatch is found
+    public static func validateSpecMatricesMatchInst(
+        _ instances: [Instance],
+        _ specRecords: [SpecRecord]
+    ) throws {
+        var previousIndex: Int64 = -1
+        for record in specRecords {
+            let refIndex = Int(record.referencedInstanceIndex)
+            
+            // Validate referencedInstanceIndex is strictly increasing
+            guard Int64(refIndex) > previousIndex else {
+                throw ValidationError.specReferencedInstanceIndexNotIncreasing(
+                    current: refIndex, previous: Int(previousIndex)
+                )
+            }
+            previousIndex = Int64(refIndex)
+            
+            // Validate referencedInstanceIndex is within bounds
+            guard refIndex < instances.count else {
+                throw ValidationError.specReferencedInstanceIndexOutOfBounds(
+                    index: refIndex, count: instances.count
+                )
+            }
+            
+            // Get the referenced INST record
+            let referenced = instances[refIndex]
+            
+            // Validate matrix equality using safe comparison
+            guard matricesEqual(record.matrix, referenced.matrix) else {
+                throw ValidationError.specMatrixDoesNotMatchInst(
+                    specIndex: Int(refIndex),
+                    instIndex: refIndex
+                )
+            }
+        }
+    }
+    
+    /// Enumeration of validation errors that can occur during SPEC-INST matrix validation.
+    public enum ValidationError: Error, Equatable, CustomStringConvertible {
+        case specReferencedInstanceIndexNotIncreasing(current: Int, previous: Int)
+        case specReferencedInstanceIndexOutOfBounds(index: Int, count: Int)
+        case specMatrixDoesNotMatchInst(specIndex: Int, instIndex: Int)
+        
+        public var description: String {
+            switch self {
+            case let .specReferencedInstanceIndexNotIncreasing(current, previous):
+                return "SPEC referencedInstanceIndex (\(current)) is not strictly increasing (previous: \(previous))"
+            case let .specReferencedInstanceIndexOutOfBounds(index, count):
+                return "SPEC referencedInstanceIndex (\(index)) is out of bounds for INST array (count: \(count))"
+            case let .specMatrixDoesNotMatchInst(specIndex, instIndex):
+                return "SPEC record at index \(specIndex) matrix does not match INST record at index \(instIndex)"
+            }
+        }
     }
 }

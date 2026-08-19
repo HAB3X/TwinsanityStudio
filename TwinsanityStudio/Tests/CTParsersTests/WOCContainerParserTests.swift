@@ -336,15 +336,18 @@ final class WOCContainerParserTests: XCTestCase {
     /// so this test intentionally only covers the one file where it's
     /// confirmed clean, rather than a broader sweep that would fail.)
     /// The validated `walkOBJ0Chunks` covers AIRSHIP.GSC exactly and gets
-    /// very close (>99.9%) on 3 other real files of very different sizes
-    /// -- unlike the naive marker scan this replaced, which diverged
-    /// catastrophically on 2 of these same files (see `walkOBJ0Chunks`'s
-    /// doc comment for that story).
+    /// very close (>99.9%) on other real files of similar (homogeneous
+    /// chunk-header) shape -- unlike the naive marker scan this replaced,
+    /// which diverged catastrophically on files with heterogeneous chunk
+    /// headers (see `walkOBJ0Chunks`'s doc comment for that story).
+    /// `CASTLE_C.GSC`/`HUB.GSC` are exactly that heterogeneous case and
+    /// are deliberately NOT included here -- see
+    /// `WOCOBJ0GroupingTests.testHeterogeneousFilesReturnPartialButRealGrouping`
+    /// for their honest (low, partial) coverage instead.
     func testRealOBJ0ChunkWalkCoversMultipleFilesNearlyExactly() throws {
         let samples: [(path: String, expectedChunks: Int, minCoverageFraction: Double)] = [
             ("A/AIRSHIP/AIRSHIP.GSC", 222, 1.0),
             ("A/FARM/FARM.GSC", 745, 0.999),
-            ("A/CASTLE_C/CASTLE_C.GSC", 1975, 0.999),
         ]
         for sample in samples {
             let decoded = try loadAndDecompressRealGSC(sample.path)
@@ -418,7 +421,6 @@ final class WOCContainerParserTests: XCTestCase {
         XCTAssertEqual(textures[0].width, 128)
         XCTAssertEqual(textures[0].height, 64)
     }
-}
 
     /// Analyzes SPEC unknown tails across multiple files to determine their purpose.
     func testAnalyzeSpecUnknownTails() throws {
@@ -556,3 +558,4 @@ final class WOCContainerParserTests: XCTestCase {
             print("Error in detailed analysis: \(error)")
         }
     }
+}

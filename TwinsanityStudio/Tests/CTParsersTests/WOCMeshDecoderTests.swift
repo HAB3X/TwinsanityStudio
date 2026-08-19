@@ -88,13 +88,19 @@ final class WOCMeshDecoderTests: XCTestCase {
         XCTAssertGreaterThan(totalTriangles, 0)
     }
 
-    /// `CASTLE_C.GSC` is one of the two files confirmed to trigger
-    /// `walkOBJ0Chunks`'s marker-reuse bug -- mesh building must honestly
-    /// refuse (`nil`) rather than build meshes from a wrong grouping.
-    func testHeterogeneousFileRefusesToBuildMeshes() throws {
+    /// `CASTLE_C.GSC` is one of the two files with heterogeneous
+    /// `OBJ0` chunk headers `walkOBJ0Chunks` only partially covers (see
+    /// its own doc comment on the containment fix for the marker-reuse
+    /// bug this used to trigger). Mesh building now succeeds with a real,
+    /// if far-from-complete, set of entries rather than either extreme
+    /// (fabricated full coverage, or a blanket refusal).
+    func testHeterogeneousFileBuildsPartialRealMeshes() throws {
         let decoded = try loadAndDecompressRealGSC("A/CASTLE_C/CASTLE_C.GSC")
         let file = try WOCContainerParser.parse(decoded)
         let obj0 = try XCTUnwrap(file.sections.first { $0.tag == "OBJ0" })
-        XCTAssertNil(WOCMeshDecoder.buildEntryMeshes(objectPayload: obj0.payload))
+        let leadingCount = try WOCContainerParser.leadingCount(obj0.payload)
+        let meshes = try XCTUnwrap(WOCMeshDecoder.buildEntryMeshes(objectPayload: obj0.payload))
+        XCTAssertGreaterThan(meshes.count, 0, "should build at least some real meshes")
+        XCTAssertLessThan(meshes.count, leadingCount, "coverage on this file is known-incomplete -- update this test if a fuller OBJ0 fix lands")
     }
 }

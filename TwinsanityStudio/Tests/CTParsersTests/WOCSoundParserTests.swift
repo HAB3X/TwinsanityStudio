@@ -48,4 +48,42 @@ final class WOCSoundParserTests: XCTestCase {
             XCTAssertGreaterThan(rms, 50, "entry \(index) decoded to near-silence (rms \(rms)) -- likely a decode bug")
         }
     }
+
+    /// Golden-value regression: independently re-verified directly against
+    /// the real archive (a standalone Python re-implementation, not reused
+    /// from any agent script) before being pinned here -- entries #402/403
+    /// both carry the `"D:\CRASHM~1\AIFS"` embedded path and identical size.
+    func testKnownMusicPairHasExpectedEmbeddedPathAndSize() throws {
+        try requireDisc()
+        let entries = try WOCSoundParser.parseTable(fileURL: sfxURL)
+        let left = entries[402]
+        let right = entries[403]
+        XCTAssertEqual(left.size, right.size)
+        let leftField = try WOCSoundParser.readEmbeddedPathField(left, fileURL: sfxURL)
+        let rightField = try WOCSoundParser.readEmbeddedPathField(right, fileURL: sfxURL)
+        XCTAssertTrue(leftField.contains("CRASHM"), "expected a CRASH MUSIC path, got \(leftField)")
+        XCTAssertTrue(rightField.contains("CRASHM"), "expected a CRASH MUSIC path, got \(rightField)")
+    }
+
+    /// Full-archive regression: exactly 36 clean pairs, matching the
+    /// independently re-verified sweep (72 CRASHM-tagged entries, all
+    /// forming consecutive equal-size pairs, zero anomalies).
+    func testFindsExactlyThirtySixMusicTracks() throws {
+        try requireDisc()
+        let entries = try WOCSoundParser.parseTable(fileURL: sfxURL)
+        let tracks = try WOCSoundParser.findMusicTracks(in: entries, fileURL: sfxURL)
+        XCTAssertEqual(tracks.count, 36)
+        for track in tracks {
+            XCTAssertEqual(track.right.index, track.left.index + 1, "music track channels should be consecutive indices")
+            XCTAssertEqual(track.left.size, track.right.size, "music track channels should be equal size")
+        }
+    }
+
+    /// An ordinary short SFX entry should never spuriously get tagged.
+    func testOrdinarySFXEntryIsNotTaggedAsMusic() throws {
+        try requireDisc()
+        let entries = try WOCSoundParser.parseTable(fileURL: sfxURL)
+        let field = try WOCSoundParser.readEmbeddedPathField(entries[0], fileURL: sfxURL)
+        XCTAssertFalse(field.contains("CRASHM"))
+    }
 }

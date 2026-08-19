@@ -44,22 +44,28 @@ final class WOCOBJ0GroupingTests: XCTestCase {
         XCTAssertGreaterThan(checked, 0, "no real sample files were available to check")
     }
 
-    /// `CASTLE_C.GSC`/`HUB.GSC` are the two files confirmed to trigger
-    /// `walkOBJ0Chunks`'s marker-reuse bug (heterogeneous per-chunk header
-    /// sizes) -- grouping must honestly refuse (`nil`), not silently
-    /// return a wrong count.
-    func testHeterogeneousFilesReturnNilRatherThanWrongGrouping() throws {
-        let samples = [
-            "A/CASTLE_C/CASTLE_C.GSC",
-            "B/HUB/HUB.GSC",
+    /// `CASTLE_C.GSC`/`HUB.GSC` have heterogeneous per-chunk header sizes
+    /// that `walkOBJ0Chunks` only partially covers (see its doc comment on
+    /// the containment fix for the marker-reuse bug this used to trigger).
+    /// Grouping now succeeds (no more marker reuse to detect) but covers
+    /// far fewer real entries than `OBJ0`'s own declared count -- this
+    /// pins that honest-partial behavior rather than either extreme
+    /// (silently-wrong full coverage, or a blanket refusal).
+    func testHeterogeneousFilesReturnPartialButRealGrouping() throws {
+        let samples: [(path: String, leadingCount: Int)] = [
+            ("A/CASTLE_C/CASTLE_C.GSC", 1113),
+            ("B/HUB/HUB.GSC", 700),
         ]
         var checked = 0
-        for relativePath in samples {
-            let decoded = try loadAndDecompressRealGSC(relativePath)
+        for sample in samples {
+            let decoded = try loadAndDecompressRealGSC(sample.path)
             let file = try WOCContainerParser.parse(decoded)
             guard let obj0 = file.sections.first(where: { $0.tag == "OBJ0" }) else { continue }
-            let groups = WOCContainerParser.groupOBJ0ChunksIntoEntries(obj0.payload)
-            XCTAssertNil(groups, "\(relativePath): expected the marker-reuse bug to be detected and grouping refused")
+            let leadingCount = try WOCContainerParser.leadingCount(obj0.payload)
+            XCTAssertEqual(leadingCount, sample.leadingCount, "\(sample.path): OBJ0's own declared entry count")
+            let groups = try XCTUnwrap(WOCContainerParser.groupOBJ0ChunksIntoEntries(obj0.payload), "\(sample.path): expected a real (if partial) grouping, not nil")
+            XCTAssertGreaterThan(groups.count, 0, "\(sample.path): should find at least some real entries")
+            XCTAssertLessThan(groups.count, leadingCount, "\(sample.path): coverage on this file is known-incomplete -- update this test if a fuller OBJ0 fix lands")
             checked += 1
         }
         XCTAssertGreaterThan(checked, 0, "no real sample files were available to check")

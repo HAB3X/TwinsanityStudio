@@ -100,4 +100,61 @@ public enum WOCSoundParser {
         let samples = WOCADPCMDecoder.decode(adpcm)
         return DecodedClip(sampleRate: sampleRate, samples: samples)
     }
+
+    /// The real VAG header carries a 16-byte scratch field at relative
+    /// offset `0x20` -- confirmed on the real archive to be leftover
+    /// authoring-tool metadata: a (16-byte-truncated) Windows source path
+    /// from whatever machine/drive originally exported the clip, e.g.
+    /// `"C:\WINDOWS\DESKT"`, `"Z:\ARTHUR~1\CRAS"`, `"D:\CRASHM~1\AIFS"`.
+    /// Not a clip name in any user-facing sense, but real and useful: see
+    /// ``findMusicTracks(in:fileURL:)``.
+    public static func readEmbeddedPathField(_ entry: Entry, fileURL: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(entry.offset))
+        guard let header = try handle.read(upToCount: 48), header.count == 48 else {
+            throw ParseError.fileTooSmall
+        }
+        let field = header[header.startIndex + 0x20..<header.startIndex + 0x30]
+        return String(decoding: field.prefix { $0 != 0 }, as: UTF8.self)
+    }
+
+    /// One real background-music track: two consecutive `SFX.DAT` table
+    /// entries, independent left/right channels of the same track.
+    public struct MusicTrack: Identifiable {
+        public var id: Int { left.index }
+        public let left: Entry
+        public let right: Entry
+    }
+
+    /// **Confirmed on the real archive**: of `SFX.DAT`'s 782 entries, 72
+    /// carry `"CRASHM"` (truncated `"D:\CRASH MUSIC\..."`) in their
+    /// embedded path field -- exactly 36 pairs of consecutive indices
+    /// with byte-identical `size`, zero exceptions/anomalies. Everywhere
+    /// else in the archive, that embedded path field points at ordinary
+    /// SFX/dialogue source folders (`Z:\ARTHUR~1\CRAS...`,
+    /// `D:\FOREIG~1\ITAL...`), never `"CRASHM"`. Decoded PCM from a real
+    /// pair (independently verified: ~135s at 44.1kHz, real dynamic
+    /// range, cross-channel correlation r=0.37 consistent with
+    /// independent stereo channels of one track, not duplicate data) --
+    /// these are real music tracks' left/right channels, not incidental
+    /// large SFX entries. This is an I/O cost `parseTable` deliberately
+    /// avoids paying by default (a 48-byte read per entry, 782 total) --
+    /// call this only when you actually want the music list, not on
+    /// every table load.
+    public static func findMusicTracks(in entries: [Entry], fileURL: URL) throws -> [MusicTrack] {
+        var tracks: [MusicTrack] = []
+        var i = 0
+        while i < entries.count {
+            let field = try readEmbeddedPathField(entries[i], fileURL: fileURL)
+            guard field.contains("CRASHM") else { i += 1; continue }
+            if i + 1 < entries.count, entries[i + 1].size == entries[i].size {
+                tracks.append(MusicTrack(left: entries[i], right: entries[i + 1]))
+                i += 2
+            } else {
+                i += 1
+            }
+        }
+        return tracks
+    }
 }

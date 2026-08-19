@@ -10,6 +10,8 @@ enum WOCViewerTab: String, CaseIterable, Identifiable {
     case animations = "Animations"
     case paths = "Paths"
     case terrain = "Terrain"
+    case effects = "Effects"
+    case interactive = "Interactive Objects"
     var id: String { rawValue }
 }
 
@@ -46,9 +48,18 @@ struct WOCViewerWindow: View {
             case .animations:
                 WOCAnimationListView(animations: asset.animations, fileExistsButUnparsed: asset.animationFileExistsButUnparsed)
             case .paths:
-                WOCPathInfoView(recordCount: asset.pathRecordCount)
+                WOCPathInfoView(pathFile: asset.pathFile)
             case .terrain:
                 WOCTerrainInfoView(mainBlockByteCount: asset.terrainMainBlockByteCount, tailRecordCount: asset.terrainTailRecordCount)
+            case .effects:
+                WOCParticleEffectsView(
+                    particleEffects: asset.particleEffects,
+                    particleFileExistsButUnparsed: asset.particleFileExistsButUnparsed,
+                    checkpointEffects: asset.checkpointEffects,
+                    checkpointFileExistsButUnparsed: asset.checkpointFileExistsButUnparsed
+                )
+            case .interactive:
+                WOCInteractiveObjectsView(objects: asset.interactiveObjects, declaredCount: asset.interactiveObjectDeclaredCount)
             }
         }
         .frame(minWidth: 820, minHeight: 560)
@@ -97,8 +108,12 @@ struct WOCViewerWindow: View {
                     LabeledContent("AI Entities", value: "\(asset.entities.count)")
                     LabeledContent("Foliage", value: "\(asset.foliage.count)")
                     LabeledContent("Animations", value: asset.animationFileExistsButUnparsed ? "present, undecoded" : "\(asset.animations.count)")
-                    LabeledContent("Path Records", value: asset.pathRecordCount.map(String.init) ?? "none")
+                    LabeledContent("Path Records", value: asset.pathFile.map { "\($0.records.count)" } ?? "none")
                     LabeledContent("Terrain", value: asset.terrainMainBlockByteCount.map { "\($0) bytes" } ?? "none")
+                    LabeledContent("Texture Assignments", value: asset.textureAssignments.map { "\($0.textureIndices.count) indices" } ?? "none")
+                    LabeledContent("Particle Effects", value: asset.particleFileExistsButUnparsed ? "present, undecoded" : "\(asset.particleEffects.count)")
+                    LabeledContent("Checkpoint Effects", value: asset.checkpointFileExistsButUnparsed ? "present, undecoded" : "\(asset.checkpointEffects.count)")
+                    LabeledContent("Interactive Objects", value: "\(asset.interactiveObjects.count) of \(asset.interactiveObjectDeclaredCount) declared")
                     LabeledContent("Sections", value: asset.sectionTags.joined(separator: ", "))
                 }
                 .formStyle(.grouped)
@@ -268,20 +283,26 @@ private struct WOCAnimationListView: View {
     }
 }
 
-/// From the sibling `.PAD` file: confirmed record count and outer
-/// framing, but record *semantics* are unresolved (see `WOCPadParser`) —
-/// shown as a raw count, not interpreted as an actual path graph.
+/// From the sibling `.PAD` file: real decoded per-record fields (see
+/// `WOCPadParser`'s doc comment) -- a confirmed continuously-sampled
+/// heading angle plus gated parameter bytes. What actually consumes this
+/// data (AI patrol, a vehicle rail, a camera path) is still unresolved,
+/// so this shows real decoded values, not an interpreted path graph.
 private struct WOCPathInfoView: View {
-    let recordCount: Int?
+    let pathFile: WOCPadParser.File?
 
     var body: some View {
-        if let recordCount {
+        if let pathFile {
             VStack(spacing: 12) {
-                Text("\(recordCount)")
-                    .font(.system(size: 48, weight: .bold, design: .rounded))
-                Text("path records")
-                    .foregroundStyle(.secondary)
-                Text("This level's .PAD file framing is decoded, but record semantics (likely an AI path-node graph) aren't reverse-engineered yet — this is a real, honest record count, not interpreted path data.")
+                Form {
+                    LabeledContent("Records", value: "\(pathFile.records.count)")
+                    LabeledContent("Magic", value: "\(pathFile.magic)")
+                    LabeledContent("Angle Range", value: angleRangeText)
+                    LabeledContent("Records Using Parameter Bytes", value: "\(activeParameterRecordCount)")
+                }
+                .formStyle(.grouped)
+                .frame(maxWidth: 420)
+                Text("This level's .PAD records decode to a confirmed continuously-sampled heading angle plus up to four gated parameter bytes (plausibly speed/curvature-type values) per record -- real, decoded fields, but what actually consumes this path data (AI patrol, a vehicle rail, a camera path) isn't confirmed.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
@@ -291,6 +312,16 @@ private struct WOCPathInfoView: View {
         } else {
             ContentUnavailableView("No Path Data", systemImage: "point.topleft.down.curvedto.point.bottomright.up", description: Text("This level has no sibling .PAD file."))
         }
+    }
+
+    private var angleRangeText: String {
+        guard let pathFile, !pathFile.records.isEmpty else { return "n/a" }
+        let angles = pathFile.records.map(\.angleDegrees)
+        return String(format: "%.0f°...%.0f°", angles.min() ?? 0, angles.max() ?? 0)
+    }
+
+    private var activeParameterRecordCount: Int {
+        pathFile?.records.filter { $0.parameterBytes.b9 != 0 || $0.parameterBytes.b10 != 0 || $0.parameterBytes.b11 != 0 || $0.parameterBytes.b13 != 0 }.count ?? 0
     }
 }
 
@@ -320,6 +351,107 @@ private struct WOCTerrainInfoView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ContentUnavailableView("No Terrain Data", systemImage: "mountain.2", description: Text("This level has no sibling .TER file."))
+        }
+    }
+}
+
+/// From the sibling `.PTL`/`.CPT` files: real particle effect / checkpoint
+/// effect definitions, but only the handful of fields with real
+/// cross-file evidence are shown (see `WOCParticleParser`'s doc comment
+/// for exactly what's confirmed vs. still undecoded in each 839-byte
+/// record).
+private struct WOCParticleEffectsView: View {
+    let particleEffects: [WOCParticleParser.ParticleRecord]
+    let particleFileExistsButUnparsed: Bool
+    let checkpointEffects: [WOCParticleParser.ParticleRecord]
+    let checkpointFileExistsButUnparsed: Bool
+
+    var body: some View {
+        if particleEffects.isEmpty && checkpointEffects.isEmpty && !particleFileExistsButUnparsed && !checkpointFileExistsButUnparsed {
+            ContentUnavailableView("No Effects", systemImage: "sparkles", description: Text("This level has no sibling .PTL or .CPT file, or they decoded to zero records."))
+        } else {
+            List {
+                if particleFileExistsButUnparsed {
+                    Section("Particle Effects (.PTL)") {
+                        Text("Present, but this file uses the complex variable-length record format that isn't decoded yet.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if !particleEffects.isEmpty {
+                    Section("Particle Effects (.PTL)") {
+                        ForEach(Array(particleEffects.enumerated()), id: \.offset) { _, record in
+                            WOCParticleRecordRow(record: record)
+                        }
+                    }
+                }
+                if checkpointFileExistsButUnparsed {
+                    Section("Checkpoint Effects (.CPT)") {
+                        Text("Present, but this file uses the complex variable-length record format that isn't decoded yet.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if !checkpointEffects.isEmpty {
+                    Section("Checkpoint Effects (.CPT)") {
+                        ForEach(Array(checkpointEffects.enumerated()), id: \.offset) { _, record in
+                            WOCParticleRecordRow(record: record)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct WOCParticleRecordRow: View {
+    let record: WOCParticleParser.ParticleRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(record.name)
+                .font(.body.monospaced())
+            Text(String(
+                format: "lifetime %.2fs · rotation %.0f°...%.0f° · size %.0f×%.0f",
+                record.lifetimeSeconds, record.minRotationDegrees, record.maxRotationDegrees,
+                record.maxSizeWidth, record.maxSizeHeight
+            ))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// From the sibling `.OBJ` file: real interactive object placements
+/// (levers, pistons, hammers, gates, ...). `objects.count` can be less
+/// than `declaredCount` on files with object types whose type-specific
+/// tail data isn't decoded yet — see `WOCObjectParser`'s doc comment.
+private struct WOCInteractiveObjectsView: View {
+    let objects: [WOCObjectParser.ObjectRecord]
+    let declaredCount: Int
+
+    var body: some View {
+        if objects.isEmpty {
+            ContentUnavailableView("No Interactive Objects", systemImage: "gearshape.2", description: Text("This level has no sibling .OBJ file, or it decoded to zero objects."))
+        } else {
+            VStack(spacing: 0) {
+                if objects.count < declaredCount {
+                    Text("Showing \(objects.count) of \(declaredCount) declared objects — the file appears truncated or corrupt past this point (see WOCObjectParser).")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                        .padding(8)
+                        .frame(maxWidth: .infinity)
+                    Divider()
+                }
+                List(Array(objects.enumerated()), id: \.offset) { _, object in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(object.name)
+                            .font(.body.monospaced())
+                        Text("\(object.placements.count) placement\(object.placements.count == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
     }
 }
