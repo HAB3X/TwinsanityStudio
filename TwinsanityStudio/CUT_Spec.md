@@ -435,9 +435,25 @@ elsewhere in this file and in `BLACK.CUT`/`CORRIDOR.CUT` (row-major, real
 rotation, translation row with `w==1.0`), reused here for what looks like
 rotation keyframes with zero translation delta.
 
+**Correction (implementation session)**: this table originally listed
+`0x140`–`0x16F` as a standalone 3-entry "sparse milestone table A" and
+`0x120`/`0x130` (in the root-level table above) as two separate
+"channel-quads" — and explicitly flagged the relationship between them as
+an open question in "Suggested next steps" below ("worth specifically
+re-checking whether ... the same ... primitive"). Direct byte
+verification during decoder implementation confirms they are **not**
+separate: `0x120`–`0x16F` (80 bytes) is one continuous 5-entry sparse
+milestone table — frames `0.0, 89.0, 90.0, 97.0, 110.0`, weights `1/89,
+1/1, 1/7, 1/13, 0` (terminal) — matching the reciprocal-delta formula with
+zero exceptions across all 4 non-terminal transitions. The former
+"channel-quad #1" (`0x120`) and "channel-quad #2" (`0x130`) are simply
+this table's first two entries. The row below is kept for the historical
+per-16-byte breakdown but the real record boundary is `0x120`, not
+`0x140`.
+
 | Offset | Len | Contents | Confidence |
 |---|---|---|---|
-| 0x140–0x16F | 48 | Sparse milestone table A, 3 entries: `(90.0, 1/7, 33.018215, 0.0)`, `(97.0, 1/13, 33.018215, 0.0)`, `(110.0, 0.0, 33.018215, 0.0)` — see "Sparse milestone tables" below | High (bytes), high (interpolation-weight formula, verified) |
+| 0x120–0x16F | 80 | Sparse milestone table A (corrected boundary — see above), 5 entries: `(0.0, 1/89, 34.8534, -0.02062)`, `(89.0, 1.0, 33.018, -0.02062)`, `(90.0, 1/7, 33.018215, 0.0)`, `(97.0, 1/13, 33.018215, 0.0)`, `(110.0, 0.0, 33.018215, 0.0)` — see "Sparse milestone tables" below | High (bytes), high (interpolation-weight formula, verified) |
 | 0x170–0x19F | 48 | "Record-C-like" block #1: mixed `u16` pairs/counts, 1 embedded pointer (→0x1A8, mid-table-B alias) at +0xC, then 3 more pointers at the block's tail (→0x1F0, →0x1E0, →0x1C0) + `u32=0` | High (bytes/pointer positions), low (non-pointer field purposes) |
 | 0x1A0–0x1BF | 32 | Sparse milestone table B, 2 entries: `(1.0, 1/109, -3.7377, -0.000132)`, `(110.0, 0.0, -3.752045, -0.000132)` | High (bytes), high (interpolation-weight formula, verified) |
 | 0x1C0–0x1EF | 48 | "Record-C-like" block #2: `u16` pairs/counts, then 3 pointers (→0x270, →0x260, →0x210) + trailing `f32=0.011236` (=1/89, the same reciprocal-weight convention as the milestone tables, not zero like block #1) | High (bytes/pointer positions), low (non-pointer field purposes) |
