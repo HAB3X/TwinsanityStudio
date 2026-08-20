@@ -116,6 +116,36 @@ final class WOCContainerParserTests: XCTestCase {
         }
     }
 
+    /// `MS00`'s one confirmed field: a real texture-ID reference at
+    /// relative offset 424, verified against real files with very
+    /// different texture counts -- every real record's value is a valid
+    /// index into that same file's own real texture list, and the set of
+    /// values used isn't constant (a real per-material reference, not a
+    /// coincidental always-in-bounds field).
+    func testRealMS00TextureIDField() throws {
+        let samples = ["A/AIRSHIP/AIRSHIP.GSC", "A/DROID/DROID.GSC", "A/FARM/FARM.GSC", "A/VOLCANO/VOLCANO.GSC"]
+        var checked = 0
+        for relativePath in samples {
+            let decoded = try loadAndDecompressRealGSC(relativePath)
+            let file = try WOCContainerParser.parse(decoded)
+            guard let ms00 = file.sections.first(where: { $0.tag == "MS00" }),
+                  let tst0 = file.sections.first(where: { $0.tag == "TST0" }) else { continue }
+            let textureCount = WOCContainerParser.scanTextureEntries(tst0.payload).count
+            let (records, _) = try WOCContainerParser.parseMeshSet(ms00.payload)
+
+            var tids = Set<Int32>()
+            for record in records {
+                let bytes = [UInt8](record)
+                let tid = Int32(bitPattern: UInt32(bytes[424]) | (UInt32(bytes[425]) << 8) | (UInt32(bytes[426]) << 16) | (UInt32(bytes[427]) << 24))
+                XCTAssertTrue(tid >= 0 && Int(tid) < textureCount, "\(relativePath): tid \(tid) out of bounds for \(textureCount) real textures")
+                tids.insert(tid)
+            }
+            XCTAssertGreaterThan(tids.count, 1, "\(relativePath): expected real per-material texture references, not a constant value")
+            checked += 1
+        }
+        XCTAssertGreaterThan(checked, 0, "expected at least one real sample file to be checked")
+    }
+
     func testRealINSTInstancesHavePlausibleTransforms() throws {
         let samples: [(path: String, expectedCount: Int)] = [
             ("A/AIRSHIP/AIRSHIP.GSC", 41),

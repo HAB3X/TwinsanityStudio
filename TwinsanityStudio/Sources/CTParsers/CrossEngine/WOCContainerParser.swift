@@ -345,15 +345,47 @@ public enum WOCContainerParser {
     /// sizes (57/69/89/154 records) that `(payload.count - 8)` divides
     /// `count` **exactly**, and always to the same width: 464 bytes.
     ///
-    /// The internal layout of a single 464-byte record is not decoded --
-    /// most records are almost entirely zero-filled, with the first ~288
-    /// bytes consistently zero and a small non-zero region starting
-    /// around byte 288, containing what look like plausible transform-ish
-    /// float values (e.g. a `(0.5, 0.5, 0.5)` triplet and a couple of
-    /// exact `1.0`s were seen at consistent offsets within one sample
-    /// record) -- but this is an observation from a single record, not a
-    /// cross-record-verified field layout, so records are returned as raw
-    /// bytes rather than a guessed struct.
+    /// The internal layout of a single 464-byte record is mostly not
+    /// decoded -- most of it is zero-filled, with the first ~288 bytes
+    /// consistently zero -- **except one confirmed field**: a real
+    /// texture-ID reference at **relative offset 424** (`UInt32LE`).
+    /// Confirmed across 4 real files of very different sizes and texture
+    /// counts (`AIRSHIP.GSC`/`DROID.GSC`/`FARM.GSC`/`VOLCANO.GSC`): it's
+    /// the *only* 4-byte-aligned offset in the whole record where every
+    /// real record's value is both a valid index into that same file's
+    /// own real texture list (``scanTextureEntries(_:)``) and non-constant
+    /// across records, zero exceptions.
+    ///
+    /// This lines up with real decompiled source: `numtl.c`'s `NuMtlRead`
+    /// (`OpenCrashWOC-main/code/src/nu3dx/numtl.c:180`) reads a
+    /// `numtl_s` struct directly (`NuFileRead(fh, mtl, 0x54)`, 84 bytes),
+    /// whose own real field order (`nu3dxtypes.h:399`) has `tid` at
+    /// internal offset 56 -- so if `MS00`'s `tid` really is this same
+    /// `numtl_s.tid`, `numtl_s` itself would start at `424 - 56 = 368`
+    /// within the 464-byte record (leaving 368 bytes before it, 12
+    /// after). This is corroborated, not just arithmetic: on
+    /// `VOLCANO.GSC` specifically, offset 368 *also* independently
+    /// satisfies the same "valid texture index, non-constant" test
+    /// (a coincidence too specific to dismiss, though not proof).
+    ///
+    /// **Tried and came up empty**: whether `numtl_s.attrib`'s `ot` bit
+    /// (`geo->mtl->attrib.ot` in `ReadObjSet`'s source -- the flag this
+    /// codebase's own `parseObjSetGeoArcs(_:)` doc comment names as the
+    /// leading explanation for why some geos produce no arcs) lives at
+    /// the implied record offset 372 (`368 + 4`, `numtl_s.attrib`'s own
+    /// internal offset). Directly tested by correlating every bit of
+    /// that word against real arc-decode success/failure on
+    /// `CASTLE_C.GSC`/`HUB.GSC`: the field is constant zero across all 89
+    /// real materials in `CASTLE_C.GSC`, and only 2 distinct values (one
+    /// shared by nearly all 154 materials) in `HUB.GSC` -- nowhere near
+    /// enough real variation to test the hypothesis one way or the other
+    /// on these two files. Also worth noting: `nu3dxtypes.h`'s own
+    /// `numtlattrib_s` bitfield layout (the source this offset-372
+    /// arithmetic is based on) doesn't actually list a field named `ot`
+    /// among its 14 named bits -- a real, unresolved naming mismatch
+    /// between that struct and `ReadObjSet`'s source, not just a blocked
+    /// experiment. Records are still returned as raw bytes rather than a
+    /// guessed struct.
     public static func parseMeshSet(_ payload: Data) throws -> (records: [Data], recordWidth: Int) {
         let bytes = [UInt8](payload)
         guard bytes.count >= 8 else { throw ParseError.truncated }
