@@ -47,8 +47,9 @@ opcode/command-ID structure was found anywhere — ruled out as an
 AgentLab-style format).
 
 Small files (under a few KB) are pure scene-graph data. The largest files
-(hundreds of KB to 1.5MB) almost certainly carry embedded video/audio
-payloads — not investigated.
+(hundreds of KB to 1.5MB) were previously guessed to "almost certainly
+carry embedded video/audio payloads" -- **that guess is now corrected by
+real evidence, see "Large files (100KB+): not video/audio" below.**
 
 ## Confirmed: the pointer scheme
 
@@ -810,10 +811,61 @@ tables actually drives, and the handful of already-known-but-unexplained
 fields in `BLACK.CUT`/`CORRIDOR.CUT`'s own tables (e.g. `BLACK.CUT`
 0x148–0x14F, `CORRIDOR.CUT`'s `0x01010101`/`257` field in Record C) — all of
 these should decode as typed-but-opaque/raw fields, not as claimed
-semantics. The largest files on disc (hundreds of KB–1.5MB, presumably
-carrying embedded video/audio payloads) remain completely uninvestigated;
-nothing in this document should be assumed to generalize to those without
-checking.
+semantics. The largest files on disc (hundreds of KB–1.5MB) are no longer
+completely uninvestigated -- see "Large files (100KB+): not video/audio"
+below for a real, evidence-based characterization (not a full decode);
+nothing else in this document should be assumed to generalize to those
+without checking.
+
+## Large files (100KB+): not video/audio
+
+This document previously guessed the largest `.CUT` files "almost
+certainly carry embedded video/audio payloads." Direct investigation of
+`SUNNY.CUT` (118,225 bytes -- the smallest file in this size class)
+refutes that guess with real evidence, though it does **not** achieve a
+full decode.
+
+`WOCCutsceneParser` recognizes only 1.2% of `SUNNY.CUT` (1,377 of 118,225
+bytes) under the shapes confirmed from `BLACK.CUT`/`CORRIDOR.CUT`/
+`STATION.CUT` -- its opening ~0x2E0 (740) bytes follow a recognizable
+pattern (multiple transforms and channel-quads in sequence, several
+Record C/D pairs, a chain header, several sparse milestone tables), but a
+different arrangement than any of the three fully-mapped files, and it
+falls into large unrecognized regions well before reaching 1% of the way
+through the file. The four largest unrecognized regions checked (18,432
+to 42,480 bytes each) are **not** consistent with compressed or encoded
+video/audio:
+
+- **Shannon entropy 5.5-5.9 bits/byte** across all four regions checked
+  (would be close to 8.0 -- indistinguishable from random -- for
+  genuinely compressed or encrypted data).
+- **Byte `0x00` dominates every region** (26-31% of all bytes) -- real
+  compressed/encoded streams don't have one byte value that dominant.
+- **The next-most-common bytes are exactly what real `Float32` data
+  produces**: `0x3F`/`0x40`/`0x42`/`0x43`/`0xBF` (consistent with IEEE754
+  high bytes for values in the roughly 0.5-256 magnitude range, both
+  signs) recur far more often than chance would predict from a uniform
+  byte distribution.
+- **A real periodic structure was found by hand** in the first checked
+  region (offset `0x30B1`): a repeating ~16-byte-aligned pattern where
+  sub-offset+2 is consistently `0x43` (matching a real `Float32` high
+  byte, not noise), followed shortly after by a clean ascending `UInt16`
+  sequence (`1, 1, 1, 4, 5, 8, 13, 14, 16, 20, 25, 26, 31, ...`) --
+  plausibly frame/keyframe indices, structurally similar in spirit to
+  (but not byte-identical to, and not yet matched against) the already-
+  confirmed dense/sparse frame-channel array shapes.
+
+**Conclusion**: the large files are real, uncompressed, float-heavy
+*scene/animation* data -- almost certainly more nodes, transforms, and
+channel data of the same kind already confirmed in `STATION.CUT`, just
+either using shape variants this decoder's strict validators don't
+recognize (e.g. a dense array with different entry/closer constants, or
+a milestone table this decoder's node-cap or formula tolerance rejects)
+or genuinely new record types not yet characterized -- not embedded
+video/audio. This corrects the earlier guess with real evidence but does
+not itself decode any new structure; a future session should follow up
+directly on the periodic pattern and ascending-index sequence found here
+before assuming a video/audio codec is involved at all.
 
 ## Suggested next steps for a future session
 
