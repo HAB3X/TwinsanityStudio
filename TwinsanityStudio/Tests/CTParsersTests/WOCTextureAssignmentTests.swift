@@ -65,6 +65,68 @@ final class WOCTextureAssignmentTests: XCTestCase {
         }
     }
 
+    /// `frameStartIndex`/`frameCount` golden-value regression:
+    /// `STATION.GSC`'s 9 real entries, hand-verified against the real
+    /// bytes -- including the two repeated-group cases (entries 3/4 and
+    /// 7/8 claim identical runs) that are the strongest evidence for the
+    /// "these are animation frame sequences" reading.
+    func testRealStationGSCFrameGroupingGoldenValues() throws {
+        let decoded = try loadAndDecompressRealGSC("B/OUTRO/STATION.GSC")
+        let file = try WOCContainerParser.parse(decoded)
+        let tas0 = try XCTUnwrap(file.sections.first { $0.tag == "TAS0" })
+        let set = try WOCContainerParser.parseTextureAssignments(tas0.payload)
+
+        XCTAssertEqual(set.entries.count, 9)
+        XCTAssertEqual(set.textureIndices, [
+            44, 45, 46, 47, 49, 50, 51, 52, 53, 54, 51, 52, 53, 54, 55, 56, 57, 58,
+            101, 102, 103, 104, 105, 101, 102, 103, 104, 105,
+        ])
+
+        let expectedGroups: [[UInt16]] = [
+            [44, 45], [46, 47], [49, 50], [51, 52, 53, 54], [51, 52, 53, 54],
+            [55, 56], [57, 58], [101, 102, 103, 104, 105], [101, 102, 103, 104, 105],
+        ]
+        for (i, entry) in set.entries.enumerated() {
+            XCTAssertEqual(Array(set.frames(for: entry)), expectedGroups[i], "entry \(i)")
+        }
+        // Entries 3/4 and 7/8 claim the exact same run -- two different
+        // objects sharing one animated texture, real supporting evidence
+        // for the frame-sequence reading rather than a coincidence.
+        XCTAssertEqual(Array(set.frames(for: set.entries[3])), Array(set.frames(for: set.entries[4])))
+        XCTAssertEqual(Array(set.frames(for: set.entries[7])), Array(set.frames(for: set.entries[8])))
+    }
+
+    /// Full-corpus regression: `frameStartIndex` starts at 0, is a real
+    /// cumulative running sum of prior `frameCount`s (not just
+    /// coincidentally monotonic), and every entry's frames sum to exactly
+    /// `textureIndices.count` with no leftover -- confirmed on all 7
+    /// locally-mounted real files that have `TAS0`, zero exceptions.
+    func testFrameGroupingAccountsForEveryIndexAcrossRealFiles() throws {
+        let samples = [
+            "A/DROID/DROID.GSC", "C/SNOW_B/SNOW_B.GSC", "C/SPACE_B/SPACE_B.GSC",
+            "C/WEATH_B/WEATH_B.GSC", "A/VOLCANO/VOLCANO.GSC", "B/OUTRO/ICEBERG.GSC",
+            "B/OUTRO/STATION.GSC",
+        ]
+        var checked = 0
+        for relativePath in samples {
+            let decoded = try loadAndDecompressRealGSC(relativePath)
+            let file = try WOCContainerParser.parse(decoded)
+            guard let tas0 = file.sections.first(where: { $0.tag == "TAS0" }) else { continue }
+            let set = try WOCContainerParser.parseTextureAssignments(tas0.payload)
+
+            var running: UInt32 = 0
+            for entry in set.entries {
+                XCTAssertEqual(entry.frameStartIndex, running, "\(relativePath): frameStartIndex should equal the running sum of prior frameCounts")
+                running += UInt32(entry.frameCount)
+            }
+            XCTAssertEqual(Int(running), set.textureIndices.count, "\(relativePath): frame counts should sum to exactly textureIndices.count")
+            checked += 1
+        }
+        guard checked > 0 else {
+            throw XCTSkip("Real WoC disc image not mounted -- see WOCContainerParserTests for how to mount it")
+        }
+    }
+
     /// Every real 32-byte entry record must be captured intact (raw bytes
     /// round-trip) and the section must account for every byte -- no
     /// gap and no overrun -- confirming the `count*32 + 4 + listCount*2 +

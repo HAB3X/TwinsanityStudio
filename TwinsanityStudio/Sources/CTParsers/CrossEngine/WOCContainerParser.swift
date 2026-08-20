@@ -178,9 +178,11 @@ import Foundation
 ///   (zero exceptions) across all 12 files. This is the first confirmed
 ///   texture/mesh-binding data found in the format: a trailing `UInt16`
 ///   list whose every value is a valid index into that same file's own
-///   decoded texture list (``scanTextureEntries(_:)``) -- but the
-///   per-entry-to-texture-index mapping isn't nailed down (see that
-///   function's own doc comment for exactly what is and isn't confirmed).
+///   decoded texture list (``scanTextureEntries(_:)``), and the
+///   per-entry-to-texture-index mapping is now confirmed exactly (each
+///   entry's own `frameStartIndex`/`frameCount` fields slice out its real
+///   sub-run -- see ``TextureAssignmentEntry`` and ``frames(for:)``,
+///   zero exceptions across all 7 locally-checked real files).
 ///   **Naming correction, and a real open question it raises**: the real
 ///   handler (referenced, not defined, in the decompiled source -- its
 ///   dispatch-table comment is even mislabeled `// MS00`, a copy-paste
@@ -193,9 +195,11 @@ import Foundation
 ///   static binding, which would also explain why `STATION.GSC`'s entries
 ///   were observed to have unequal index-list group sizes (a natural
 ///   consequence of different animations having different frame counts,
-///   not an anomaly). Not yet re-verified against real bytes with this
-///   hypothesis in mind -- worth a dedicated pass once disc access
-///   resumes, before trusting the current `TextureAssignmentEntry` naming.
+///   not an anomaly). **Update, re-verified against real bytes**: this
+///   frame-sequence reading is now well-supported, not just plausible --
+///   see ``TextureAssignmentEntry/frameStartIndex``'s doc comment for the
+///   exact per-entry grouping evidence (contiguous ascending runs, shared
+///   identical runs between entries) found once disc access resumed.
 ///
 /// Every section not listed above as decoded is exposed as raw
 /// ``WOCSection/payload`` bytes rather than guessed at.
@@ -366,19 +370,59 @@ public enum WOCContainerParser {
     /// -- see ``parseTextureAssignments(_:)``'s doc comment for the
     /// overall section layout this belongs to.
     ///
-    /// Only `referencedIndex` (at relative offset 16) is decoded: it's
-    /// strictly increasing across a `TAS0` section's own entry list in
-    /// every real file checked -- the same curated-ascending-pointer shape
-    /// already confirmed for `SPEC.referencedInstanceIndex`, but whether
-    /// it targets `OBJ0` or `INST` is NOT disambiguated (every file
-    /// checked has enough entries in both that bounds-checking alone
-    /// can't tell them apart). The rest of the entry (including a
-    /// recurring duplicated-value field that looks like the same
-    /// leftover-heap-pointer pattern already documented on
-    /// `Instance.unknownTail1`/`SpecRecord.unknownTail3`) is exposed raw
-    /// rather than guessed at.
+    /// `referencedIndex` (relative offset 16) is strictly increasing
+    /// across a `TAS0` section's own entry list in every real file
+    /// checked -- the same curated-ascending-pointer shape already
+    /// confirmed for `SPEC.referencedInstanceIndex`, but whether it
+    /// targets `OBJ0` or `INST` is NOT disambiguated (every file checked
+    /// has enough entries in both that bounds-checking alone can't tell
+    /// them apart).
+    ///
+    /// `frameStartIndex`/`frameCount` (relative offsets 8 and 12) are
+    /// **CONFIRMED, exact, zero exceptions**: together they slice this
+    /// entry's own sub-run out of the section's shared `textureIndices`
+    /// list. Verified against all 7 locally-mounted real files that have
+    /// `TAS0` (`DROID.GSC`, `SNOW_B.GSC`, `SPACE_B.GSC`, `WEATH_B.GSC`,
+    /// `VOLCANO.GSC`, `ICEBERG.GSC`, `STATION.GSC`) three independent
+    /// ways at once: `frameStartIndex` starts at `0` for the first entry
+    /// and is monotonically non-decreasing thereafter; every entry's
+    /// `frameStartIndex` exactly equals the running sum of every prior
+    /// entry's `frameCount` (i.e. it's a real cumulative offset, not a
+    /// coincidentally-matching value); and the sum of every entry's
+    /// `frameCount` exactly equals `TextureAssignmentSet.textureIndices
+    /// .count`, leaving no leftover indices unclaimed by any entry. This
+    /// directly resolves what an earlier investigation had left as "not
+    /// confirmed" -- see ``frames`` for the sliced-out sub-list itself.
+    /// **Important**: `frameCount` is a `UInt16`, not a `UInt32` --
+    /// treating offsets 12-15 as one `UInt32` field (as an earlier,
+    /// narrower investigation assumed before this correction) works for
+    /// most entries by coincidence (the following 2 bytes are usually
+    /// zero) but produces real garbage on `STATION.GSC` entry 6, whose
+    /// bytes 14-15 are `73 47` rather than `00 00` -- those 2 bytes are a
+    /// distinct, still-undecoded field, not padding, and are preserved in
+    /// `raw` rather than silently merged into a wider count.
+    ///
+    /// Contiguous, ascending runs are exactly what a flipbook-style
+    /// texture *animation* (this section's real name, per the decompiled
+    /// reference source: "Texture Animation Set") would produce -- e.g.
+    /// `STATION.GSC` entries 3 and 4 both claim the identical run
+    /// `[51, 52, 53, 54]`, entries 7 and 8 both claim `[101...105]`,
+    /// consistent with two different objects sharing one animated
+    /// texture. This is real supporting evidence for the "these are
+    /// animation frames" reading, not proof -- the per-frame *timing*
+    /// (frame duration, loop behavior) is not stored anywhere in this
+    /// section and remains unconfirmed.
+    ///
+    /// The rest of the entry (including a recurring duplicated-value
+    /// field that looks like the same leftover-heap-pointer pattern
+    /// already documented on `Instance.unknownTail1`/
+    /// `SpecRecord.unknownTail3`, and two more monotonically-increasing
+    /// `UInt32` fields at relative offsets 24 and 28 whose purpose isn't
+    /// understood yet) is exposed raw rather than guessed at.
     public struct TextureAssignmentEntry {
         public let referencedIndex: UInt32
+        public let frameStartIndex: UInt32
+        public let frameCount: UInt16
         public let raw: Data
     }
 
@@ -418,23 +462,34 @@ public enum WOCContainerParser {
     /// show a clean, unambiguous `0..<32` run; `VOLCANO.GSC` shows
     /// `16..<48`.
     ///
-    /// **Not confirmed, stated honestly rather than guessed**: which
-    /// texture indices belong to which entry. `listCount` is NOT split
-    /// evenly by `count` in every file -- 5 of 7 multi-entry files show a
-    /// clean constant `listCount / count` ratio (each entry apparently
-    /// claiming an equal-size sub-range), but `STATION.GSC` (9 entries,
-    /// 28 indices in unequal groups of 4/6/8/5/5) breaks that formula, so
-    /// no per-entry sub-range is exposed here -- callers get the flat,
-    /// real index list and the flat, real entry list, not a guessed
-    /// mapping between them. `TAS0.count` also never matches `OBJ0`'s or
-    /// `INST`'s own leading count in any file (single digits vs hundreds)
-    /// -- this is a small curated subset, not a full per-object table,
-    /// consistent with `SPEC`'s own already-documented curated-subset
-    /// shape.
+    /// **Which texture indices belong to which entry -- now resolved**
+    /// (an earlier investigation had left this "not confirmed", finding
+    /// `STATION.GSC`'s 28 indices only split into unequal groups
+    /// `4/6/8/5/5` under a wrong equal-sub-range assumption): see
+    /// ``TextureAssignmentEntry/frameStartIndex``/``frameCount`` and
+    /// ``frames(for:)`` -- each entry's real sub-run is an exact,
+    /// directly-decoded slice, not inferred by dividing `listCount` by
+    /// `count`. `TAS0.count` never matches `OBJ0`'s or `INST`'s own
+    /// leading count in any file (single digits vs hundreds) -- this is a
+    /// small curated subset, not a full per-object table, consistent with
+    /// `SPEC`'s own already-documented curated-subset shape.
     public struct TextureAssignmentSet {
         public let entries: [TextureAssignmentEntry]
         public let textureIndices: [UInt16]
         public let trailer: Data
+
+        /// The real, decoded sub-run of ``textureIndices`` this entry
+        /// claims -- see ``TextureAssignmentEntry/frameStartIndex``'s doc
+        /// comment for how this was confirmed. Returns an empty slice
+        /// (rather than trapping) if `entry` didn't come from this same
+        /// `TextureAssignmentSet`, since there's no way to validate that
+        /// from the entry alone.
+        public func frames(for entry: TextureAssignmentEntry) -> ArraySlice<UInt16> {
+            let start = Int(entry.frameStartIndex)
+            let end = start + Int(entry.frameCount)
+            guard start >= 0, end <= textureIndices.count else { return [] }
+            return textureIndices[start..<end]
+        }
     }
 
     public static func parseTextureAssignments(_ payload: Data) throws -> TextureAssignmentSet {
@@ -450,6 +505,8 @@ public enum WOCContainerParser {
             let base = offset + i * 32
             entries.append(TextureAssignmentEntry(
                 referencedIndex: leUInt32(bytes, base + 16),
+                frameStartIndex: leUInt32(bytes, base + 8),
+                frameCount: UInt16(bytes[base + 12]) | (UInt16(bytes[base + 13]) << 8),
                 raw: Data(bytes[base..<(base + 32)])
             ))
         }
