@@ -120,14 +120,28 @@ import Foundation
 ///   into implausible values; every file tried breaks after one spline.
 ///   The leading `firstField`/blob-length header also doesn't look like
 ///   `.VIS`'s (no clean per-spline count sequence at the blob's own
-///   start). The most likely explanation, not yet confirmed: `.VIS`
-///   splines are anonymous/positional (names live in a separate trailing
-///   string table), while `nugspline_s`'s own struct has a real `char*
-///   name` field -- `SST0` may embed each spline's name *inline*,
-///   between one spline's points and the next spline's count, which
-///   would explain exactly this failure pattern. Blob internals remain
-///   unresolved; a real next step is testing that inline-name hypothesis
-///   directly rather than assuming the two sections share one format.
+///   start).
+///
+///   **Two follow-up hypotheses tested directly, both refuted**: (1) an
+///   inline per-spline name between one spline's points and the next
+///   spline's length -- checked the real bytes immediately after the
+///   first spline's predicted point-list end, and they read as more
+///   plausible floats, not a null-terminated string of any length; (2) a
+///   fixed 12-byte header table (`len:Int16, ptsize:Int16,
+///   nameOffset:Int32, ptsOffset:Int32`, matching `nugspline_s`'s own
+///   real field order) with `splineCount` real records right after the
+///   blob's leading count -- record 0 alone looks plausible (`len=393`,
+///   consistent with the standalone-length reading), but every
+///   subsequent record decodes to clear garbage (implausible negative
+///   lengths, offsets in the billions, `ptsize` values like `-15526`) on
+///   every one of 5 real files tried. Also notable: `CASTLE_C.GSC`'s
+///   blob reads a `splineCount` of 138 under this scheme -- implausibly
+///   large for what should be a per-level spline count, a further sign
+///   this isn't the right framing. `SST0` is genuinely harder than
+///   `.VIS` was, not just unexplored -- its real structure is still
+///   completely open; further attempts should look for a different
+///   organizing idea entirely (not a variation on `.VIS`'s shape) before
+///   trying more offset arithmetic.
 /// - `ALIB` -- see ``parseAttributeLibrary(_:)``. NOT a fixed-width table
 ///   (confirmed dead end from an earlier pass); the real structure is a
 ///   `count`-entry offset table (relative to just past the table itself,
