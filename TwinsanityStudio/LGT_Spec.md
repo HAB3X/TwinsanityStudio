@@ -1,9 +1,13 @@
 # WoC `.LGT` (Lighting) Format — Investigation Notes
 
-Status: **investigated, not implemented**. The outer file/record framing
-is solid and decoder-ready, but real per-record data comes in at least
-two different internal shapes that aren't yet reliably distinguishable —
-see "Why this isn't a parser yet" before reaching for this.
+Status: **partially implemented** (`WOCLightParser.swift`) — every real
+"normal"-shape light record decodes with real, independently-validated
+fields (radius, byte + float color, position) on the 8 real files whose
+size formula confirms `K == 0` (no extended records mixed in). Every
+record — normal shape or not, `K == 0` or not — is either a verified,
+validated decode or an honest raw fallback, never a silent guess. See
+"Why a full parser doesn't exist yet" for what's still missing (`K > 0`
+files' record boundaries).
 
 ## What `.LGT` is
 
@@ -57,10 +61,19 @@ problem below):
   `UInt32` fields (one usually ~4-5, one variable: 1/5/6/7 observed) plus
   more floats — not decoded.
 
-## Why this isn't a parser yet
+## Why a full parser doesn't exist yet
 
 **A second, structurally different record shape exists, and it isn't
-reliably detectable.** Directly re-verified on `AIRSHIP.LGT` (the
+reliably detectable up front.** `WOCLightParser.swift` handles this
+honestly rather than working around it: every record is decoded under
+the "normal" shape AND independently validated (`radius >= 0`,
+`colorFloat` matching `colorByte/255`) before being trusted -- a record
+that fails validation comes back `nil` with its raw 55 bytes preserved,
+never a guessed decode. This is why a *partial* parser is safe to ship
+even without solving the variant: it never claims certainty it doesn't
+have.
+
+Directly re-verified on `AIRSHIP.LGT` (the
 smallest, `K=0` "simple" file): its light 0 fits the normal shape exactly
 (radius `2.31`, `colorByte=[255,191,127]` matches
 `colorFloat=(1.0,0.749,0.498)` almost exactly) — but light 1 in the SAME
@@ -85,7 +98,20 @@ producing plausible-looking-but-wrong radius/color/position data. That's
 a worse failure mode than leaving the format undecoded, and is exactly
 the kind of mistake this codebase's other decoders (see `WOCParticleParser`,
 `WOCObjectParser`'s doc comments) are careful to avoid by only decoding
-what's confirmed and stopping honestly at what isn't.
+what's confirmed and stopping honestly at what isn't -- `WOCLightParser`'s
+per-record validation (above) is this format's own version of that same
+discipline: it makes the "detect the variant first" problem moot by
+never trusting a decode that doesn't independently check out.
+
+**A real, useful, but small-sample positional finding**: on both real
+`K=0` files that have a variant record at all (`AIRSHIP.LGT`,
+`WESTERN.LGT`), it's always the file's *last* record -- 2 of 2, checked
+across all 8 real `K=0` files (the only ones where record boundaries
+are unambiguous). Not proven as a rule (too small a sample, and 6 of the
+8 `K=0` files have no variant record at all, so it's not universal
+either), and `WOCLightParser` doesn't rely on it structurally -- every
+record is still validated independently -- but worth knowing when
+interpreting a `nil` entry.
 
 ## Update: real decompiled source found (`OpenCrashWOC-main`), partial confirmation
 
@@ -186,18 +212,32 @@ broken -- a real, small, honest sample, not enough to generalize a
 single unifying rule from. Either there are multiple distinct
 non-normal shapes, or the real unifying pattern hasn't been found yet.
 
+## Update: WOCLightParser implemented; header-correlation tested and inconclusive
+
+`WOCLightParser.swift` is now real, shipped code -- see "Why a full
+parser doesn't exist yet" above for exactly what it does and doesn't
+cover (all `K=0` files fully, per-record-validated; `K>0` files get raw
+bytes only). Also directly tested whether a header field predicts
+*which file* has a broken record at all (not just where within it): the
+4th header int is `1` on `AIRSHIP.LGT` (has a broken record) and `0` on
+5 of the 6 real `K=0` files with no broken record -- but `WESTERN.LGT`
+also has header value `0` for that same field and still has a broken
+record, breaking the correlation. Real, but not clean enough to build
+on.
+
 ## Suggested next steps for a future session
 
-- Test field-interpretation-only variants (same 55 bytes, different
-  meaning) against the header counts directly, now that the naive
-  width-bucketing idea is ruled out -- e.g. does `AMBIENTCOUNT`-style
-  bucketing predict WESTERN.LGT's broken record 2 (of 3), the same way
-  it might predict AIRSHIP's broken record 1 (of 2)?
-- Gather more real broken-record samples from `K>0` files -- this
-  requires first correctly identifying which of a file's records are the
-  67-byte extended ones (not yet solved either, per this doc's own
-  earlier "K doesn't always match the header's own tracking field"
-  finding), so the two problems may need solving together.
+- **The real remaining blocker is `K>0` files, not the variant shape
+  itself** -- `WOCLightParser` already handles the variant safely via
+  validation; what it can't do is locate record boundaries at all once
+  extended (67-byte) records are mixed into a `K>0` file's otherwise
+  55-byte stream, since which records are extended isn't known. Solving
+  that would let every real `.LGT` file (not just the 8 `K=0` ones) get
+  a real per-record decode.
+- Gather more real broken-record samples from those `K>0` files once the
+  above is solved -- this doc's earlier "`K` doesn't always match the
+  header's own tracking field" finding means the two problems likely
+  need solving together, not sequentially.
 - If neither pans out, the PS2-native (not NGC-port) disassembly, if
   `OpenCrashWOC-main`'s `PS2_Version/` directory has anything equivalent
   to `lights.c`, would be worth checking specifically.
