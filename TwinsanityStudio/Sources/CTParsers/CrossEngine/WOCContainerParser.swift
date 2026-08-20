@@ -160,8 +160,12 @@ import Foundation
 ///   byte consumption** -- `numSplines` records summing to `8 +
 ///   len*12` each land on `blob.count` precisely, zero exceptions. See
 ///   `WOCSplineSetParser.swift` and `SST0_Spec.md` for the implementation
-///   and full writeup. Still open: what `nameOffset` resolves against
-///   (a name table populated elsewhere in the file, not verified here).
+///   and full writeup. **`nameOffset` resolution also confirmed**: it's
+///   a byte offset into the same file's `NTBL` section's string blob
+///   (payload past the leading length field) -- 657 of 657 real splines
+///   across the corpus resolve to real, meaningful names (`"start_finish"`,
+///   `"weecam_left_00"`, etc.). See `WOCSplineSetParser.resolveName(_:
+///   ntblPayload:)`.
 /// - `ALIB` -- see ``parseAttributeLibrary(_:)``. NOT a fixed-width table
 ///   (confirmed dead end from an earlier pass); the real structure is a
 ///   `count`-entry offset table (relative to just past the table itself,

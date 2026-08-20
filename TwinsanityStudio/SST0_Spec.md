@@ -80,11 +80,28 @@ shape (found afterward, from real decompiled source rather than further
 guessing at variations on `.VIS`'s already-solved shape) is the one
 documented above.
 
+## Update: `nameOffset` resolved -- it's `NTBL`'s string blob
+
+Confirmed against the same file's `NTBL` section: `nameOffset` is a byte
+offset into `NTBL`'s **string blob**, i.e. `NTBL`'s payload starting at
+byte 4 (past the already-confirmed leading `stringBlobLength` field) --
+**not** an offset into the whole `NTBL` payload from byte 0. Verified
+programmatically across every real file with both an `SST0` and an
+`NTBL` section: **657 of 657 real splines (41 files) resolve to a real,
+meaningful, printable name** -- `"start_finish"`, `"weecam_left_00"`,
+`"vehicle_trigger_00_in"`, `"chase_00_trigger"`, etc. (real camera-path/
+trigger/vehicle-path names, exactly what a scripted-sequence spline
+should be named -- corroborating this doc's own "What `.CUT` is"-style
+naming evidence from elsewhere in this investigation). Reading from
+`nameOffset` within the whole `NTBL` payload instead (not skipping the
+4-byte prefix) fails on 2 of 657 and produces garbled substrings on the
+rest (e.g. `"start_finish"` misread as `"ock"`) -- the clean off-by-4
+confirms the string-blob framing unambiguously. See
+`WOCSplineSetParser.resolveName(_:ntblPayload:)`.
+
 ## Still open
 
-- What `nameOffset` resolves against -- which name table, and whether
-  it's the same `NTBL` section this codebase already decodes elsewhere in
-  `.GSC` files.
-- Semantic meaning of each spline's point data beyond "a spline" (e.g.
-  which gameplay/camera/AI system consumes these -- `.VIS`'s own solved
-  camera-path data is a structurally unrelated section).
+- Semantic meaning of each spline's point data beyond "a named spline"
+  -- which gameplay/camera/AI system consumes these paths at runtime
+  (`.VIS`'s own solved camera-path data is a structurally unrelated
+  section, so this isn't just a re-application of that).

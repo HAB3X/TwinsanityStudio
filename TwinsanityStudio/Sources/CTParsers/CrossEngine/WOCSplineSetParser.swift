@@ -39,10 +39,25 @@ import simd
 /// sampled: every real `SST0` blob's `numSplines` back-to-back records
 /// consume the blob to the exact byte, zero leftover, zero overrun.
 ///
-/// **Not yet confirmed**: what `nameOffset` resolves against (the real
-/// source reads `gsc->nametable + nameOffset`, implying a shared name
-/// table populated elsewhere in the same file -- not verified here,
-/// exposed as a raw offset rather than a resolved name).
+/// **`nameOffset` resolution: confirmed.** The real source reads
+/// `gsc->nametable + nameOffset` -- `nametable` is a shared field
+/// populated elsewhere in the file, and direct verification shows it's
+/// exactly this same container format's already-confirmed `NTBL`
+/// section (`WOCContainerParser.parseNameTable(_:)`'s string blob,
+/// i.e. `NTBL`'s payload starting at byte 4, past the confirmed leading
+/// `stringBlobLength` field -- **not** `NTBL`'s payload from byte 0).
+/// Verified programmatically across every real file with both an `SST0`
+/// and an `NTBL` section: **657 of 657 real splines (41 files) resolve
+/// to a real, meaningful, printable name** when read from
+/// `nameOffset` within `NTBL`'s string blob -- `"start_finish"`,
+/// `"weecam_left_00"`, `"vehicle_trigger_00_in"`, etc. (real camera-path/
+/// trigger/vehicle-path names, exactly what a scripted-sequence spline
+/// should be named). Reading from `nameOffset` within the whole `NTBL`
+/// *payload* instead (i.e. not skipping the 4-byte length prefix) fails
+/// on 2 of 657 and produces garbled substrings on the rest (e.g.
+/// `"start_finish"` misread as `"ock"`) -- the off-by-4 confirms the
+/// string-blob framing, not the whole-payload one. See
+/// `resolveName(_:ntblPayload:)`.
 public enum WOCSplineSetParser {
     public enum ParseError: Error, Equatable {
         case truncated
@@ -52,8 +67,9 @@ public enum WOCSplineSetParser {
     /// One real spline -- `points.count == len` from the confirmed
     /// on-disk record.
     public struct Spline {
-        /// Relative byte offset into the file's own name table (not
-        /// resolved here -- see this type's own doc comment).
+        /// Byte offset into the file's own `NTBL` section's string blob
+        /// -- see this type's own doc comment for the confirmed
+        /// resolution, and `resolveName(_:ntblPayload:)` to resolve it.
         public let nameOffset: Int
         public let points: [SIMD3<Float>]
     }
@@ -98,6 +114,27 @@ public enum WOCSplineSetParser {
             cursor += len * 12
         }
         return File(numSplines: numSplines, splines: splines, trailer: trailer)
+    }
+
+    /// Resolves a `Spline.nameOffset` against the same file's `NTBL`
+    /// section payload (i.e. `WOCContainerParser.Section.payload` for the
+    /// section whose `tag == "NTBL"`) -- see this type's own doc comment
+    /// for the confirmed offset convention (relative to `NTBL`'s string
+    /// blob, past its 4-byte length prefix, not the whole payload).
+    /// Returns `nil` if the offset is out of range or doesn't land on a
+    /// printable null-terminated ASCII string.
+    public static func resolveName(_ nameOffset: Int, ntblPayload: Data) -> String? {
+        let bytes = [UInt8](ntblPayload)
+        guard bytes.count > 4 else { return nil }
+        let stringBlob = Array(bytes[4...])
+        guard nameOffset >= 0, nameOffset < stringBlob.count else { return nil }
+        var end = nameOffset
+        while end < stringBlob.count, stringBlob[end] != 0 {
+            guard stringBlob[end] >= 0x20, stringBlob[end] < 0x7F else { return nil }
+            end += 1
+        }
+        guard end < stringBlob.count, end > nameOffset else { return nil }
+        return String(decoding: stringBlob[nameOffset..<end], as: UTF8.self)
     }
 
     private static func leInt16(_ b: [UInt8], _ o: Int) -> Int16 {

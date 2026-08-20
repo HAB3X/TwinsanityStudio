@@ -33,6 +33,37 @@ final class WOCSplineSetParserTests: XCTestCase {
         XCTAssertEqual(spline.splines[0].nameOffset, 142)
     }
 
+    /// Golden-value regression for `nameOffset` resolution, hand-verified
+    /// against real bytes: `AVALANCH.GSC` has real, meaningful spline
+    /// names (camera paths, vehicle triggers) resolvable via `NTBL`'s
+    /// string blob at the exact confirmed offsets.
+    func testRealAvalanchNameResolution() throws {
+        let file = try loadDecodedContainer("A/AVALANCH/AVALANCH.GSC")
+        let sst0 = try XCTUnwrap(file.sections.first { $0.tag == "SST0" })
+        let ntbl = try XCTUnwrap(file.sections.first { $0.tag == "NTBL" })
+        let spline = try WOCSplineSetParser.parse(sst0.payload)
+
+        let expectedNames: [Int: String] = [
+            591: "start_finish",
+            604: "snowballmove",
+            617: "weecam_left_00",
+            632: "weecam_mid_00",
+            646: "weecam_right_00",
+            662: "chase_00_00",
+            674: "chase_00_trigger",
+            691: "vehicle_trigger_00_in",
+            713: "vehicle_cam_00",
+            728: "vehicle_look_00",
+        ]
+        var checked = 0
+        for s in spline.splines {
+            guard let expected = expectedNames[s.nameOffset] else { continue }
+            XCTAssertEqual(WOCSplineSetParser.resolveName(s.nameOffset, ntblPayload: ntbl.payload), expected)
+            checked += 1
+        }
+        XCTAssertEqual(checked, expectedNames.count, "expected to find every golden-value spline by its nameOffset")
+    }
+
     /// Full-corpus regression: every real `SST0` blob should parse with
     /// EXACT byte consumption (the `numSplines`-many records, each
     /// `8 + len*12` bytes, sum to exactly `blob.count` with zero
@@ -69,6 +100,12 @@ final class WOCSplineSetParserTests: XCTestCase {
             for spline in parsed.splines {
                 for point in spline.points {
                     XCTAssertTrue(point.x.isFinite && point.y.isFinite && point.z.isFinite, "\(relativePath): every point should be a real finite value")
+                }
+            }
+            if let ntbl = file.sections.first(where: { $0.tag == "NTBL" }) {
+                for spline in parsed.splines {
+                    XCTAssertNotNil(WOCSplineSetParser.resolveName(spline.nameOffset, ntblPayload: ntbl.payload),
+                                     "\(relativePath): nameOffset \(spline.nameOffset) should resolve to a real name in NTBL's string blob")
                 }
             }
             checked += 1
