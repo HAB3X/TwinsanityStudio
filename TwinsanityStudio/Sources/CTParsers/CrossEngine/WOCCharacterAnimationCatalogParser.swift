@@ -199,10 +199,37 @@ import Foundation
 ///   `nuanimcurve2_s` compressed-variant hypothesis (bitmask-plus-
 ///   popcount key lookup), worth chasing next over the plain variant.
 ///
-/// **Bottom line**: the byte-248 structure is a small, fixed-shape
-/// per-clip index/count header -- not the motion data itself. The real
-/// keyframe/curve payload, if it exists past this header, has not been
-/// located yet.
+/// **Update: characterized the region immediately after the table**
+/// (10 clips, 6 catalogs). It's a long run of zero bytes -- much longer
+/// than previously checked, often 500-2000+ bytes -- followed by a
+/// sparse pattern that recurs identically in every sample: a small 1-2
+/// byte nonzero value (values seen: `0x1f10`, `0x0ccc`, `0x0010`,
+/// `0x0080`, `0x0422`, `0xfff3`, `0x3f70`, `0x0001`, `0x0210`, `0x0008`),
+/// always preceded by at least 16 bytes of zero and followed by more
+/// zero -- i.e. real, sparse, 16-byte-aligned data, not raw motion
+/// floats. **The position of this first sparse value is highly
+/// variable** (33 to 2191 bytes past the table across the 10 samples,
+/// with no correlation found to blob size, row count, or table length)
+/// -- a real, load-bearing signal that this region's length is itself
+/// per-clip data (plausibly proportional to that clip's real animation
+/// duration/frame count), not a fixed-size header field. This is the
+/// clearest evidence yet for genuinely sparse, delta/quantized-coded
+/// motion data starting somewhere in this region -- consistent with
+/// both this doc's original "long zero runs punctuated by sparse
+/// nonzero bytes" observation (from before the byte-248 table was even
+/// found) and the `nuanimcurve2_s` compressed-variant hypothesis
+/// (bitmask-plus-popcount key lookup over quantized keys). **Still not
+/// decoded**: what the sparse 1-2 byte values themselves mean (no
+/// quantized-key format tried yet reproduces them cleanly), and where
+/// exactly real motion data starts vs. more structural padding --
+/// pinning that down needs a systematic per-frame-time correlation (do
+/// sparse-value positions align with real keyframe times for a clip
+/// whose duration is independently known), not yet attempted.
+///
+/// **Bottom line**: the byte-248 table is a small, fixed-shape per-clip
+/// header -- not the motion data itself. The real keyframe/curve payload
+/// almost certainly starts somewhere in the sparse region just
+/// characterized, but its own internal format is still genuinely open.
 public enum WOCCharacterAnimationCatalogParser {
     public enum ParseError: Error, Equatable {
         case truncated
