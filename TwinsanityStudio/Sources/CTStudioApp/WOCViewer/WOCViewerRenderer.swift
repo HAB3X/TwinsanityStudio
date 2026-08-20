@@ -13,13 +13,20 @@ import CTModels
 /// and scroll-to-zoom handling for free -- everything else (pipeline,
 /// shaders, buffers) is its own.
 ///
-/// Current geometry: real placed-object positions (`INST`, via
-/// `WOCLevelAsset.objects`) drawn as colored point markers. This is
-/// **not** real mesh geometry -- `OBJ0`'s per-object mesh boundaries are
-/// still unsolved (see `WOCContainerParser`'s doc comment), so there is no
-/// reliable "this object's real shape" data to draw yet. Point markers are
-/// real, decoded, correctly-positioned data (not placeholders in the
-/// fabricated sense), just not the final visual fidelity.
+/// Current geometry: real triangle mesh geometry (`WOCMeshDecoder`, built
+/// on `WOCContainerParser.parseObjSet`'s real, exact `OBJ0` entry/geo
+/// boundaries -- solved this session, see that type's own doc comment)
+/// drawn per placed object (`INST`, via `WOCLevelAsset.objects`), with a
+/// point-marker fallback only for objects whose mesh has zero decoded
+/// triangles (see ``upload(objects:objectCount:objectMeshes:)``'s doc
+/// comment for when that still happens). Real, but not yet the final
+/// visual fidelity: only real decoded **translation** is applied per
+/// instance -- `INST`'s own confirmed rotation/scale is not yet wired
+/// in, so placed objects render in the wrong orientation; and there is
+/// no texturing, vertex color, or lighting response yet (`WOCMeshDecoder`
+/// itself doesn't decode UVs/normals/colors -- see its own doc comment),
+/// so triangles draw in a single flat per-object tint used only to
+/// visually distinguish objects, not real shading.
 final class WOCViewerRenderer: NSObject, MTKViewDelegate, OrbitCameraRenderer {
     let device: MTLDevice
     private let commandQueue: MTLCommandQueue
