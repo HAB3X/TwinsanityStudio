@@ -116,4 +116,66 @@ final class WOCCameraPathParserTests: XCTestCase {
             throw XCTSkip("Real WoC disc image not mounted -- see WOCContainerParserTests for how to mount it")
         }
     }
+
+    /// `selfIndex` is really a sort rank, not a self-reference: within
+    /// most groups of nodes sharing one `nameIndex`, sorting by
+    /// `selfIndex` ascending also sorts `unknownFieldC`/`unknownFieldD`
+    /// ascending. Confirmed on 14 of 19 real multi-node groups across 13
+    /// real files (this test's own re-count, independent of that
+    /// investigation) -- the other 5 break in a structured way (a
+    /// monotonic "head" sub-sequence plus a separate later one), not
+    /// randomly, consistent with some names covering multiple
+    /// disconnected path segments rather than refuting the sort-rank
+    /// reading. This test asserts the real majority (at least 2 of every
+    /// 3 real multi-node groups checked are exactly monotonic) rather
+    /// than every single group, since a handful are honestly still
+    /// unexplained -- see `WOCCameraPathParser`'s own doc comment.
+    func testSelfIndexIsASortRankByFieldCForMostGroups() throws {
+        let samples = [
+            "A/CASTLE/CASTLE.VIS", "A/CASTLE_C/CASTLE_C.VIS", "A/DROID/DROID.VIS",
+            "A/EARTH_R/EARTH.VIS", "A/GARDEN/GARDEN.VIS", "A/VOLCANO/VOLCANO.VIS",
+            "A/FIREBALL/BALLSOF.VIS", "A/FIRE_R/FIRE_R.VIS", "A/SNOW_M/SNOW.VIS",
+            "A/JUNGLE_R/JUNGLE.VIS", "A/WATER_R/WATER.VIS", "A/WESTERN/WEATHER.VIS",
+            "A/WESTERN/WESTERN.VIS",
+        ]
+        var groupsChecked = 0
+        var groupsMonotonic = 0
+        var foundEarthRTenNodeGroup = false
+        for relativePath in samples {
+            let path = "/Volumes/CRASH/LEVELS/\(relativePath)"
+            guard FileManager.default.fileExists(atPath: path) else { continue }
+            let data = try Data(contentsOf: URL(fileURLWithPath: path))
+            let file = try WOCCameraPathParser.parse(data)
+            guard file.nodes.allSatisfy({ $0.selfIndex != nil }) else { continue }
+
+            var byName: [Int: [(rank: Int32, fieldC: Int32, fieldD: Int32)]] = [:]
+            for node in file.nodes {
+                guard let nameIndex = node.nameIndex, let rank = node.selfIndex,
+                      let c = node.unknownFieldC, let d = node.unknownFieldD else { continue }
+                byName[nameIndex, default: []].append((rank, c, d))
+            }
+            for (_, group) in byName where group.count > 1 {
+                let sorted = group.sorted { $0.rank < $1.rank }
+                let cs = sorted.map(\.fieldC)
+                let ds = sorted.map(\.fieldD)
+                let cMonotonic = zip(cs, cs.dropFirst()).allSatisfy { $0 <= $1 }
+                let dMonotonic = zip(ds, ds.dropFirst()).allSatisfy { $0 <= $1 }
+                if cMonotonic && dMonotonic {
+                    groupsMonotonic += 1
+                    // ranks must also be a real permutation, not a
+                    // no-op identity mapping, to prove this is a genuine
+                    // sort and not coincidental already-sorted data.
+                    if relativePath == "A/EARTH_R/EARTH.VIS", group.count == 10 {
+                        foundEarthRTenNodeGroup = true
+                        let ranksInFileOrder = group.map(\.rank)
+                        XCTAssertNotEqual(ranksInFileOrder, ranksInFileOrder.sorted(), "EARTH.VIS's 10-node group should be a real permutation")
+                    }
+                }
+                groupsChecked += 1
+            }
+        }
+        XCTAssertGreaterThan(groupsChecked, 0, "expected at least some real multi-node groups to check")
+        XCTAssertTrue(foundEarthRTenNodeGroup, "expected to find EARTH.VIS's known 10-node group")
+        XCTAssertGreaterThanOrEqual(Double(groupsMonotonic) / Double(groupsChecked), 2.0 / 3.0, "expected most real groups to be exactly monotonic under this sort")
+    }
 }

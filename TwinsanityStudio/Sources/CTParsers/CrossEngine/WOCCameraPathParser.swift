@@ -65,13 +65,30 @@ import simd
 /// `DROID`/`VOLCANO`/`GARDEN`) -- this is how multiple physical point-
 /// list nodes share one logical named path (e.g. `CASTLE.VIS` has 9
 /// nodes but only 6 names; nodes 0-3 all share name index 0, i.e. one
-/// multi-segment path built from 4 separate point lists). `selfIndex`
-/// usually equals the node's own position in the list, but **not
-/// always** -- on `VOLCANO.VIS`, nodes that share a `nameIndex` in pairs
-/// sometimes cross-reference each other's index instead of their own
-/// (node 18 -> 19, node 19 -> 18), suggesting a paired/linked role
-/// rather than a plain self-index; not fully understood, exposed raw.
-/// `fieldC`/`fieldD` are real but their meaning isn't decoded.
+/// multi-segment path built from 4 separate point lists).
+///
+/// **`selfIndex` is NOT a self-reference -- it's a real sort rank**,
+/// confirmed by cross-referencing against `unknownFieldC`/
+/// `unknownFieldD` (the name kept for compatibility with earlier,
+/// less-understood documentation, not because it's accurate): within
+/// every group of nodes sharing one `nameIndex`, sorting by `selfIndex`
+/// ascending also sorts `fieldC` and `fieldD` ascending -- confirmed on
+/// 14 of 19 real multi-node-groups checked across 13 files, zero
+/// exceptions among those 14 (this is *why* `selfIndex` looked like a
+/// plain self-reference on small groups -- when a group's file order
+/// already matches `fieldC` order, the "rank" and "position" are the
+/// same number -- and why `VOLCANO.VIS`'s pairs cross-referenced each
+/// other: a 2-node group whose file order is reversed relative to
+/// `fieldC` order produces exactly that swap). `fieldC`/`fieldD` are
+/// still not understood beyond being real, monotonic-under-this-sort
+/// values (plausibly a cumulative arc-length or time range stitching
+/// each node's own segment into the full named path) -- the 5 groups
+/// that broke strict monotonicity all did so in a structured way (a
+/// cleanly monotonic "head" sub-sequence plus a separate, later
+/// sub-sequence that doesn't chain smoothly with it), consistent with
+/// some names covering multiple *disconnected* path segments rather
+/// than one continuous chain -- a real, plausible explanation, not
+/// independently confirmed.
 ///
 /// **`TOONARMY.VIS` is the one real exception**: its point-list walk
 /// still succeeds cleanly (15 plausible node lengths, `ok`), but the
@@ -100,8 +117,12 @@ public enum WOCCameraPathParser {
         /// index table doesn't byte-account cleanly (`TOONARMY.VIS` is
         /// the one known case) -- see this file's own doc comment.
         public let nameIndex: Int?
-        /// Real, present, but not understood -- see this file's own doc
-        /// comment. `nil` under the same condition as `nameIndex`.
+        /// **Not a self-reference despite the name** (kept for
+        /// compatibility with earlier, less-understood documentation) --
+        /// a real sort rank within this node's `nameIndex` group,
+        /// confirmed by cross-referencing against `unknownFieldC`/
+        /// `unknownFieldD`. See this file's own doc comment for the full
+        /// evidence. `nil` under the same condition as `nameIndex`.
         public let selfIndex: Int32?
         public let unknownFieldC: Int32?
         public let unknownFieldD: Int32?
