@@ -155,10 +155,23 @@ import Foundation
 /// Still genuinely open: what's actually stored in the byte 256-400+
 /// region. The "PS2 VU microcode-upload header" reading of the byte
 /// 0-240 template remains a plausible shape (not a confirmed format).
-/// Next concrete step: characterize the `0x51`/`0x52`/`0x53` repeating
-/// sub-record precisely (its exact stride and what surrounds it) across
-/// this same broad sample, since it's the first real recurring structure
-/// found past the template.
+/// **Update, the `0x51`/`0x52`/`0x53` pattern characterized further**
+/// (17 clips across 7 catalogs): it is NOT 3 adjacent bytes -- it's a
+/// single byte position, at a fixed intra-record offset, whose VALUE
+/// climbs by exactly 1 across 3 consecutive 16-byte-stride records
+/// (`81, 82, 83` decimal). Its own position is phase-locked: in all 17
+/// samples the last ("83") record starts at a byte offset satisfying
+/// `(offset - 248) % 16 == 0` exactly -- i.e. `248 = 240 + 8` is a real
+/// second boundary, 8 bytes into the first row after the byte-240
+/// template marker, and every row from there is a uniform 16-byte
+/// record. The row *count* before reaching this ascending 3-row tail
+/// varies per clip (7, 9, or 11 rows seen in the 17-sample check) and
+/// did NOT correlate cleanly with blob size, clip name, or the
+/// already-known byte-0/byte-2 header fields in that small sample --
+/// worth a much larger sweep (in progress) to find the real driver,
+/// and to check whether the ascending-by-1 pattern actually holds for
+/// the table's *earlier* rows too (only the last 3 were checked so far)
+/// or is genuinely tail-specific.
 public enum WOCCharacterAnimationCatalogParser {
     public enum ParseError: Error, Equatable {
         case truncated
