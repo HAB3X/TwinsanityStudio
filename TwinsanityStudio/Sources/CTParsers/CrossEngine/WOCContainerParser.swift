@@ -965,6 +965,17 @@ public enum WOCContainerParser {
         let width = Int(leUInt32(bytes, textureHeaderStart + 124))
         let height = Int(leUInt32(bytes, textureHeaderStart + 128))
 
+        // A real texture can never have a zero width or height -- this
+        // rejects the rare false-positive candidate (confirmed real,
+        // real-byte case: 2 of 105 indexed-texture candidates in
+        // CASTLE_C.GSC) whose "header" is unrelated file data landing on
+        // a plausible marker/register pattern. Unlike an earlier,
+        // rejected attempt at tightening this scan (a `sizePlus`-based
+        // check that silently dropped ~80% of real textures), this check
+        // has no false-negative risk: it can only ever reject entries
+        // that are already unambiguously not real textures.
+        guard width > 0, height > 0 else { throw ParseError.truncated }
+
         // Read fmtA and fmtB from the trailer location (may be out of bounds for unpadded if trailerOffset too negative)
         let fmtATrailerOffset = trailerOffset + 8
         let fmtBTrailerOffset = trailerOffset + 12
