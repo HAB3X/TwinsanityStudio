@@ -110,6 +110,12 @@ public struct WOCLevelAsset: Identifiable {
     /// `paramBlock`/skipped over, not guessed at.
     public let interactiveObjects: [WOCObjectParser.ObjectRecord]
     public let interactiveObjectDeclaredCount: Int
+    /// From the sibling `.VIS` file, if present: real named cinematic
+    /// camera path entry points (`weecam_*`) -- despite the `.VIS`
+    /// extension, this is NOT a visibility system; see
+    /// `WOCCameraPathParser`'s doc comment. The underlying node/path
+    /// graph isn't decoded at the field level yet, only the real names.
+    public let cameraPathNames: [String]
 
     public var textureCount: Int { textures.count }
 }
@@ -271,6 +277,11 @@ public enum WOCLevelLoader {
             }
         }
 
+        var cameraPathNames: [String] = []
+        if let visData = try? Data(contentsOf: baseURL.appendingPathExtension("VIS")) {
+            cameraPathNames = (try? WOCCameraPathParser.parse(visData))?.cameraPathNames ?? []
+        }
+
         return WOCLevelAsset(
             id: gscURL.path,
             name: name,
@@ -294,7 +305,8 @@ public enum WOCLevelLoader {
             checkpointEffects: checkpointEffects,
             checkpointFileExistsButUnparsed: checkpointFileExistsButUnparsed,
             interactiveObjects: interactiveObjects,
-            interactiveObjectDeclaredCount: interactiveObjectDeclaredCount
+            interactiveObjectDeclaredCount: interactiveObjectDeclaredCount,
+            cameraPathNames: cameraPathNames
         )
     }
 }

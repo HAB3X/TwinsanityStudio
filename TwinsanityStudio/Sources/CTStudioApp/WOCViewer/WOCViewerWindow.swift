@@ -114,6 +114,7 @@ struct WOCViewerWindow: View {
                     LabeledContent("Particle Effects", value: asset.particleFileExistsButUnparsed ? "present, undecoded" : "\(asset.particleEffects.count)")
                     LabeledContent("Checkpoint Effects", value: asset.checkpointFileExistsButUnparsed ? "present, undecoded" : "\(asset.checkpointEffects.count)")
                     LabeledContent("Interactive Objects", value: "\(asset.interactiveObjects.count) of \(asset.interactiveObjectDeclaredCount) declared")
+                    LabeledContent("Camera Paths", value: asset.cameraPathNames.isEmpty ? "none" : "\(asset.cameraPathNames.count)")
                     LabeledContent("Sections", value: asset.sectionTags.joined(separator: ", "))
                 }
                 .formStyle(.grouped)
@@ -133,6 +134,20 @@ struct WOCViewerWindow: View {
                         Text("+ \(asset.objectNames.count - 60) more")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
+                    }
+                }
+
+                if !asset.cameraPathNames.isEmpty {
+                    Divider()
+                    Text("Camera Paths (\(asset.cameraPathNames.count))")
+                        .font(.subheadline.bold())
+                    Text("Real, named cinematic camera path entry points (from the sibling .VIS file) -- despite the extension, this is not a visibility system. The underlying path graph itself isn't decoded yet, just these names.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    ForEach(Array(asset.cameraPathNames.enumerated()), id: \.offset) { _, name in
+                        Text(name)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
