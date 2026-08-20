@@ -227,6 +227,10 @@ private struct TextureHubDetailView: View {
     @Environment(\.dismiss) private var dismiss
     let entry: TextureHubEntry
     @State private var cachedImage: NSImage?
+    /// `nil` until "Locate Parent Object" is pressed; `false` after a
+    /// lookup comes back empty, so the "not found" message only shows
+    /// after a real attempt, not before the user has asked.
+    @State private var parentLookupSucceeded: Bool?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -250,7 +254,15 @@ private struct TextureHubDetailView: View {
                 LabeledContent("Mip Levels", value: "\(entry.texture.mips.count)")
             }
             .formStyle(.grouped)
-            Button("Export PNG…") { export() }
+            HStack {
+                Button("Locate Parent Object") { locateParent() }
+                Button("Export PNG…") { export() }
+            }
+            if parentLookupSucceeded == false {
+                Label("Nothing currently loaded references this texture — it may be orphaned, or its referencing file hasn't been parsed this session.", systemImage: "questionmark.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding()
         .frame(minWidth: 420, minHeight: 420)
@@ -263,5 +275,15 @@ private struct TextureHubDetailView: View {
     private func export() {
         guard let directory = ExportPanel.chooseFolder(message: "Choose a folder to export this texture into.") else { return }
         workspace.exportTexturePNG(entry.texture, suggestedName: "texture_\(entry.texture.id)", to: directory)
+    }
+
+    private func locateParent() {
+        guard let resolved = workspace.resolveComposite(forTextureID: entry.texture.id) else {
+            parentLookupSucceeded = false
+            return
+        }
+        parentLookupSucceeded = true
+        workspace.modelViewerAsset = resolved
+        dismiss()
     }
 }

@@ -2194,6 +2194,29 @@ public final class WorkspaceViewModel: ObservableObject {
         return nil
     }
 
+    /// The Textures Hub's counterpart to `resolveComposite(for:)` — the Hub
+    /// only ever has a `TextureHubEntry` in hand (a `Codable`, `ScanCache`-
+    /// persisted value type), never the originating `ChunkNode`, so it
+    /// can't call the node-based overload. `TextureHubEntry.texture.id` is
+    /// always populated from the same `recordID` the node would carry (see
+    /// `TextureParser`/`TextureXParser`'s own `TextureAsset(id: recordID,
+    /// ...)` construction), so this is the same real lookup, just entered
+    /// from a bare ID. Searches every already-parsed file root in the
+    /// workspace, same reasoning as `resolveComposite(for:)`'s own
+    /// cross-file fallback: texture IDs are effectively global, so the
+    /// referencing material/model is routinely in a different file than
+    /// the texture itself. `nil` means nothing currently loaded references
+    /// this texture — not necessarily that nothing ever does; a file that
+    /// hasn't been parsed this session can't be searched.
+    public func resolveComposite(forTextureID textureID: UInt32) -> ResolvedModelAsset? {
+        for fileRoot in allFileRoots(in: rootNodes) {
+            if let resolved = AssetResolver.resolveComposite(forTextureID: textureID, fileRoot: fileRoot, displayNamePrefix: "\(fileRoot.displayName) — ") {
+                return resolved
+            }
+        }
+        return nil
+    }
+
     /// "Scenery/Level Assembly": resolves every placement in `scenery`
     /// (found via `node`, the `SceneryData` chunk itself) into an actual
     /// textured mesh, keyed by the model ID the placement references.

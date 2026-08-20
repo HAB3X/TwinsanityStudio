@@ -371,4 +371,25 @@ public enum AssetResolver {
             return nil
         }
     }
+
+    /// Same "what points at me?" reverse lookup as
+    /// `resolveComposite(for:fileRoot:displayNamePrefix:)`'s `.texture`
+    /// case, callable directly from a texture's own record ID rather than
+    /// requiring its `ChunkNode` — for callers (like the Textures Hub)
+    /// that only have a `TextureAsset.id` in hand, not the node it came
+    /// from (`TextureAsset.id` is always populated from the same
+    /// `recordID` a `.texture`-payload `ChunkNode` would carry, so this is
+    /// the exact same lookup, not an approximation).
+    public static func resolveComposite(forTextureID textureID: UInt32, fileRoot: ChunkNode, displayNamePrefix: String) -> ResolvedModelAsset? {
+        let index = buildIndex(fileRoot: fileRoot)
+        guard let materialID = index.materials.first(where: { $0.value.primaryTextureID == textureID })?.key else { return nil }
+        if let rigidModel = index.rigidModels.values.first(where: { $0.materialIDs.contains(materialID) }) {
+            return resolveRigidModel(rigidModel, displayName: displayNamePrefix + "Object #\(rigidModel.id)", index: index)
+        }
+        if let skinEntry = index.skins.first(where: { $0.value.submeshes.contains { $0.materialID == materialID } }),
+           let skeleton = index.skeletons.values.first(where: { $0.skinID == skinEntry.key }) {
+            return resolveSkeleton(skeleton, displayName: displayNamePrefix + "Character #\(skeleton.id)", index: index)
+        }
+        return nil
+    }
 }
