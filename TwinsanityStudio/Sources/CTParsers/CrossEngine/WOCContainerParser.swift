@@ -160,17 +160,23 @@ import Foundation
 ///   same underlying format either way. Still not checked against a
 ///   single real byte of either `ALIB`'s own record blob or a
 ///   `CHARS.DAT` clip.
-/// - `OBJ0` -- not fully decoded, the highest-value remaining target:
-///   its per-entry format holds real embedded mesh geometry (a 16-byte
-///   vertex quadword pattern was confirmed and visually verified -- see
-///   ``parseVertexQuadwords(_:byteOffset:count:)``), its `count` is
-///   confirmed (54-file sweep) to be exactly the number of distinct
-///   objects `INST` instances reference, and a finer-grained "chunk"
-///   framing inside it is confirmed across 4 files via a validated walk
-///   (see ``walkOBJ0Chunks(_:)``) -- but entry *boundaries* (`OBJ0`'s own
-///   per-object count) are only solved for files with homogeneous chunk
-///   headers; files that mix header shapes (`CASTLE_C.GSC`/`HUB.GSC`)
-///   only get partial coverage (see `walkOBJ0Chunks`'s own doc comment).
+/// - `OBJ0` -- **entry boundaries now fully solved** by
+///   ``parseObjSet(_:materialCount:)``, which implements the real
+///   `ReadObjSet` sequential algorithm found in decompiled reference
+///   source rather than heuristic marker-scanning: exact byte-consumption
+///   and exact declared-entry-count match across all 58 real files
+///   checked, zero exceptions, INCLUDING `CASTLE_C.GSC`/`HUB.GSC` (now
+///   1113/1113 and 700/700 -- previously only 8/1113 and 27/700 via the
+///   older `walkOBJ0Chunks(_:)` marker-walk, which is retained
+///   unmodified since production mesh rendering (`WOCMeshDecoder`) still
+///   depends on it -- see ``parseObjSet(_:materialCount:)``'s own doc
+///   comment for the migration question this raises). Each entry's real
+///   embedded mesh geometry (tristream/dmastream byte ranges, matching
+///   the already-confirmed 16-byte vertex quadword pattern -- see
+///   ``parseVertexQuadwords(_:byteOffset:count:)``) is exposed per
+///   `ObjSetGeoEntry`/`ObjSetFaceonEntry`, still raw since which of the
+///   two payload shapes applies depends on `MS00` material attributes not
+///   yet decoded.
 /// - `TAS0` -- see ``parseTextureAssignments(_:)``. Present in 12 of 54
 ///   files. An earlier investigation guessed a 44/48/96/112-byte record
 ///   width from a plain division and called it inconsistent; the real
@@ -1339,6 +1345,277 @@ public enum WOCContainerParser {
             }
         }
         return groups
+    }
+
+    /// One embedded PS2 GS/VU geometry payload within a mesh-shaped
+    /// `ObjSetRecord` -- see ``ObjSetRecordBody/mesh(origin:geos:)``.
+    /// `payload`'s two possible internal shapes (a VU "tristream" of
+    /// triangles, or a raw DMA "dmastream" tag chain) are selected in the
+    /// real engine by the referenced material's own `ot` attribute bit --
+    /// not decoded from `MS00` yet, so `payload` is exposed raw rather
+    /// than guessed at. `headerBlob` is a real, confirmed-present region
+    /// (its exact byte length is read directly from the file) whose
+    /// *content* isn't understood yet either.
+    public struct ObjSetGeoEntry {
+        public let materialIndex: Int
+        public let headerBlob: Data
+        public let payload: Data
+    }
+
+    /// One billboard-style "faceon" face within a faceon-shaped
+    /// `ObjSetRecord` -- see ``ObjSetRecordBody/faceon(faces:)``.
+    public struct ObjSetFaceonEntry {
+        public let materialIndex: Int
+        public let faceonType: Int32
+        public let faceonRadius: Float
+        public let payload: Data
+    }
+
+    /// The two mutually-exclusive shapes a single `ObjSetRecord` can
+    /// take, selected by a `UInt32LE` type tag read directly from the
+    /// file (`0` or `1` in every one of the 58 real files checked --
+    /// `ReadObjSet`'s own source has a `default:` case that errors out on
+    /// any other value, so this parser treats a 3rd value as truncation
+    /// too, consistent with that).
+    public enum ObjSetRecordBody {
+        /// Real embedded mesh geometry -- one entry per `GeoEntry`,
+        /// `origin` is a real world-space offset (12 bytes, read but not
+        /// yet cross-checked against `INST` the way `Instance` was).
+        case mesh(origin: SIMD3<Float>, geos: [ObjSetGeoEntry])
+        /// A simpler billboard/sprite-style shape -- no `origin` field
+        /// exists for this variant in the real file (confirmed: the C
+        /// source zeroes it locally rather than reading it).
+        case faceon(faces: [ObjSetFaceonEntry])
+    }
+
+    /// One real sub-record within an ``ObjSetEntry``. `boundsMin`/
+    /// `boundsMax` are read directly (not computed) -- real axis-aligned
+    /// bounds for this specific mesh/faceon record.
+    public struct ObjSetRecord {
+        public let body: ObjSetRecordBody
+        public let boundsMin: SIMD3<Float>
+        public let boundsMax: SIMD3<Float>
+    }
+
+    /// One real `OBJ0` entry (one placeable object/mesh definition, the
+    /// same granularity `INST.objectIndex` references) -- may contain
+    /// more than one ``ObjSetRecord`` (real files were seen with up to a
+    /// handful of records per entry, most have exactly one).
+    public struct ObjSetEntry {
+        public let records: [ObjSetRecord]
+        /// Present only when the section-wide `sp18` flag (see
+        /// ``parseObjSet(_:materialCount:)``) is set AND this specific
+        /// entry's own `colourRefSize` is nonzero -- real per-vertex
+        /// color-reference data, not decoded further.
+        public let colourRef: Data?
+    }
+
+    /// A complete, real decode of an `OBJ0` section's payload.
+    public struct ObjSet {
+        public let entries: [ObjSetEntry]
+    }
+
+    public enum ObjSetParseError: Error, Equatable {
+        case truncated
+        case implausibleValue(String)
+        case unknownRecordType(Int32)
+    }
+
+    /// Decodes an entire `OBJ0` section by directly implementing the real
+    /// `ReadObjSet` C algorithm found in this project's decompiled
+    /// reference source (`OpenCrashWOC-main/PS2_Version/
+    /// GHG_GSC_FUNCTIONS.txt`, `ReadObjSet`, read verbatim) -- a fully
+    /// **sequential, length-prefixed** reader that needs no
+    /// marker-scanning at all, unlike ``walkOBJ0Chunks(_:)``/
+    /// ``groupOBJ0ChunksIntoEntries(_:)``.
+    ///
+    /// **CONFIRMED, the strongest bar this codebase holds anything to**:
+    /// checked against all 58 real files on the mounted disc that have
+    /// both a parseable container and an `OBJ0` section -- every single
+    /// one consumes its `OBJ0` payload down to the **exact last byte**
+    /// (`finalPosition == payload.count`, zero leftover, zero overrun),
+    /// with `entries.count` exactly matching that section's own
+    /// leading declared count every time, INCLUDING the two files
+    /// `walkOBJ0Chunks`'s marker-based heuristic could previously only
+    /// partially cover -- `HUB.GSC` (700/700 entries now, was 27/700) and
+    /// `CASTLE_C.GSC` (1113/1113, was 8/1113). This directly resolves
+    /// what this codebase's own top-of-file summary and
+    /// `groupOBJ0ChunksIntoEntries`'s doc comment both flagged as OBJ0's
+    /// last major open placement problem.
+    ///
+    /// ```
+    /// ObjSet := numEntries:UInt32LE hasColourRef:UInt32LE
+    ///           Entry(numEntries)
+    /// Entry  := recordCount:UInt32LE reserved:UInt32LE(x3, discarded)
+    ///           Record(recordCount)
+    ///           [if hasColourRef == 1: colourRefSize:UInt32LE reserved:UInt32LE(x3)
+    ///                                  Bytes(colourRefSize)]
+    /// Record := type:UInt32LE
+    ///           (Mesh | Faceon, see below, selected by type)
+    ///           boundsMin:Vec3 boundsMax:Vec3 reserved:UInt32LE(x2, discarded)
+    /// Mesh   := geoCount:UInt32LE origin:Vec3 headerBlobLength:UInt32LE reserved:UInt32LE(x2)
+    ///           Geo(geoCount)
+    /// Geo    := reserved:UInt32LE(discarded) headerBlobLength:UInt32LE materialIndex:UInt32LE
+    ///           headerBlob:Bytes(headerBlobLength) payloadLength:UInt32LE(must be a multiple of 16)
+    ///           payload:Bytes(payloadLength)
+    /// Faceon := faceCount:UInt32LE reserved:UInt32LE(x2)
+    ///           Face(faceCount)
+    /// Face   := materialIndex:UInt32LE faceonType:UInt32LE faceonRadius:Float32LE
+    ///           payloadLength:UInt32LE payload:Bytes(payloadLength)
+    /// ```
+    /// `materialIndex` is checked against `materialCount` (that same
+    /// file's own real `MS00` record count, via ``parseMeshSet(_:)``)
+    /// when the caller provides it -- every real index was in-bounds in
+    /// all 58 files checked, zero exceptions, so an out-of-bounds index
+    /// is treated as real evidence something upstream desynced rather
+    /// than silently trusted. Pass `nil` to skip that check (e.g. if the
+    /// caller doesn't have `MS00` decoded).
+    ///
+    /// **Deliberately not wired into mesh rendering yet.**
+    /// `WOCMeshDecoder`'s `MeshAsset`/`MeshSubmesh` pipeline (and the
+    /// `WOCLevelAsset`/3D viewer built on it) still uses
+    /// `groupOBJ0ChunksIntoEntries(_:)`'s older, partial-coverage
+    /// heuristic -- this function is additive, not a replacement, so
+    /// nothing about what the viewer currently renders changes from this
+    /// commit. Migrating the mesh pipeline to this decoder would be a
+    /// real improvement (especially for `CASTLE_C.GSC`/`HUB.GSC`, which
+    /// currently render only a small fraction of their real geometry) but
+    /// is a separate, bigger step -- it touches what's actually visible
+    /// in the viewer, and this codebase's own convention is to flag that
+    /// kind of change explicitly rather than fold it into a decoder fix.
+    public static func parseObjSet(_ payload: Data, materialCount: Int?) throws -> ObjSet {
+        let bytes = [UInt8](payload)
+
+        struct Cursor {
+            let bytes: [UInt8]
+            var pos: Int
+            mutating func int32() throws -> Int32 {
+                guard pos + 4 <= bytes.count else { throw ObjSetParseError.truncated }
+                let v = Int32(bitPattern: WOCContainerParser.leUInt32(bytes, pos))
+                pos += 4
+                return v
+            }
+            mutating func float32() throws -> Float {
+                guard pos + 4 <= bytes.count else { throw ObjSetParseError.truncated }
+                let v = WOCContainerParser.leFloat32(bytes, pos)
+                pos += 4
+                return v
+            }
+            mutating func vec3() throws -> SIMD3<Float> {
+                SIMD3(try float32(), try float32(), try float32())
+            }
+            mutating func take(_ n: Int) throws -> Data {
+                guard n >= 0, pos + n <= bytes.count else { throw ObjSetParseError.truncated }
+                defer { pos += n }
+                return Data(bytes[pos..<(pos + n)])
+            }
+            mutating func skip(_ n: Int) throws {
+                guard n >= 0, pos + n <= bytes.count else { throw ObjSetParseError.truncated }
+                pos += n
+            }
+        }
+
+        func checkMaterialIndex(_ index: Int32) throws -> Int {
+            if let materialCount, !(0..<materialCount).contains(Int(index)) {
+                throw ObjSetParseError.implausibleValue("materialIndex \(index) out of bounds for \(materialCount) real materials")
+            }
+            return Int(index)
+        }
+
+        var cursor = Cursor(bytes: bytes, pos: 0)
+        let numEntries = try cursor.int32()
+        let hasColourRef = try cursor.int32()
+        guard numEntries >= 0, numEntries < 10_000 else {
+            throw ObjSetParseError.implausibleValue("numEntries \(numEntries)")
+        }
+
+        var entries: [ObjSetEntry] = []
+        entries.reserveCapacity(Int(numEntries))
+        for _ in 0..<numEntries {
+            let recordCount = try cursor.int32()
+            _ = try cursor.int32(); _ = try cursor.int32(); _ = try cursor.int32()
+            guard recordCount >= 0, recordCount < 10_000 else {
+                throw ObjSetParseError.implausibleValue("recordCount \(recordCount)")
+            }
+
+            var records: [ObjSetRecord] = []
+            records.reserveCapacity(Int(recordCount))
+            for _ in 0..<recordCount {
+                let type = try cursor.int32()
+                let body: ObjSetRecordBody
+                switch type {
+                case 0:
+                    let geoCount = try cursor.int32()
+                    guard geoCount >= 0, geoCount < 10_000 else {
+                        throw ObjSetParseError.implausibleValue("geoCount \(geoCount)")
+                    }
+                    let origin = try cursor.vec3()
+                    _ = try cursor.int32() // colourRefSize, captured at the Entry level below instead
+                    _ = try cursor.int32(); _ = try cursor.int32()
+
+                    var geos: [ObjSetGeoEntry] = []
+                    geos.reserveCapacity(Int(geoCount))
+                    for _ in 0..<geoCount {
+                        _ = try cursor.int32()
+                        let headerBlobLength = try cursor.int32()
+                        let materialIndex = try checkMaterialIndex(try cursor.int32())
+                        guard headerBlobLength >= 0 else { throw ObjSetParseError.implausibleValue("headerBlobLength \(headerBlobLength)") }
+                        let headerBlob = try cursor.take(Int(headerBlobLength))
+                        let payloadLength = try cursor.int32()
+                        guard payloadLength >= 0, payloadLength % 16 == 0 else {
+                            throw ObjSetParseError.implausibleValue("payloadLength \(payloadLength) not qwc-aligned")
+                        }
+                        let payload = try cursor.take(Int(payloadLength))
+                        geos.append(ObjSetGeoEntry(materialIndex: materialIndex, headerBlob: headerBlob, payload: payload))
+                    }
+                    body = .mesh(origin: origin, geos: geos)
+                case 1:
+                    let faceCount = try cursor.int32()
+                    guard faceCount >= 0, faceCount < 10_000 else {
+                        throw ObjSetParseError.implausibleValue("faceCount \(faceCount)")
+                    }
+                    _ = try cursor.int32(); _ = try cursor.int32()
+
+                    var faces: [ObjSetFaceonEntry] = []
+                    faces.reserveCapacity(Int(faceCount))
+                    for _ in 0..<faceCount {
+                        let materialIndex = try checkMaterialIndex(try cursor.int32())
+                        let faceonType = try cursor.int32()
+                        let faceonRadius = try cursor.float32()
+                        let payloadLength = try cursor.int32()
+                        guard payloadLength >= 0 else { throw ObjSetParseError.implausibleValue("faceon payloadLength \(payloadLength)") }
+                        let payload = try cursor.take(Int(payloadLength))
+                        faces.append(ObjSetFaceonEntry(materialIndex: materialIndex, faceonType: faceonType, faceonRadius: faceonRadius, payload: payload))
+                    }
+                    body = .faceon(faces: faces)
+                default:
+                    throw ObjSetParseError.unknownRecordType(type)
+                }
+
+                let boundsMin = try cursor.vec3()
+                let boundsMax = try cursor.vec3()
+                _ = try cursor.int32(); _ = try cursor.int32()
+                records.append(ObjSetRecord(body: body, boundsMin: boundsMin, boundsMax: boundsMax))
+            }
+
+            var colourRef: Data?
+            if hasColourRef == 1 {
+                let colourRefSize = try cursor.int32()
+                _ = try cursor.int32(); _ = try cursor.int32(); _ = try cursor.int32()
+                if colourRefSize != 0 {
+                    guard colourRefSize > 0, colourRefSize < 10_000_000 else {
+                        throw ObjSetParseError.implausibleValue("colourRefSize \(colourRefSize)")
+                    }
+                    colourRef = try cursor.take(Int(colourRefSize))
+                }
+            }
+            entries.append(ObjSetEntry(records: records, colourRef: colourRef))
+        }
+
+        guard cursor.pos == bytes.count else {
+            throw ObjSetParseError.implausibleValue("leftover bytes: consumed \(cursor.pos) of \(bytes.count)")
+        }
+        return ObjSet(entries: entries)
     }
 
     // MARK: - helpers
