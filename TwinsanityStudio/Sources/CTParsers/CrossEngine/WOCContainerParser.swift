@@ -111,14 +111,23 @@ import Foundation
 ///   **Naming correction: the real handler is `ReadSplineSet`** -- i.e.
 ///   `SST0` is a **Spline Set**, not an unnamed footer blob. This
 ///   independently corroborates the `nugspline_s`/`NuSplineFind` findings
-///   from the new `.VIS`/camera-path work (``WOCCameraPathParser``): WoC
-///   splines (named point paths, used for both camera rails and
-///   visibility-culling regions) are very likely stored here at the
-///   `.GSC` level. The blob's internal framing is not yet re-derived from
-///   this correction -- worth revisiting once disc access resumes,
-///   ideally cross-referencing this section's blob shape against
-///   `WOCCameraPathParser`'s still-raw `body` field, since both may
-///   ultimately decode to the same `nuvec_s`-strided point-list shape.
+///   from the `.VIS`/camera-path work (``WOCCameraPathParser``), which
+///   has since fully decoded its own body into real per-node point
+///   lists. **Directly checked whether `SST0`'s blob is the same shape,
+///   and it isn't** -- `.VIS`'s model (a spline's point count, then
+///   that many raw `Vec3`s, then the next spline) only ever parses the
+///   *first* spline correctly against a real `SST0` blob before running
+///   into implausible values; every file tried breaks after one spline.
+///   The leading `firstField`/blob-length header also doesn't look like
+///   `.VIS`'s (no clean per-spline count sequence at the blob's own
+///   start). The most likely explanation, not yet confirmed: `.VIS`
+///   splines are anonymous/positional (names live in a separate trailing
+///   string table), while `nugspline_s`'s own struct has a real `char*
+///   name` field -- `SST0` may embed each spline's name *inline*,
+///   between one spline's points and the next spline's count, which
+///   would explain exactly this failure pattern. Blob internals remain
+///   unresolved; a real next step is testing that inline-name hypothesis
+///   directly rather than assuming the two sections share one format.
 /// - `ALIB` -- see ``parseAttributeLibrary(_:)``. NOT a fixed-width table
 ///   (confirmed dead end from an earlier pass); the real structure is a
 ///   `count`-entry offset table (relative to just past the table itself,
