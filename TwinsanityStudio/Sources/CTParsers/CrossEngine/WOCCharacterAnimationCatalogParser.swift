@@ -102,26 +102,63 @@ import Foundation
 /// bits wrapper convention -- inconclusive, not a confirmation; the
 /// wrapper convention doesn't have to be the same between the two games.
 ///
-/// A real, concrete, honestly-partial finding survives this check: a
-/// **~240-byte prefix that's exactly byte-identical across every sampled
-/// clip** (offsets 0-24 and 25-240 constant across all 8 real blobs
-/// checked, spanning 2 unrelated catalogs and clip sizes from 2,576 to
-/// 16,912 bytes), with only a handful of small varying fields inside that
-/// prefix: a 1-byte field at offset 0 (`0x08` for most clips, `0x04` for
-/// the shortest sampled one), a small `UInt16LE` at offset 2 that's
-/// roughly (not exactly) proportional to `blob.count`, and an 8-byte
-/// field at offset 8 that's identical for every clip *within* the same
-/// catalog entry but different (all-zero, in the one other catalog
-/// checked) *across* catalog entries -- i.e. catalog-level, not
-/// clip-level, data. Real per-clip divergence resumes at offset 241 and
-/// becomes dense from offset ~320 onward, consistent with real per-clip
-/// content starting somewhere in that neighborhood. This shape (a long,
-/// near-constant structured prefix, then real payload) is the kind of
-/// thing a PS2 VU microcode-upload header produces, but that's a
-/// plausible reading of the shape, not a confirmed format -- genuinely
-/// open, worth a dedicated investigation (ideally comparing against a
-/// much larger, more diverse sample of real clips than the 8 checked
-/// here) rather than further guessing from this vantage point.
+/// **Update, broader follow-up sample (272 clips across 141 distinct real
+/// catalog entries, blob sizes 1,472-33,296 bytes)** -- this sharpens
+/// every field above with real numbers instead of an 8-blob guess:
+/// - The **template prefix ends at exactly byte 240**, confirmed stable
+///   across all 141 catalogs (bytes 16-239 identical in every one of the
+///   272 samples once the known-varying fields below are masked out).
+///   **Byte 240 itself is a hard constant, `0xC4`, in all 272 samples,
+///   zero exceptions** -- a real fixed marker byte worth checking as a
+///   validity/resync anchor. Byte 241 is the first byte that diverges in
+///   most samples (68%), matching the earlier ~241 estimate almost
+///   exactly.
+/// - The offset-0 byte is **not a free-varying field**: across the whole
+///   sample it takes exactly 3 values (`0x02`, `0x04`, `0x08`), and it
+///   correlates with a blob-size bucket (`0x02` only appears on 1-clip
+///   `dummy` placeholder catalogs, 1,472-1,552 bytes; `0x04` on
+///   2,528-2,608-byte blobs; `0x08` on everything 4,544 bytes and up).
+/// - The offset-2 `UInt16LE` is **not** proportional to `blob.count`
+///   directly, but `blob.count` divided by it is *always an exact
+///   integer* with zero remainder (checked on 60 samples) -- i.e. it's a
+///   real block/chunk count, just one whose block size varies per clip
+///   rather than being a fixed page size. It moves together with the
+///   offset-0 byte (`2↔1`, `4↔1`, `8↔{1,2,4,8}`).
+/// - The offset-8 8-byte field is **not** a per-entry hash or pointer as
+///   the smaller sample left open -- across 25 distinct catalog entries
+///   it takes only 3 distinct values total (all-zero in 21/25 entries;
+///   `44 80 65 DC 51 06 E9 18` in 3 entries with otherwise-unrelated clip
+///   names/sizes; one more value in a single entry). Confirmed constant
+///   within every multi-clip entry checked (63/63, zero exceptions) --
+///   still catalog-level, but it reads as a small categorical tag (e.g.
+///   a character-class/rig-family flag), not a per-catalog unique ID.
+/// - The dense-divergence region from byte 241 onward shows **no
+///   plausible float32 data anywhere checked** (every 4-byte window read
+///   as float32 produced denormals or implausible exponents, never a
+///   sane time/rotation/position range) -- int32 interpretation is far
+///   more plausible, including a real recurring pattern: small
+///   ascending-by-1 bytes (`0x51`, `0x52`, `0x53`) at regular ~20-byte
+///   intervals, present at matching relative offsets in both the
+///   shortest and longest sampled blobs. This looks like a repeating
+///   fixed sub-record (index/tag bytes), not raw motion data -- real,
+///   size-and-name-dependent content divergence doesn't become dense
+///   until byte 256 (82% of samples diverge there). **If this is
+///   float-encoded motion data at all, it most likely starts later than
+///   byte 400**, not right after the byte-240 template.
+/// - Correlating blob size against nearby skeletons' joint counts (via
+///   ``WOCCharacterSkeletonParser``) was tried and came up empty: the
+///   same 47-joint rig sits near several catalogs with wildly different
+///   per-clip blob sizes (2,576-16,944 bytes), so blob size is not a
+///   clean `jointCount x frames x constant` -- a real negative result,
+///   not a gap to fill in later.
+///
+/// Still genuinely open: what's actually stored in the byte 256-400+
+/// region. The "PS2 VU microcode-upload header" reading of the byte
+/// 0-240 template remains a plausible shape (not a confirmed format).
+/// Next concrete step: characterize the `0x51`/`0x52`/`0x53` repeating
+/// sub-record precisely (its exact stride and what surrounds it) across
+/// this same broad sample, since it's the first real recurring structure
+/// found past the template.
 public enum WOCCharacterAnimationCatalogParser {
     public enum ParseError: Error, Equatable {
         case truncated
