@@ -65,7 +65,7 @@ final class WOCViewerRenderer: NSObject, MTKViewDelegate, OrbitCameraRenderer {
         var pointSize: Float
     }
 
-    init?(objects: [WOCObjectInstance], objectCount: Int, objectMeshes: [MeshAsset] = []) {
+    init?(objects: [WOCObjectInstance], objectCount: Int, objectMeshes: [MeshAsset] = [], materialTextureIDs: [Int] = []) {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { return nil }
         self.device = device
         self.commandQueue = queue
@@ -126,14 +126,17 @@ final class WOCViewerRenderer: NSObject, MTKViewDelegate, OrbitCameraRenderer {
         self.depthState = depthState
 
         super.init()
-        upload(objects: objects, objectCount: objectCount, objectMeshes: objectMeshes)
+        upload(objects: objects, objectCount: objectCount, objectMeshes: objectMeshes, materialTextureIDs: materialTextureIDs)
     }
 
-    /// Deterministic per-`objectIndex` color (golden-ratio hue stepping,
-    /// same technique `ModelViewerRenderer.color(forSurfaceID:)` uses) --
-    /// distinguishes different real objects from each other visually
-    /// without asserting anything about what the object type "means".
-    private static func color(forObjectIndex index: UInt32) -> SIMD3<Float> {
+    /// Deterministic per-value color (golden-ratio hue stepping, same
+    /// technique `ModelViewerRenderer.color(forSurfaceID:)` uses) --
+    /// distinguishes different values from each other visually without
+    /// asserting anything about what the value "means". Used both for
+    /// `objectIndex` (the point-marker fallback) and, when a submesh has
+    /// a real material with a known texture, the texture ID itself --
+    /// see `upload`'s own doc comment.
+    private static func color(forHashValue index: UInt32) -> SIMD3<Float> {
         let goldenRatioConjugate: Double = 0.6180339887498949
         var hue = (Double(index % 1000) * goldenRatioConjugate).truncatingRemainder(dividingBy: 1.0)
         if hue < 0 { hue += 1 }
@@ -176,8 +179,14 @@ final class WOCViewerRenderer: NSObject, MTKViewDelegate, OrbitCameraRenderer {
     /// comment) or this specific entry's own chunks decoded to zero
     /// triangles. Each mesh vertex gets the instance's real, full
     /// rotation/scale/translation transform applied (``applyTransform``),
-    /// not just translation.
-    private func upload(objects: [WOCObjectInstance], objectCount: Int, objectMeshes: [MeshAsset]) {
+    /// not just translation. Each submesh is tinted by its own real
+    /// texture ID when one is known (`submesh.materialID` looked up in
+    /// `materialTextureIDs`, `MS00`'s confirmed per-material `tid` field)
+    /// -- so triangles that share a real texture share a color, a more
+    /// meaningful grouping than the previous per-object tint. Falls back
+    /// to the old per-object tint when no material/texture is known for
+    /// a submesh.
+    private func upload(objects: [WOCObjectInstance], objectCount: Int, objectMeshes: [MeshAsset], materialTextureIDs: [Int]) {
         guard !objects.isEmpty else { pointCount = 0; meshVertexCount = 0; return }
 
         var minP = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
@@ -192,12 +201,19 @@ final class WOCViewerRenderer: NSObject, MTKViewDelegate, OrbitCameraRenderer {
         var pointVertices: [PointVertexIn] = []
         var meshVertices: [MeshVertexIn] = []
         for object in objects {
-            let color = Self.color(forObjectIndex: object.objectIndex)
+            let objectColor = Self.color(forHashValue: object.objectIndex)
             let meshIndex = Int(object.objectIndex)
             if meshIndex >= 0, meshIndex < objectMeshes.count {
                 let mesh = objectMeshes[meshIndex]
                 var addedAny = false
                 for submesh in mesh.submeshes {
+                    var color = objectColor
+                    if let materialID = submesh.materialID, Int(materialID) < materialTextureIDs.count {
+                        let tid = materialTextureIDs[Int(materialID)]
+                        if tid >= 0 {
+                            color = Self.color(forHashValue: UInt32(tid))
+                        }
+                    }
                     for (a, b, c) in submesh.triangleIndices() {
                         meshVertices.append(MeshVertexIn(position: Self.applyTransform(submesh.vertices[a].position, object.matrix), color: color))
                         meshVertices.append(MeshVertexIn(position: Self.applyTransform(submesh.vertices[b].position, object.matrix), color: color))
@@ -207,7 +223,7 @@ final class WOCViewerRenderer: NSObject, MTKViewDelegate, OrbitCameraRenderer {
                 }
                 if addedAny { continue }
             }
-            pointVertices.append(PointVertexIn(position: object.worldPosition, color: color))
+            pointVertices.append(PointVertexIn(position: object.worldPosition, color: objectColor))
         }
 
         if pointVertices.isEmpty {

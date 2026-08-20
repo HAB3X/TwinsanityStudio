@@ -64,7 +64,7 @@ struct WOCViewerWindow: View {
         }
         .frame(minWidth: 820, minHeight: 560)
         .onAppear {
-            renderer = WOCViewerRenderer(objects: asset.objects, objectCount: asset.distinctObjectCount, objectMeshes: asset.objectMeshes)
+            renderer = WOCViewerRenderer(objects: asset.objects, objectCount: asset.distinctObjectCount, objectMeshes: asset.objectMeshes, materialTextureIDs: asset.materialTextureIDs)
         }
     }
 

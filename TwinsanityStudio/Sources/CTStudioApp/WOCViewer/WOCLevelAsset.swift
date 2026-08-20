@@ -34,18 +34,25 @@ public struct WOCLevelAsset: Identifiable {
     /// Real per-object mesh geometry, indexed exactly like `OBJ0` itself
     /// (`objects[i].objectIndex` looks up here) -- see `WOCMeshDecoder`'s
     /// doc comment for the confirmed byte layout this is built from
-    /// (`OBJ0`'s "arc" vertex batches, grouped into entries). Empty when
-    /// this file's chunk walk hit the known marker-reuse bug (`CASTLE_C.
-    /// GSC`/`HUB.GSC`-shaped files -- see `WOCContainerParser.
-    /// groupOBJ0ChunksIntoEntries`) and grouping was refused rather than
-    /// guessed at; the viewer falls back to a position marker in that
-    /// case, same as before this existed. Positions only, no rotation
-    /// applied yet -- `INST`'s own rotation matrix is real, decoded data
-    /// (`WOCContainerParser.Instance.matrix`) but this viewer doesn't
-    /// apply it yet, matching the point-cloud renderer's own existing
-    /// position-only behavior rather than introducing a new, unverified
-    /// claim about this format's matrix convention.
+    /// (`WOCContainerParser.parseObjSet`'s exact entry/geo boundaries,
+    /// verified on all 58 real files, zero exceptions -- this used to be
+    /// a heuristic marker-walk with real gaps on `CASTLE_C.GSC`/
+    /// `HUB.GSC`, solved this session). `WOCViewerRenderer` applies each
+    /// instance's real, full rotation/scale/translation transform, not
+    /// just position. Some geos within a real entry can still produce no
+    /// triangles (a likely `dmastream`-shaped payload this codebase
+    /// doesn't decode yet, not a bug) -- `WOCViewerRenderer` falls back
+    /// to a position marker only for those, not for whole files anymore.
     public let objectMeshes: [MeshAsset]
+    /// `MS00`'s own real per-material texture reference (relative offset
+    /// 424, confirmed -- see `WOCContainerParser.parseMaterialSet`'s doc
+    /// comment), indexed by `MeshSubmesh.materialID`. `objectMeshes`'
+    /// submeshes carry a real `materialID` into this array; not yet used
+    /// for actual texturing (that needs the still-unconfirmed per-vertex
+    /// UV lead -- see `WOCContainerParser.parseObjSetGeoArcs`'s doc
+    /// comment), but real and available for material-aware coloring/
+    /// inspection today.
+    public let materialTextureIDs: [Int]
 
     /// From the sibling `.AI` file, if present: real enemy/AI entity
     /// spawns with patrol waypoint paths. Fully decoded (see
@@ -193,13 +200,22 @@ public enum WOCLevelLoader {
             }
         }
 
+        let materialRecords = file.sections.first(where: { $0.tag == "MS00" })
+            .flatMap { try? WOCContainerParser.parseMaterialSet($0.payload) }?.records ?? []
+        // relative offset 424 in each real 464-byte MS00 record -- see
+        // parseMaterialSet's own doc comment for how this was confirmed.
+        let materialTextureIDs: [Int] = materialRecords.map { record in
+            let bytes = [UInt8](record)
+            guard bytes.count >= 428 else { return -1 }
+            let raw = UInt32(bytes[424]) | (UInt32(bytes[425]) << 8) | (UInt32(bytes[426]) << 16) | (UInt32(bytes[427]) << 24)
+            return Int(Int32(bitPattern: raw))
+        }
+
         var distinctObjectCount = 0
         var objectMeshes: [MeshAsset] = []
         if let obj0 = file.sections.first(where: { $0.tag == "OBJ0" }) {
             distinctObjectCount = (try? WOCContainerParser.leadingCount(obj0.payload)) ?? 0
-            let materialCount = file.sections.first(where: { $0.tag == "MS00" })
-                .flatMap { try? WOCContainerParser.parseMaterialSet($0.payload) }?.records.count
-            objectMeshes = WOCMeshDecoder.buildEntryMeshes(objectPayload: obj0.payload, materialCount: materialCount) ?? []
+            objectMeshes = WOCMeshDecoder.buildEntryMeshes(objectPayload: obj0.payload, materialCount: materialRecords.count) ?? []
         }
 
         var textures: [WOCDecodedTexture] = []
@@ -306,6 +322,7 @@ public enum WOCLevelLoader {
             textures: textures,
             sectionTags: file.sections.map(\.tag),
             objectMeshes: objectMeshes,
+            materialTextureIDs: materialTextureIDs,
             entities: entities,
             foliage: foliage,
             animations: animations,

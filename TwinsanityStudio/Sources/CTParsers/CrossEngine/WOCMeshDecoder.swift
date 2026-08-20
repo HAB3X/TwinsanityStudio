@@ -34,6 +34,11 @@ import CTModels
 /// normal strip-with-breaks encoding), `0x00` otherwise -- matching
 /// `ModelParser.swift`'s own `connRaw != 128` rule exactly.
 ///
+/// Each submesh's `materialID` is a real `MS00` record index
+/// (``WOCContainerParser/ObjSetGeoEntry/materialIndex``) -- can be
+/// cross-referenced against `MS00`'s own confirmed `tid` field (real
+/// offset 424) for that material's real texture.
+///
 /// **What this does NOT claim**: real UV coordinates, vertex colors, or
 /// normals -- none of those are decoded yet (see
 /// ``WOCContainerParser/parseObjSetGeoArcs(_:)``'s doc comment on the
@@ -80,14 +85,16 @@ public enum WOCMeshDecoder {
                 guard !quadwords.isEmpty else { return nil }
                 let vertices = quadwords.map { StaticVertex(position: $0.position) }
                 let connectivity = quadwords.map { (($0.control >> 8) & 0xFF) != 0x80 }
-                // materialID stays nil: WOC's MS00 index space is not the
-                // same as the original Twinsanity material index this
-                // field is keyed to elsewhere (OrphanedContent.swift,
-                // ResolvedModelAsset.swift) -- populating it with
-                // geo.materialIndex would risk wrong material/texture
-                // resolution in that shared code path. Out of scope for
-                // this migration, which is about geometry coverage only.
-                return MeshSubmesh(vertices: vertices, connectivity: connectivity, materialID: nil)
+                // materialID = geo.materialIndex (a real MS00 record
+                // index). Earlier left nil out of caution that this field
+                // is keyed to original Twinsanity's own material index
+                // space elsewhere (OrphanedContent.swift,
+                // ResolvedModelAsset.swift) -- directly verified since
+                // that WOCMeshDecoder's output never reaches those
+                // consumers (grepped for objectMeshes/WOCMeshDecoder
+                // outside WOCViewer/, zero hits), so there's no shared
+                // code path left to collide with. Real, safe to populate.
+                return MeshSubmesh(vertices: vertices, connectivity: connectivity, materialID: UInt32(geo.materialIndex))
             }
         }
         return MeshAsset(id: UInt32(entryIndex), isSkinned: false, submeshes: submeshes)
