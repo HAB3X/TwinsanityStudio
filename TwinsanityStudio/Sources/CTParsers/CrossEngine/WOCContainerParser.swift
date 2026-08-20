@@ -864,10 +864,35 @@ public enum WOCContainerParser {
     /// consecutive vertex *indices* within an arc aren't reliably
     /// spatially-adjacent in the way a strip format would suggest
     /// (undermining this whole test's premise, not just the sample
-    /// size), or these 6 values genuinely aren't UV at all. **Real
-    /// confirmation now looks like it needs an actual visual render**
-    /// (this environment cannot produce one), not further numeric
-    /// cross-checking of this same kind.
+    /// size), or these 6 values genuinely aren't UV at all.
+    ///
+    /// **Update: an actual visual render was built and checked (a
+    /// software triangle-outline overlay on the real decoded texture, not
+    /// literal in-engine rendering, but real mesh data + real texture
+    /// pixels + the confirmed strip-with-restarts connectivity, viewed
+    /// directly) -- result is a real negative, not just inconclusive.**
+    /// Exported a real 42-vertex/39-triangle arc from `AIRSHIP.GSC` (its
+    /// real shape, checked via a separate wireframe render, is a thin
+    /// curved ribbon/crescent strip -- confirming *why* the earlier
+    /// position/UV smoothness correlation stayed ambiguous even on
+    /// "larger" arcs: this shape class has little 2D spread for that test
+    /// to work with) plus one of that file's own real direct-color
+    /// textures (128x64), and overlaid the triangle list in texture space
+    /// for all 6 candidate 2-of-6-slot UV pairings ((0,1), (2,3), (4,5),
+    /// (0,3), (1,4), (2,5), each value ÷4096 per the confirmed bound).
+    /// **Every single candidate produces wildly self-crossing,
+    /// non-tiling triangles with no coherent unwrap pattern**, and the
+    /// raw per-vertex values span nearly the entire theoretical ±8 range
+    /// rather than clustering in a plausible local region -- the opposite
+    /// of what any real per-vertex UV parametrization of a small mesh
+    /// patch should look like. This doesn't prove the six Int16 fields
+    /// aren't UV under some *other* transform (a different divisor, a
+    /// per-arc offset, non-adjacent slot pairings not tried), but it does
+    /// rule out the simple "raw value ÷4096, any 2-of-6 slot pairing"
+    /// reading definitively, with a real visual check rather than a
+    /// numeric proxy for one. Confirming any further variant would need
+    /// the same kind of direct visual render repeated against a new
+    /// transform hypothesis, not a fundamentally different technique.
     public static func parseOBJ0ChunkArcs(_ payload: Data, chunk: OBJ0Chunk) -> [OBJ0Arc] {
         let bytes = [UInt8](payload)
         let arcMagic: [UInt8] = [0xD2, 0x80, 0x01, 0x6C]
