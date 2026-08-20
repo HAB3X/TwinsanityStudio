@@ -87,18 +87,71 @@ the kind of mistake this codebase's other decoders (see `WOCParticleParser`,
 `WOCObjectParser`'s doc comments) are careful to avoid by only decoding
 what's confirmed and stopping honestly at what isn't.
 
+## Update: real decompiled source found (`OpenCrashWOC-main`), partial confirmation
+
+`CrashWOC-PS2-Decomp-master` (this doc's original lead) turned out to be a
+Ghidra symbol-table export only -- `edlightAdd`/`edlightcbSaveLightData`
+have an address and a size, no body, no struct fields. But
+`OpenCrashWOC-main/code/src/gamecode/lights.c:41-103` (`LoadLights()`,
+annotated `//94% NGC` -- an alpha GameCube-port reconstruction, not raw
+PS2, so not gospel) has real, load-bearing source, independently
+corroborated by real DWARF debug info in the same tree
+(`code/src/dump_alphaNGCport_DWARF.txt:4187-4204`, typedef `Ed_Light`,
+compiler-verified field offsets):
+```
+type:Int32 pos.xyz:Float32x3 radius_pos.xyz:Float32x3 radius:Float32
+r,g,b:UInt8x3 colour.rgb:Float32x3
+[if type==1 || type==2: direction.xyz:Float32x3]   -- +12 bytes
+globalflag:UInt8(stored as Int32) brightness:UInt8(stored as Int32)
+```
+This is exactly 55 bytes in the base case and 67 (55+12) in the
+`type==1`/`2` case -- matching this doc's own confirmed 55-byte base and
+`K`-costs-12-extra-bytes finding precisely, from an independent source.
+
+**Directly re-verified against the real `AIRSHIP.LGT` on disk (not just
+trusting the agent report)**: applying this field order to light **1**
+(absolute file offset 83) decodes cleanly and self-consistently --
+`radius=2.311786`, `colour=(0.749,0.749,0.749)` matching `191/255` (the
+byte triple) to full float precision, and `radius_pos` equal to `pos`
+except on one axis offset by ≈`radius` (a real, redundant, internally-
+consistent encoding, not coincidence). **This independently confirms
+this doc's "normal shape" field layout is exactly right.**
+
+**But light 0 (offset 28) still does NOT decode cleanly** under this same
+field order -- `type` reads as a nonsense ~1.1 billion, `radius` as
+~-2.5e38 -- and since `K=0` for this file, it can't simply be "light 0 is
+the type-1/2 extended variant" (that would need 12 extra bytes this file's
+size doesn't have room for). **The original "second shape" problem is
+therefore still open, but now with a concrete new hypothesis, not just a
+statistical anomaly**: `LoadLights()` reads four leading counts --
+`LIGHTCOUNT, AMBIENTCOUNT, DIRECTCOUNT, POINTCOUNT` -- but the function
+body shown only ever loops `LIGHTCOUNT` times with a flat, inline
+`type`-tag read; the other three counts are read and never used again in
+what's shown. That's suspicious for a `//94%`-confidence reconstruction
+of an alpha port -- the real retail algorithm may bucket records by type
+(ambient records without a `pos`/`direction`, say) rather than a single
+uniform loop, which would explain why record 0 specifically (not a random
+middle record) fails to fit -- entry order may not be "N identical
+records" but "N1 ambient + N2 directional + N3 point", each with a
+genuinely different width, and this file's header fields (relative offset
+0/4/8/12, previously observed as `(1,1,0,1)` in this same file) may
+BE `LIGHTCOUNT`/`AMBIENTCOUNT`/`DIRECTCOUNT`/`POINTCOUNT` directly rather
+than an unrelated 4-int header -- worth checking directly: `AIRSHIP.LGT`'s
+own header is literally `(1,1,0,1)`, i.e. plausible small counts, not
+previously read that way.
+
 ## Suggested next steps for a future session
 
-- Nail down the type-tag hypothesis at record-relative offset 0: gather
-  more real "variant" records (start from `WESTERN.LGT`'s 3rd light and
-  `AIRSHIP.LGT`'s 2nd light, both already flagged) and check whether a
-  small-integer read there reliably predicts the shift in the rest of the
-  record, across many files.
-- Once variant detection is reliable, a decoder can walk records
-  correctly: read the type tag first, then dispatch to the right field
-  layout for that record specifically (not per-file).
-- The WoC PS2 decompilation project (`Games Files/Reference Files/
-  CrashWOC-PS2-Decomp-master/`) has named but not decompiled symbols for
-  `edlightAdd`/`edlightcbSaveLightData` — decompiling those specifically
-  would likely resolve the variant question directly rather than through
-  more statistical inference.
+- **Test the bucketed-count hypothesis directly**: check whether
+  `AIRSHIP.LGT`'s header `(1,1,0,1)` really means 1 ambient-type light (no
+  `pos`/`direction`, narrower record) + 1 directional/point light (the
+  already-confirmed 55-byte "normal" shape, matching light index 1) --
+  i.e. try decoding light 0 as a *narrower* ambient-specific record rather
+  than assuming it's the same 55-byte shape gone wrong. This is a much
+  more promising lead than continuing to search for a type tag inside a
+  uniform record.
+- If that doesn't resolve it, the PS2-native (not NGC-port) disassembly,
+  if `OpenCrashWOC-main`'s `PS2_Version/` directory has anything
+  equivalent to `lights.c`, would be worth checking specifically --
+  `lights.c` itself is explicitly flagged 94% confidence, alpha-port, not
+  retail PS2.
