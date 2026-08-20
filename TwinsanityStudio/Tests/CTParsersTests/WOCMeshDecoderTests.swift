@@ -44,6 +44,44 @@ final class WOCMeshDecoderTests: XCTestCase {
         
     }
 
+    /// Real, confirmed structure within each arc's own `28 + 12*N`-byte
+    /// trailing block (see `OBJ0Arc`'s doc comment): the fixed 28-byte
+    /// header's relative byte 10 exactly echoes the arc's own vertex
+    /// count `N`, and bytes 4-7/8-9/11 are real global constants.
+    /// Verified directly here (not just trusting the doc comment) across
+    /// every real arc in `AIRSHIP.GSC`'s first 10 entries.
+    func testArcTrailerHeaderFieldsAreReal() throws {
+        let decoded = try loadAndDecompressRealGSC("A/AIRSHIP/AIRSHIP.GSC")
+        let file = try WOCContainerParser.parse(decoded)
+        let obj0 = try XCTUnwrap(file.sections.first { $0.tag == "OBJ0" })
+        let chunks = WOCContainerParser.walkOBJ0Chunks(obj0.payload)
+        let bytes = [UInt8](obj0.payload)
+
+        var checkedArcs = 0
+        for chunk in chunks.prefix(60) {
+            var offset = chunk.markerOffset + 20
+            let chunkEnd = chunk.byteOffset + chunk.length
+            while offset + 36 <= chunkEnd, offset + 36 <= bytes.count {
+                guard Array(bytes[offset..<(offset + 4)]) == [0xD2, 0x80, 0x01, 0x6C] else { break }
+                let n = Int(bytes[offset + 4])
+                let vertexStart = offset + 36
+                guard vertexStart + n * 16 <= bytes.count else { break }
+                let trailerStart = vertexStart + n * 16
+                let trailerLen = 28 + 12 * n
+                guard trailerStart + trailerLen <= bytes.count else { break }
+
+                XCTAssertEqual(Int(bytes[trailerStart + 10]), n, "trailer byte 10 should echo N")
+                XCTAssertEqual(Array(bytes[(trailerStart + 4)..<(trailerStart + 8)]), [0x01, 0x00, 0x00, 0x05])
+                XCTAssertEqual(Array(bytes[(trailerStart + 8)..<(trailerStart + 10)]), [0x04, 0x80])
+                XCTAssertEqual(bytes[trailerStart + 11], 0x6D)
+                checkedArcs += 1
+
+                offset = trailerStart + trailerLen
+            }
+        }
+        XCTAssertGreaterThan(checkedArcs, 0, "expected at least some real arcs to check")
+    }
+
     /// The confirmed connectivity convention (`(control >> 8) & 0xFF ==
     /// 0x80` marks a strip restart, exactly `ModelParser.swift`'s own
     /// `connRaw != 128` rule for original Twinsanity meshes) holds

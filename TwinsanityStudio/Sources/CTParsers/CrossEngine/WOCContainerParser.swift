@@ -49,18 +49,18 @@ import Foundation
 ///   between the name blob and the next section are not understood (their
 ///   length varies non-trivially and doesn't reduce to a formula from the
 ///   name list alone).
-/// - `MS00` -- see ``parseMeshSet(_:)``. Confirmed to be `count` fixed
+/// - `MS00` -- see ``parseMaterialSet(_:)``. Confirmed to be `count` fixed
 ///   464-byte records (exact division verified universally across the
-///   full 54-file corpus, zero exceptions). Record internals not decoded.
-///   **Naming correction (see "Corrections from decompiled reference
-///   source" below): the real handler is `ReadMaterialSet`, not a mesh
-///   reader.** `MS00` is the file's *material* table (`gscene->mtls`),
-///   referenced by index from `OBJ0` geometry entries and `TAS0` -- the
-///   `parseMeshSet`/`MeshSetRecord` names in this codebase are now known
-///   to be mislabeled. Left unrenamed pending disc re-verification (the
-///   464-byte framing itself isn't contradicted by this finding, only the
-///   name); a future pass should rename the Swift symbols to
-///   `parseMaterialSet`/`MaterialSetRecord`.
+///   full 54-file corpus, zero exceptions), one confirmed field within
+///   each record (a real texture-ID reference at relative offset 424 --
+///   see ``parseMaterialSet(_:)``'s own doc comment). **Naming
+///   correction (see "Corrections from decompiled reference source"
+///   below): the real handler is `ReadMaterialSet`, not a mesh reader.**
+///   `MS00` is the file's *material* table (`gscene->mtls`), referenced
+///   by index from `OBJ0` geometry entries and `TAS0` -- renamed from
+///   the original `parseMaterialSet` guess now that disc re-verification
+///   (the offset-424 `tid` field) confirms it's really a material table,
+///   not just plausible naming.
 /// - `IABL` -- see ``parseAttributeBlock(_:)``. Same framing, confirmed
 ///   fixed 96-byte records across all 24 files in the full corpus that
 ///   have it, zero exceptions. Sibling `ALIB` was explicitly tested and
@@ -386,7 +386,7 @@ public enum WOCContainerParser {
     /// between that struct and `ReadObjSet`'s source, not just a blocked
     /// experiment. Records are still returned as raw bytes rather than a
     /// guessed struct.
-    public static func parseMeshSet(_ payload: Data) throws -> (records: [Data], recordWidth: Int) {
+    public static func parseMaterialSet(_ payload: Data) throws -> (records: [Data], recordWidth: Int) {
         let bytes = [UInt8](payload)
         guard bytes.count >= 8 else { throw ParseError.truncated }
         let count = Int(leUInt32(bytes, 0))
@@ -627,7 +627,7 @@ public enum WOCContainerParser {
     /// Decodes an `INST` section's payload: `count:UInt32LE` +
     /// `reserved:UInt32LE` + `count` fixed-width 80-byte records. Record
     /// width and count were cross-verified against real files the same
-    /// way as ``parseMeshSet(_:)``. See ``Instance/objectIndex`` for the
+    /// way as ``parseMaterialSet(_:)``. See ``Instance/objectIndex`` for the
     /// (now fully confirmed, 53-file) `OBJ0` cross-reference relationship.
     public static func parseInstances(_ payload: Data) throws -> [Instance] {
         let bytes = [UInt8](payload)
@@ -730,9 +730,18 @@ public enum WOCContainerParser {
     /// followed by `N` real ``VertexQuadword``s (the same 16-byte
     /// `control:u32 + position:xyz Float` layout `parseVertexQuadwords`
     /// already established, now confirmed to span a whole arc rather than
-    /// an arbitrary prefix), then a `28 + 12*N`-byte trailing block whose
-    /// contents are *not* decoded (see ``parseOBJ0ChunkArcs(_:chunk:)``'s
-    /// doc comment) before the next arc's header.
+    /// an arbitrary prefix), then a `28 + 12*N`-byte trailing block --
+    /// mostly still not decoded (see ``parseOBJ0ChunkArcs(_:chunk:)``'s
+    /// doc comment), except for real structure found in the block's own
+    /// fixed 28-byte header: **relative byte 10 exactly echoes the arc's
+    /// own vertex count `N`** (confirmed zero exceptions across 7,145
+    /// real arcs spanning 3 files -- `AIRSHIP.GSC`/`DROID.GSC`/
+    /// `FARM.GSC`), bytes 4-7/8-9/11 are real global constants (`01 00 00
+    /// 05`, `04 80`, `6D`, identical in every arc in every file checked),
+    /// and bytes 0-3 read as a real, usually-small `Float32` (samples
+    /// seen: `0.048, -0.048, -0.092, 0.148`) that varies per arc with no
+    /// found correlation to material index -- before the next arc's
+    /// header.
     ///
     /// **Visually verified**, not just numerically plausible: rendering
     /// full real entries as point clouds/wireframes (multiple entries
@@ -754,12 +763,16 @@ public enum WOCContainerParser {
     /// 3 files checked, never seen over ~160), matching what the chunk-
     /// length walk (``walkOBJ0Chunks(_:)``) already leaves unconsumed at
     /// the very end of a payload. That remainder's own contents are
-    /// **not decoded** -- neither is each arc's own `28 + 12*N`-byte
-    /// trailing block (a follow-up investigation found a per-vertex Y-
-    /// position-shaped 16-bit field in it on two small arcs, at a scale
-    /// factor that did *not* reproduce on a larger arc, so a general
-    /// decode -- plausibly UV coordinates, given it doesn't fit a global
-    /// constant -- remains open).
+    /// **not decoded**. Each arc's own `28 + 12*N`-byte trailing block is
+    /// now partially decoded -- see ``OBJ0Arc``'s doc comment for the
+    /// confirmed fixed-header fields (`N` echoed at relative byte 10,
+    /// three constant fields, one real per-arc `Float32`) -- but the
+    /// `12*N`-byte per-vertex portion that follows is still open (a
+    /// follow-up investigation found a per-vertex Y-position-shaped
+    /// 16-bit field in it on two small arcs, at a scale factor that did
+    /// *not* reproduce on a larger arc, so a general decode -- plausibly
+    /// UV coordinates, given it doesn't fit a global constant -- remains
+    /// open).
     public static func parseOBJ0ChunkArcs(_ payload: Data, chunk: OBJ0Chunk) -> [OBJ0Arc] {
         let bytes = [UInt8](payload)
         let arcMagic: [UInt8] = [0xD2, 0x80, 0x01, 0x6C]
@@ -905,7 +918,7 @@ public enum WOCContainerParser {
     /// in the full 54-file corpus that have `IABL`, zero exceptions, exact
     /// division every time.
     public static func parseAttributeBlock(_ payload: Data) throws -> [AttributeBlockRecord] {
-        let (records, width) = try parseMeshSet(payload)
+        let (records, width) = try parseMaterialSet(payload)
         guard width == 96 else { return [] }
         return records.map { record in
             let bytes = [UInt8](record)
@@ -1580,7 +1593,7 @@ public enum WOCContainerParser {
     ///           payloadLength:UInt32LE payload:Bytes(payloadLength)
     /// ```
     /// `materialIndex` is checked against `materialCount` (that same
-    /// file's own real `MS00` record count, via ``parseMeshSet(_:)``)
+    /// file's own real `MS00` record count, via ``parseMaterialSet(_:)``)
     /// when the caller provides it -- every real index was in-bounds in
     /// all 58 files checked, zero exceptions, so an out-of-bounds index
     /// is treated as real evidence something upstream desynced rather

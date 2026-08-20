@@ -110,7 +110,7 @@ final class WOCContainerParserTests: XCTestCase {
             let decoded = try loadAndDecompressRealGSC(sample.path)
             let file = try WOCContainerParser.parse(decoded)
             let ms00 = try XCTUnwrap(file.sections.first { $0.tag == "MS00" }, "no MS00 in \(sample.path)")
-            let (records, width) = try WOCContainerParser.parseMeshSet(ms00.payload)
+            let (records, width) = try WOCContainerParser.parseMaterialSet(ms00.payload)
             XCTAssertEqual(records.count, sample.expectedCount, "record count for \(sample.path)")
             XCTAssertEqual(width, 464, "record width for \(sample.path)")
         }
@@ -131,7 +131,7 @@ final class WOCContainerParserTests: XCTestCase {
             guard let ms00 = file.sections.first(where: { $0.tag == "MS00" }),
                   let tst0 = file.sections.first(where: { $0.tag == "TST0" }) else { continue }
             let textureCount = WOCContainerParser.scanTextureEntries(tst0.payload).count
-            let (records, _) = try WOCContainerParser.parseMeshSet(ms00.payload)
+            let (records, _) = try WOCContainerParser.parseMaterialSet(ms00.payload)
 
             var tids = Set<Int32>()
             for record in records {
@@ -424,7 +424,7 @@ final class WOCContainerParserTests: XCTestCase {
         XCTAssertEqual(names, ["target_red", "target_red_a", "target_white", "target_white_a", "cannon"])
 
         let ms00 = try XCTUnwrap(file.sections.first { $0.tag == "MS00" })
-        let (ms00Records, ms00Width) = try WOCContainerParser.parseMeshSet(ms00.payload)
+        let (ms00Records, ms00Width) = try WOCContainerParser.parseMaterialSet(ms00.payload)
         XCTAssertEqual(ms00Records.count, 57)
         XCTAssertEqual(ms00Width, 464)
 

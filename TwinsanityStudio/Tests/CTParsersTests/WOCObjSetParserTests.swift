@@ -68,7 +68,7 @@ final class WOCObjSetParserTests: XCTestCase {
             guard let obj0 = file.sections.first(where: { $0.tag == "OBJ0" }) else { continue }
             let declaredCount = try WOCContainerParser.leadingCount(obj0.payload)
             let mtlCount = file.sections.first(where: { $0.tag == "MS00" })
-                .flatMap { try? WOCContainerParser.parseMeshSet($0.payload) }?.records.count
+                .flatMap { try? WOCContainerParser.parseMaterialSet($0.payload) }?.records.count
 
             let objSet = try WOCContainerParser.parseObjSet(obj0.payload, materialCount: mtlCount)
             XCTAssertEqual(objSet.entries.count, declaredCount, "\(relativePath): entries.count should match OBJ0's own declared count")
