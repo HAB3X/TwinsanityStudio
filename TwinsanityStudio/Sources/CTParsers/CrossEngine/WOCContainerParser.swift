@@ -52,10 +52,27 @@ import Foundation
 /// - `MS00` -- see ``parseMeshSet(_:)``. Confirmed to be `count` fixed
 ///   464-byte records (exact division verified universally across the
 ///   full 54-file corpus, zero exceptions). Record internals not decoded.
+///   **Naming correction (see "Corrections from decompiled reference
+///   source" below): the real handler is `ReadMaterialSet`, not a mesh
+///   reader.** `MS00` is the file's *material* table (`gscene->mtls`),
+///   referenced by index from `OBJ0` geometry entries and `TAS0` -- the
+///   `parseMeshSet`/`MeshSetRecord` names in this codebase are now known
+///   to be mislabeled. Left unrenamed pending disc re-verification (the
+///   464-byte framing itself isn't contradicted by this finding, only the
+///   name); a future pass should rename the Swift symbols to
+///   `parseMaterialSet`/`MaterialSetRecord`.
 /// - `IABL` -- see ``parseAttributeBlock(_:)``. Same framing, confirmed
 ///   fixed 96-byte records across all 24 files in the full corpus that
 ///   have it, zero exceptions. Sibling `ALIB` was explicitly tested and
 ///   ruled out as fixed-width (different widths per file).
+///   **Naming correction: the real handler is `ReadInstAnim`** (source's
+///   own comment: "Dunno about the name, it was commented as
+///   INSTANIMBLOCK") -- i.e. **Instance Animation**, not "Attribute
+///   Block". Its real C framing (`count:UInt32LE reserved:UInt32LE` then
+///   the record blob, with per-instance assignment driven by an
+///   `instances[i].anim != NULL` marker set elsewhere) matches this
+///   codebase's confirmed byte framing exactly. Left unrenamed pending a
+///   confirmation pass on `AttributeBlockRecord`'s internal field names.
 /// - `INST` (placed object instances) -- see ``parseInstances(_:)`` and
 ///   ``Instance``. The 80-byte records are real 4x4 world transforms
 ///   (`w == 1.0` universally, translations plot into recognizable real
@@ -91,6 +108,17 @@ import Foundation
 ///   (zero false positives) -- real and deliberate, but only a minority
 ///   shape; most files' `SST0` trailers look different or are absent.
 ///   Blob internals unresolved.
+///   **Naming correction: the real handler is `ReadSplineSet`** -- i.e.
+///   `SST0` is a **Spline Set**, not an unnamed footer blob. This
+///   independently corroborates the `nugspline_s`/`NuSplineFind` findings
+///   from the new `.VIS`/camera-path work (``WOCCameraPathParser``): WoC
+///   splines (named point paths, used for both camera rails and
+///   visibility-culling regions) are very likely stored here at the
+///   `.GSC` level. The blob's internal framing is not yet re-derived from
+///   this correction -- worth revisiting once disc access resumes,
+///   ideally cross-referencing this section's blob shape against
+///   `WOCCameraPathParser`'s still-raw `body` field, since both may
+///   ultimately decode to the same `nuvec_s`-strided point-list shape.
 /// - `ALIB` -- see ``parseAttributeLibrary(_:)``. NOT a fixed-width table
 ///   (confirmed dead end from an earlier pass); the real structure is a
 ///   `count`-entry offset table (relative to just past the table itself,
@@ -102,6 +130,26 @@ import Foundation
 ///   `ALIB`-indices-never-referenced-by-`IABL` matches the exact set of
 ///   `ALIB`'s own empty-sentinel records. Record *internals* (once
 ///   boundaries are known) are still undecoded.
+///   **Naming correction: the real handler is `ReadAnimationLibrary`**
+///   (not "Attribute Library" as this codebase's own guess had it). More
+///   importantly, the real in-memory shape it builds is a genuine
+///   **skeletal animation curve tree**: each `ALIB` entry is a
+///   self-relative pointer (same aliasing scheme confirmed in `.CUT`) to
+///   a `nuanimdata_s` struct, which fans out through `chunks[]` →
+///   `animcurvesets[]` (one per animated node) → `curves[]` →
+///   `animkeys`. This lines up structurally with this codebase's own
+///   confirmed `count:UInt32LE reserved:UInt32LE(==0)
+///   offsetTable:UInt32LE[count] recordBlob:Bytes` framing -- the offset
+///   table is very likely exactly this self-relative pointer array, and
+///   `recordBlob` is very likely the nested chunk/curveset/curve/animkey
+///   data itself. This is the single most promising unexplored lead for
+///   the still-unsolved "how are skeletal animation curves actually
+///   encoded" question (see also `CHARS.DAT`'s own still-undecoded
+///   per-clip motion blobs) -- not yet
+///   pursued further because it needs real byte inspection to pin down
+///   `nuanimdata_s`/`nuanimdatachunk_s`/`nuanimcurveset_s`/`nuanimcurve_s`'s
+///   concrete field widths, none of which are given in the decompiled
+///   source (it only shows pointer-relocation logic, not struct layout).
 /// - `OBJ0` -- not fully decoded, the highest-value remaining target:
 ///   its per-entry format holds real embedded mesh geometry (a 16-byte
 ///   vertex quadword pattern was confirmed and visually verified -- see
@@ -123,9 +171,53 @@ import Foundation
 ///   decoded texture list (``scanTextureEntries(_:)``) -- but the
 ///   per-entry-to-texture-index mapping isn't nailed down (see that
 ///   function's own doc comment for exactly what is and isn't confirmed).
+///   **Naming correction, and a real open question it raises**: the real
+///   handler (referenced, not defined, in the decompiled source -- its
+///   dispatch-table comment is even mislabeled `// MS00`, a copy-paste
+///   typo) is `ReadTexAnimSet` -- i.e. `TAS0` is a **Texture Animation
+///   Set**, not a static texture/material assignment table as this
+///   codebase's own name/doc previously assumed. This raises a real,
+///   currently-unverified possibility: the per-entry `UInt16` texture
+///   index lists this codebase already decodes may be animated-texture
+///   **frame sequences** (a UV/texture-swap flipbook) rather than a
+///   static binding, which would also explain why `STATION.GSC`'s entries
+///   were observed to have unequal index-list group sizes (a natural
+///   consequence of different animations having different frame counts,
+///   not an anomaly). Not yet re-verified against real bytes with this
+///   hypothesis in mind -- worth a dedicated pass once disc access
+///   resumes, before trusting the current `TextureAssignmentEntry` naming.
 ///
 /// Every section not listed above as decoded is exposed as raw
 /// ``WOCSection/payload`` bytes rather than guessed at.
+///
+/// **Corrections from decompiled reference source (added post-hoc, not
+/// re-verified against real bytes)**: a later session found
+/// `Games Files/Reference Files/OpenCrashWOC-main`, a partially
+/// decompiled/reconstructed WoC source tree (match-confidence annotated,
+/// e.g. `//MATCH`, `//98%`) that includes `NuGScnLoadFix`, the real
+/// section-tag dispatch switch this whole format was reverse-engineered
+/// without ever having seen -- `PS2_Version/GHG_GSC_FUNCTIONS.txt`. It
+/// confirms every section tag's real name and, for several, real C-level
+/// field framing that lines up closely with (and in some cases directly
+/// confirms) what this file already found by hand: `INST` is read as
+/// `count:UInt32LE reserved:UInt32LE` then `count` fixed-size instance
+/// structs (exactly this codebase's own confirmed `INST` framing); `NTBL`
+/// is `byteLength:UInt32LE` then that many raw bytes, lowercased in place
+/// (exactly this codebase's own confirmed `NTBL` framing); `SPEC` is read
+/// as `count:UInt32LE reserved:UInt32LE` then `count` records **of the
+/// same struct width as `INST`**, each carrying an instance index and a
+/// name-table byte offset (independently corroborates this codebase's own
+/// "`SPEC` reuses `INST`'s 80-byte shape" finding, from the opposite
+/// direction); `TST0` is read per-entry as `size:UInt32LE offset:UInt32LE`
+/// with a same-shape/different-framing branch when `offset == 0` (broadly
+/// consistent with, though not byte-identical to, this codebase's own
+/// `TST0` heuristic scan -- worth a direct line-up once disc access
+/// resumes). Per-tag naming/semantic corrections are noted inline next to
+/// each affected tag above (`MS00`, `IABL`, `ALIB`, `SST0`, `TAS0`); none
+/// of them have been re-verified against real bytes yet, since
+/// `/Volumes/CRASH` was unmounted when this was written -- treat every
+/// correction above as "real evidence, pending byte-level confirmation",
+/// not yet promoted to this file's own "Confirmed" bar.
 public enum WOCContainerParser {
     public enum ParseError: Error, Equatable {
         case badMagic
