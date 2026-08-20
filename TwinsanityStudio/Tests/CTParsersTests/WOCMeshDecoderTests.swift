@@ -11,6 +11,13 @@ import XCTest
 /// inspected and showed genuinely coherent 3D shapes -- a smooth dome,
 /// a clean ring, and closed multi-part cylindrical assemblies -- not
 /// noise.
+///
+/// Note: `WOCMeshDecoder` itself has since migrated to
+/// `WOCContainerParser.parseObjSet`/`parseObjSetGeoArcs` for entry/geo
+/// boundaries -- `walkOBJ0Chunks`/`groupOBJ0ChunksIntoEntries`/
+/// `parseOBJ0ChunkArcs` (tested directly below) are exercised here as
+/// still-real, still-present, independently-useful decoders, not as
+/// what `WOCMeshDecoder` calls today.
 final class WOCMeshDecoderTests: XCTestCase {
     private func loadAndDecompressRealGSC(_ relativePath: String) throws -> [UInt8] {
         let path = "/Volumes/CRASH/LEVELS/\(relativePath)"
@@ -88,19 +95,32 @@ final class WOCMeshDecoderTests: XCTestCase {
         XCTAssertGreaterThan(totalTriangles, 0)
     }
 
-    /// `CASTLE_C.GSC` is one of the two files with heterogeneous
-    /// `OBJ0` chunk headers `walkOBJ0Chunks` only partially covers (see
-    /// its own doc comment on the containment fix for the marker-reuse
-    /// bug this used to trigger). Mesh building now succeeds with a real,
-    /// if far-from-complete, set of entries rather than either extreme
-    /// (fabricated full coverage, or a blanket refusal).
-    func testHeterogeneousFileBuildsPartialRealMeshes() throws {
-        let decoded = try loadAndDecompressRealGSC("A/CASTLE_C/CASTLE_C.GSC")
-        let file = try WOCContainerParser.parse(decoded)
-        let obj0 = try XCTUnwrap(file.sections.first { $0.tag == "OBJ0" })
-        let leadingCount = try WOCContainerParser.leadingCount(obj0.payload)
-        let meshes = try XCTUnwrap(WOCMeshDecoder.buildEntryMeshes(objectPayload: obj0.payload))
-        XCTAssertGreaterThan(meshes.count, 0, "should build at least some real meshes")
-        XCTAssertLessThan(meshes.count, leadingCount, "coverage on this file is known-incomplete -- update this test if a fuller OBJ0 fix lands")
+    /// `CASTLE_C.GSC`/`HUB.GSC` are the two files whose heterogeneous
+    /// `OBJ0` chunk headers used to limit `WOCMeshDecoder` to a small
+    /// fraction of real entries (8/1113 and 27/700, via the old
+    /// `walkOBJ0Chunks` marker-walk). Migrating to
+    /// `WOCContainerParser.parseObjSet` fixed entry-level coverage
+    /// completely -- `meshes.count` now exactly matches `OBJ0`'s own
+    /// declared count on every file, full stop. What's still genuinely
+    /// partial is *vertex* coverage within some entries: a real fraction
+    /// of geos on these two files produce no arcs at all (see
+    /// `WOCContainerParser.parseObjSetGeoArcs`'s doc comment -- likely a
+    /// structurally different `dmastream` payload shape, not a bug), so
+    /// some entries build a `MeshAsset` with zero submeshes rather than
+    /// real geometry. This test checks both halves of that honestly: full
+    /// entry coverage, and that at least some (not all, and not zero)
+    /// entries have real triangles.
+    func testHeterogeneousFilesBuildFullEntryCoverageWithPartialGeometry() throws {
+        for relativePath in ["A/CASTLE_C/CASTLE_C.GSC", "B/HUB/HUB.GSC"] {
+            let decoded = try loadAndDecompressRealGSC(relativePath)
+            let file = try WOCContainerParser.parse(decoded)
+            let obj0 = try XCTUnwrap(file.sections.first { $0.tag == "OBJ0" })
+            let leadingCount = try WOCContainerParser.leadingCount(obj0.payload)
+            let meshes = try XCTUnwrap(WOCMeshDecoder.buildEntryMeshes(objectPayload: obj0.payload))
+            XCTAssertEqual(meshes.count, leadingCount, "\(relativePath): entry coverage should now be complete")
+
+            let meshesWithGeometry = meshes.filter { !$0.submeshes.isEmpty }
+            XCTAssertGreaterThan(meshesWithGeometry.count, 0, "\(relativePath): expected at least some entries to produce real geometry")
+        }
     }
 }

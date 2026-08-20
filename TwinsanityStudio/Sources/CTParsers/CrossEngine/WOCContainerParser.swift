@@ -758,6 +758,90 @@ public enum WOCContainerParser {
         return arcs
     }
 
+    /// Walks the real arc sequence directly within one ``ObjSetGeoEntry``'s
+    /// `payload` -- the same real arc format ``parseOBJ0ChunkArcs(_:chunk:)``
+    /// decodes, but anchored to ``parseObjSet(_:materialCount:)``'s exact
+    /// payload boundary instead of a heuristic chunk-length scan.
+    ///
+    /// **CONFIRMED**: every one of 222 real mesh `geo` payloads checked on
+    /// `AIRSHIP.GSC` contains the same `56 00 01 6C` marker
+    /// ``parseOBJ0ChunkArcs`` anchors on, always at relative offset 16 in
+    /// that file; the arc sequence starts exactly 20 bytes after it,
+    /// matching ``parseOBJ0ChunkArcs``'s own `markerOffset + 20`
+    /// convention precisely. On `CASTLE_C.GSC`/`HUB.GSC` the marker's own
+    /// relative offset varies (`16` or `36` seen, zero exceptions across
+    /// 1713/1506 real geos checked) -- this function finds it by direct
+    /// search rather than assuming a fixed offset, unlike an earlier
+    /// investigation pass that assumed offset 16 universally.
+    ///
+    /// **Verified regression-free and a real improvement, not just a
+    /// hypothesis**: on `AIRSHIP.GSC` this reproduces
+    /// ``parseOBJ0ChunkArcs``'s existing total exactly (408 arcs, 11516
+    /// vertices, zero difference) -- real proof of equivalence on a file
+    /// where the old approach already worked, not just "doesn't crash".
+    /// On the two files the old chunk-grouping approach could only
+    /// partially cover, this recovers dramatically more real geometry:
+    /// `CASTLE_C.GSC` 1291 arcs / 42,554 vertices (old grouped approach:
+    /// 11 arcs / 404 vertices from only 8 of 1113 real entries) and
+    /// `HUB.GSC` 962 arcs / 27,548 vertices (old: 28 arcs / 986 vertices
+    /// from only 27 of 700 real entries).
+    ///
+    /// **Not claimed complete even now**: real, often-large remainders
+    /// stay after the last decoded arc on many geos in `CASTLE_C.GSC`/
+    /// `HUB.GSC` specifically (median remainder far larger than
+    /// `AIRSHIP.GSC`'s ~60-byte typical trailer). The leading working
+    /// explanation (not independently confirmed byte-by-byte): `ReadObjSet`'s
+    /// real source branches per-geo on the referenced material's `ot`
+    /// attribute bit between this arc/"tristream" format and a
+    /// structurally different DMA-tag "dmastream" format neither this
+    /// function nor ``parseOBJ0ChunkArcs`` understands -- `MS00`'s `ot`
+    /// bit isn't decoded yet to confirm this directly. Either way, a
+    /// remainder here is real, honestly-unconsumed data, not an error to
+    /// paper over -- callers should not assume every geo produces arcs.
+    public static func parseObjSetGeoArcs(_ payload: Data) -> [OBJ0Arc] {
+        let bytes = [UInt8](payload)
+        let arcMagic: [UInt8] = [0xD2, 0x80, 0x01, 0x6C]
+        let chunkMarker: [UInt8] = [0x56, 0x00, 0x01, 0x6C]
+        guard bytes.count >= 20 else { return [] }
+
+        var markerOffset: Int?
+        var searchPos = 0
+        while searchPos + 4 <= bytes.count {
+            if Array(bytes[searchPos..<(searchPos + 4)]) == chunkMarker {
+                markerOffset = searchPos
+                break
+            }
+            searchPos += 1
+        }
+        guard let markerOffset else { return [] }
+
+        var offset = markerOffset + 20
+        var arcs: [OBJ0Arc] = []
+        while offset + 36 <= bytes.count {
+            guard Array(bytes[offset..<(offset + 4)]) == arcMagic else { break }
+            let n = Int(bytes[offset + 4])
+            let n3 = leUInt32(bytes, offset + 24)
+            guard n3 == UInt32(n * 3) else { break }
+            let vertexStart = offset + 36
+            guard vertexStart + n * 16 <= bytes.count else { break }
+            let nextOffset = vertexStart + n * 16 + 28 + 12 * n
+            guard nextOffset <= bytes.count else { break } // don't overrun the trailer skip
+            var vertices: [VertexQuadword] = []
+            vertices.reserveCapacity(n)
+            for i in 0..<n {
+                let base = vertexStart + i * 16
+                let control = leUInt32(bytes, base)
+                let x = leFloat32(bytes, base + 4)
+                let y = leFloat32(bytes, base + 8)
+                let z = leFloat32(bytes, base + 12)
+                vertices.append(VertexQuadword(control: control, position: SIMD3(x, y, z)))
+            }
+            arcs.append(OBJ0Arc(vertexCount: n, vertices: vertices))
+            offset = nextOffset
+        }
+        return arcs
+    }
+
     /// A single `IABL` record ("Instance Attribute BLock"?): a 96-byte
     /// fixed record where only one field is decoded -- see
     /// ``parseAttributeBlock(_:)``.

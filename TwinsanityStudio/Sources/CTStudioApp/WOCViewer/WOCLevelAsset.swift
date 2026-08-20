@@ -185,7 +185,9 @@ public enum WOCLevelLoader {
         var objectMeshes: [MeshAsset] = []
         if let obj0 = file.sections.first(where: { $0.tag == "OBJ0" }) {
             distinctObjectCount = (try? WOCContainerParser.leadingCount(obj0.payload)) ?? 0
-            objectMeshes = WOCMeshDecoder.buildEntryMeshes(objectPayload: obj0.payload) ?? []
+            let materialCount = file.sections.first(where: { $0.tag == "MS00" })
+                .flatMap { try? WOCContainerParser.parseMeshSet($0.payload) }?.records.count
+            objectMeshes = WOCMeshDecoder.buildEntryMeshes(objectPayload: obj0.payload, materialCount: materialCount) ?? []
         }
 
         var textures: [WOCDecodedTexture] = []
