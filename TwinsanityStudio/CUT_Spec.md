@@ -1,7 +1,13 @@
 # WoC `.CUT` (Cutscene) Format — Investigation Notes
 
-Status: **investigated, not implemented**. Three files (`BLACK.CUT`,
-`CORRIDOR.CUT`, `STATION.CUT`) have now been mapped. `BLACK.CUT` and
+Status: **implemented** (`WOCCutsceneParser.swift`) — a validated
+sequential shape-scanner (not the pointer-graph walker originally
+sketched below; see the parser's own doc comment for why) achieves
+byte-exact, zero-gap coverage on all 3 fully-mapped files and parses the
+entire real 18-file `.CUT` corpus without throwing. See
+`WOCCutsceneParserTests.swift` for golden-value regression tests. Three
+files (`BLACK.CUT`, `CORRIDOR.CUT`, `STATION.CUT`) have been mapped by
+hand as the ground truth this decoder is verified against. `BLACK.CUT` and
 `CORRIDOR.CUT` are complete, gap-free, field-level byte-verified maps.
 `STATION.CUT` (12,125 bytes, ~12-17x bigger) was first mapped at the
 **region level** only (every byte assigned to a region, verified
