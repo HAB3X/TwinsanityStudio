@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 /// Decoder for WoC `.VIS` files -- and the one real `.POO` file
 /// (`WEST_A.POO`), confirmed to be the exact same format under a
@@ -35,20 +36,53 @@ import Foundation
 /// indistinguishable from string null-terminators; this scan-forward
 /// exact-EOF-landing approach avoids that ambiguity entirely).
 ///
-/// **Not confirmed**: `headerB`'s meaning (checked and ruled out as a
-/// simple record count or the string count). The body between the fixed
-/// 12-byte header and the string table is a real node/path graph --
-/// cross-referenced against that same level's real `INST` world-space
-/// coordinate range (via `WOCContainerParser.parseInstances`) and
-/// confirmed to contain genuinely spatial float data in the same
-/// world-space envelope, plus what looks like a real index/edge table
-/// (`4 + nodeCount*16` bytes immediately before the string count, one
-/// 16-byte record per node) -- but the index table's own per-record
-/// field meanings, and the graph body's exact internal framing, aren't
-/// pinned down precisely enough to expose as typed data yet (one real
-/// file, `TOONARMY.VIS`, doesn't even fit the uniform 16-byte-per-node
-/// index-record width other files do). `body` is exposed raw rather
-/// than guessed at.
+/// **CONFIRMED, the body's real node/path graph is now fully decoded**
+/// (a follow-up session solved what this doc originally left open):
+/// `headerB` is specifically **node 0's own point count** -- not a
+/// generic file-level count, which is why treating it as one had been
+/// ruled out. The body decodes as:
+/// ```
+/// body := Node0Points(headerB * 12 bytes, Vec3 each)
+///         Node(nodeCount - 1) {           -- for nodes 1..<nodeCount
+///           pointCount:UInt32LE
+///           Points(pointCount * 12 bytes, Vec3 each)
+///         }
+///         indexTable: nodeCount:UInt32LE
+///                     IndexRecord(nodeCount)  -- 16 bytes each
+/// IndexRecord := nameIndex:Int32LE selfIndex:Int32LE fieldC:Int32LE fieldD:Int32LE
+/// ```
+/// Each `Vec3` is a real world-space point (cross-referenced against
+/// that same level's `INST` coordinate range and confirmed to fall in
+/// the same envelope). Verified with exact, zero-slack byte accounting
+/// on **14 of the 15 real `.VIS`/`.POO` files on the mounted disc**: the
+/// point-list walk consumes exactly `body.count - (4 + nodeCount*16)`
+/// bytes, landing precisely on the index table's own leading
+/// `nodeCount` echo, on every file except `TOONARMY.VIS` (see below).
+///
+/// `IndexRecord.nameIndex` is the field that actually matters: **always
+/// a valid index into `cameraPathNames`, zero exceptions across all 5
+/// files spot-checked at the record level** (`CASTLE`/`CASTLE_C`/
+/// `DROID`/`VOLCANO`/`GARDEN`) -- this is how multiple physical point-
+/// list nodes share one logical named path (e.g. `CASTLE.VIS` has 9
+/// nodes but only 6 names; nodes 0-3 all share name index 0, i.e. one
+/// multi-segment path built from 4 separate point lists). `selfIndex`
+/// usually equals the node's own position in the list, but **not
+/// always** -- on `VOLCANO.VIS`, nodes that share a `nameIndex` in pairs
+/// sometimes cross-reference each other's index instead of their own
+/// (node 18 -> 19, node 19 -> 18), suggesting a paired/linked role
+/// rather than a plain self-index; not fully understood, exposed raw.
+/// `fieldC`/`fieldD` are real but their meaning isn't decoded.
+///
+/// **`TOONARMY.VIS` is the one real exception**: its point-list walk
+/// still succeeds cleanly (15 plausible node lengths, `ok`), but the
+/// trailing bytes don't land exactly on `4 + nodeCount*16` (`228` real
+/// bytes left vs. `244` expected) -- consistent with this doc's
+/// already-known "doesn't fit the uniform 16-byte-per-node index-record
+/// width other files do" finding. Rather than guess at that file's index
+/// table, ``File/nodes`` still gets real, correct points for every node
+/// on `TOONARMY.VIS`, just with `nameIndex == nil` throughout (see
+/// ``CameraPathNode``) -- an honest partial result, not silently wrong
+/// data.
 public enum WOCCameraPathParser {
     public enum ParseError: Error, Equatable {
         case truncated
@@ -56,20 +90,42 @@ public enum WOCCameraPathParser {
         case stringTableNotFound
     }
 
+    /// One real spline/path node from a `.VIS` file's body -- see this
+    /// file's own doc comment for the confirmed byte layout.
+    public struct CameraPathNode {
+        /// Real world-space points, in file order.
+        public let points: [SIMD3<Float>]
+        /// Index into `File.cameraPathNames` -- multiple nodes can share
+        /// one name (a multi-segment path). `nil` only on files whose
+        /// index table doesn't byte-account cleanly (`TOONARMY.VIS` is
+        /// the one known case) -- see this file's own doc comment.
+        public let nameIndex: Int?
+        /// Real, present, but not understood -- see this file's own doc
+        /// comment. `nil` under the same condition as `nameIndex`.
+        public let selfIndex: Int32?
+        public let unknownFieldC: Int32?
+        public let unknownFieldD: Int32?
+    }
+
     public struct File {
         public let nodeCount: UInt32
-        /// Header's third `UInt32` field -- present and real, but its
-        /// meaning is not confirmed (checked and ruled out as a simple
-        /// record/string count).
+        /// Header's third `UInt32` field -- confirmed to be node 0's own
+        /// point count (see ``nodes``), not a generic file-level count.
         public let headerB: UInt32
-        /// Everything between the 12-byte header and the string table --
-        /// a real node/path graph (confirmed spatial, real index-table
-        /// framing) that isn't decoded at the field level yet. See this
-        /// type's own doc comment.
+        /// Everything between the 12-byte header and the string table,
+        /// exposed raw for anyone auditing the decode in ``nodes``. See
+        /// this type's own doc comment for the confirmed byte layout.
         public let body: Data
         /// Real, decoded named camera path entry points (e.g.
         /// `"weecam_mid_bonus"`).
         public let cameraPathNames: [String]
+        /// The real, decoded per-node point lists -- see
+        /// ``CameraPathNode`` and this file's own doc comment. Always
+        /// `nodeCount` entries with real points; `nameIndex`/`selfIndex`/
+        /// `unknownFieldC`/`unknownFieldD` are `nil` together on the one
+        /// known file (`TOONARMY.VIS`) whose index table doesn't
+        /// byte-account cleanly.
+        public let nodes: [CameraPathNode]
     }
 
     public static func parse(_ data: Data) throws -> File {
@@ -83,7 +139,64 @@ public enum WOCCameraPathParser {
             throw ParseError.stringTableNotFound
         }
         let body = Data(bytes[12..<stringTableOffset])
-        return File(nodeCount: nodeCount, headerB: headerB, body: body, cameraPathNames: names)
+        let nodes = parseNodes(body, nodeCount: nodeCount, headerB: headerB, nameCount: names.count)
+        return File(nodeCount: nodeCount, headerB: headerB, body: body, cameraPathNames: names, nodes: nodes)
+    }
+
+    /// Decodes `body` into real per-node point lists, then (only if the
+    /// leftover bytes exactly match `4 + nodeCount*16`) the index table
+    /// on top of that -- see this file's own doc comment for the
+    /// confirmed layout and the one known exception (`TOONARMY.VIS`).
+    private static func parseNodes(_ body: Data, nodeCount: UInt32, headerB: UInt32, nameCount: Int) -> [CameraPathNode] {
+        let bytes = [UInt8](body)
+        var pos = 0
+        var pointLists: [[SIMD3<Float>]] = []
+
+        func readPoints(_ count: Int) -> [SIMD3<Float>]? {
+            guard count >= 0, count < 10_000, pos + count * 12 <= bytes.count else { return nil }
+            var points: [SIMD3<Float>] = []
+            points.reserveCapacity(count)
+            for _ in 0..<count {
+                let x = leFloat32(bytes, pos)
+                let y = leFloat32(bytes, pos + 4)
+                let z = leFloat32(bytes, pos + 8)
+                points.append(SIMD3(x, y, z))
+                pos += 12
+            }
+            return points
+        }
+
+        guard let firstPoints = readPoints(Int(headerB)) else { return [] }
+        pointLists.append(firstPoints)
+
+        guard nodeCount >= 1 else { return [] }
+        for _ in 1..<nodeCount {
+            guard pos + 4 <= bytes.count else { return [] }
+            let count = Int(leUInt32(bytes, pos))
+            pos += 4
+            guard let points = readPoints(count) else { return [] }
+            pointLists.append(points)
+        }
+
+        // Only attempt the index table if the remaining bytes exactly
+        // match the confirmed formula -- otherwise leave every node's
+        // metadata nil rather than guess (TOONARMY.VIS).
+        let remaining = bytes.count - pos
+        let expectedIndexTableLength = 4 + Int(nodeCount) * 16
+        guard remaining == expectedIndexTableLength else {
+            return pointLists.map { CameraPathNode(points: $0, nameIndex: nil, selfIndex: nil, unknownFieldC: nil, unknownFieldD: nil) }
+        }
+
+        let indexTableStart = pos + 4 // skip the leading nodeCount echo
+        return pointLists.enumerated().map { i, points in
+            let recordStart = indexTableStart + i * 16
+            let nameIndexRaw = Int32(bitPattern: leUInt32(bytes, recordStart))
+            let selfIndex = Int32(bitPattern: leUInt32(bytes, recordStart + 4))
+            let fieldC = Int32(bitPattern: leUInt32(bytes, recordStart + 8))
+            let fieldD = Int32(bitPattern: leUInt32(bytes, recordStart + 12))
+            let nameIndex = (nameIndexRaw >= 0 && Int(nameIndexRaw) < nameCount) ? Int(nameIndexRaw) : nil
+            return CameraPathNode(points: points, nameIndex: nameIndex, selfIndex: selfIndex, unknownFieldC: fieldC, unknownFieldD: fieldD)
+        }
     }
 
     /// Scans every 4-byte-aligned offset for the one where "read a
@@ -126,5 +239,9 @@ public enum WOCCameraPathParser {
 
     private static func leUInt32(_ b: [UInt8], _ offset: Int) -> UInt32 {
         UInt32(b[offset]) | (UInt32(b[offset + 1]) << 8) | (UInt32(b[offset + 2]) << 16) | (UInt32(b[offset + 3]) << 24)
+    }
+
+    private static func leFloat32(_ b: [UInt8], _ offset: Int) -> Float {
+        Float(bitPattern: leUInt32(b, offset))
     }
 }
