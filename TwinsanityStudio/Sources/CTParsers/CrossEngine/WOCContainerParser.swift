@@ -816,7 +816,34 @@ public enum WOCContainerParser {
     /// UV hypothesis. Confirming this for real needs either an
     /// unambiguous visual check (rendering a mesh with this data as UVs
     /// against its real texture and looking at it) or a geometrically
-    /// larger/more varied sample arc -- neither done here.
+    /// larger/more varied sample arc.
+    ///
+    /// **Update: tried the larger/more varied sample -- still ambiguous,
+    /// closing off that escape hatch.** Ran the same position/UV
+    /// smoothness correlation (Pearson `r` between consecutive-vertex
+    /// position-delta and each of the 6 Int16 slots' value-delta) against
+    /// the 10 geometrically largest real arcs in `AIRSHIP.GSC` (bounding-
+    /// box diagonals 23-45 units -- an order of magnitude bigger than the
+    /// tightly-clustered small-detail arc originally checked, and no two
+    /// of these 10 the same shape or size). No slot shows a consistent
+    /// strong correlation across them: values scatter in the `|r| < 0.5`
+    /// range with **inconsistent sign** between arcs for every slot (e.g.
+    /// slot 4 ranges from `-0.502` to `+0.390` across the 10 arcs) -- the
+    /// opposite of what a real UV channel should show (a consistently
+    /// positive, high-magnitude correlation almost everywhere, since a
+    /// continuously-mapped surface's UV should vary smoothly with
+    /// position nearly always, not vary in *direction* per arc). This
+    /// isn't proof the ±8-range/÷4096 field-shape reading is wrong -- it's
+    /// still a real, texture-size-independent, hard-bounded numeric
+    /// pattern -- but it does rule out "just needed a bigger sample" as
+    /// the reason the original smoothness check was inconclusive. Either
+    /// consecutive vertex *indices* within an arc aren't reliably
+    /// spatially-adjacent in the way a strip format would suggest
+    /// (undermining this whole test's premise, not just the sample
+    /// size), or these 6 values genuinely aren't UV at all. **Real
+    /// confirmation now looks like it needs an actual visual render**
+    /// (this environment cannot produce one), not further numeric
+    /// cross-checking of this same kind.
     public static func parseOBJ0ChunkArcs(_ payload: Data, chunk: OBJ0Chunk) -> [OBJ0Arc] {
         let bytes = [UInt8](payload)
         let arcMagic: [UInt8] = [0xD2, 0x80, 0x01, 0x6C]
