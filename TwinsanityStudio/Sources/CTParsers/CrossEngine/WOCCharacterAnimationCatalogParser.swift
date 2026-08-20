@@ -226,6 +226,33 @@ import Foundation
 /// sparse-value positions align with real keyframe times for a clip
 /// whose duration is independently known), not yet attempted.
 ///
+/// **Update: the "row count = animated-node count" hypothesis tested
+/// against real skeletons -- refuted as stated, but the test itself
+/// surfaced a bigger real finding.** Swept the *entire* archive for
+/// skeleton-shaped entries (`WOCCharacterSkeletonParser`'s own confirmed
+/// header check): only **12 exist in the whole archive**, and 10 of
+/// those are degenerate **1-joint** entries -- only entry #71 (Crash, 47
+/// joints) and entry #645 (3 joints) are real multi-joint rigs. This
+/// means most characters' catalogs have **no real nearby skeleton at
+/// all** in this dataset, contradicting the "catalog sits 5 slots before
+/// its skeleton" pattern this doc previously generalized from the single
+/// Crash example -- that pattern does not hold archive-wide. Restricting
+/// to catalog entries within 20 archive slots of *some* skeleton-shaped
+/// entry (148 clips, 100 catalog entries excluded as too far from any
+/// skeleton) still produced 60/148 (41%) real counter-examples -- clips
+/// whose row count (8-14) exceeds the "nearest" skeleton's joint count
+/// (almost always 1, from the degenerate entries). Given those 1-joint
+/// "skeletons" are themselves suspect as real associations (a 1-joint
+/// rig can't plausibly be what an 11-14-row animated-node table is
+/// keying into), this doesn't cleanly refute "row count is an animated-
+/// node count" as a *concept* -- it refutes archive-index proximity as a
+/// way to find a catalog's real associated skeleton. The catalog-to-
+/// skeleton link (if the row-count hypothesis is ever to be tested
+/// properly) needs a real mechanism, not positional adjacency -- e.g. a
+/// stored reference this doc hasn't found yet, or exhaustively pairing
+/// every catalog against every one of the 2 real multi-joint skeletons
+/// rather than assuming proximity.
+///
 /// **Bottom line**: the byte-248 table is a small, fixed-shape per-clip
 /// header -- not the motion data itself. The real keyframe/curve payload
 /// almost certainly starts somewhere in the sparse region just
