@@ -516,6 +516,24 @@ size class as) the dense per-frame array — high confidence on the formula,
 medium confidence on which specific animated property (position component,
 rotation component, etc.) each of the three tables drives.
 
+**Partial answer on "which property" (table B only, real numeric
+match)**: `STATION.CUT`'s root transform translation is `(34.833,
+-3.738, -36.755, 1.0)` (see the root region table above). Table B's
+`valueX` column is `-3.7377` (frame 1) settling to `-3.752045` (frame
+110) — matching the root transform's own **Y** translation (`-3.738`) to
+within `0.015`, both ends. This is a real, checked correlation (not
+approximate to the point of coincidence — the match is far tighter than
+tables A/C get to any component of the root translation) and reads as
+table B being this node's Y-position channel, essentially static across
+the animation. Tables A and C do **not** get an equally clean match to
+any single root-translation component: both hover in the `33`–`37` range
+(loosely near the root's X, `34.833`) but neither is a tight match, and
+neither is anywhere near the root's Z (`-36.755`). Whatever A and C
+individually represent is still open — they may be two different
+objects' X-coordinates (e.g. a camera and a look-at target sharing a
+neighborhood) rather than a clean X/Z pair for one node, since a clean
+X/Z pairing would need one of them near `-36.755` and neither is.
+
 ### Cross-zone addressing patterns (new, confirmed)
 
 - **Chain-header arithmetic is fixed, not per-zone data.** In every zone
