@@ -1510,25 +1510,51 @@ public final class WorkspaceViewModel: ObservableObject {
             }
         }
 
-        let outcome: Result<ChunkNode, Error> = await Task.detached(priority: .userInitiated) {
+        let outcome: Result<(node: ChunkNode, asset: WOCLevelAsset), Error> = await Task.detached(priority: .userInitiated) {
             do {
-                let replacement = try WOCDiscTreeBuilder.buildLevelNode(
+                let built = try WOCDiscTreeBuilder.buildLevelNode(
                     recordID: node.recordID, displayName: node.displayName, byteSize: node.byteSize, fileOffset: node.fileOffset,
                     gscData: gscData, siblingData: siblingData, levelName: levelName
                 )
-                return .success(replacement)
+                return .success(built)
             } catch {
                 return .failure(error)
             }
         }.value
 
         switch outcome {
-        case .success(let replacement):
-            rootNodes = rootNodes.map { replacingDescendant(node, with: replacement, in: $0) }
-            if selectedNode === node { selectedNode = replacement }
+        case .success(let built):
+            rootNodes = rootNodes.map { replacingDescendant(node, with: built.node, in: $0) }
+            wocLevelAssetsByRootID[built.node.id] = built.asset
+            if selectedNode === node { selectedNode = built.node }
         case .failure(let error):
             lastError = "\(entry.name): \(error)"
         }
+    }
+
+    /// The WoC counterpart to `archiveIndexByRootID`/`discEntryByNodeID`:
+    /// keyed by the `ChunkNode.id` `WOCDiscTreeBuilder.buildLevelNode`
+    /// returns for a given `.GSC`'s expanded tree, so `resolveComposite(for:)`
+    /// can find the real `WOCLevelAsset` (and its `objectMeshes`/
+    /// `materialTextureIDs` reference chain) a texture deep in that tree
+    /// came from — the tree itself carries none of that, see
+    /// `WOCCompositeResolver`'s own doc comment.
+    private var wocLevelAssetsByRootID: [UUID: WOCLevelAsset] = [:]
+
+    /// Depth-first search for the nearest ancestor of `target` whose `id`
+    /// is a key in `wocLevelAssetsByRootID` — the WoC-tree counterpart to
+    /// `findFileRoot`, which only recognizes the RM2/SM2 `Graphics`/`Code`
+    /// shape and so never matches anything inside a WoC-sourced subtree.
+    private func findWOCLevelAsset(containing target: ChunkNode, in nodes: [ChunkNode]) -> WOCLevelAsset? {
+        for node in nodes {
+            if let asset = wocLevelAssetsByRootID[node.id], contains(node, target) {
+                return asset
+            }
+            if let found = findWOCLevelAsset(containing: target, in: node.children) {
+                return found
+            }
+        }
+        return nil
     }
 
     /// Extension list for WoC's per-level sibling loose files this build
@@ -2182,6 +2208,14 @@ public final class WorkspaceViewModel: ObservableObject {
     /// already-parsed file in the workspace, stopping at the first match.
     /// See `AssetResolver.resolveComposite` for the per-payload-kind lookup.
     public func resolveComposite(for node: ChunkNode) -> ResolvedModelAsset? {
+        // WoC-sourced textures (e.g. `CRATES.GSC`) never live under a
+        // Graphics/Code section `findFileRoot` recognizes -- check the WoC
+        // reference chain first, see `WOCCompositeResolver`'s doc comment.
+        if case .texture(let texture) = node.payload,
+           let wocAsset = findWOCLevelAsset(containing: node, in: rootNodes),
+           let resolved = WOCCompositeResolver.resolveComposite(forTextureIndex: Int(texture.id), in: wocAsset, displayNamePrefix: "\(wocAsset.name) — ") {
+            return resolved
+        }
         if let ownFileRoot = findFileRoot(containing: node, in: rootNodes),
            let resolved = AssetResolver.resolveComposite(for: node, fileRoot: ownFileRoot, displayNamePrefix: "\(ownFileRoot.displayName) — ") {
             return resolved

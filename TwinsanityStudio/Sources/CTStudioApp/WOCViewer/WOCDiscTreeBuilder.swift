@@ -31,6 +31,12 @@ enum WOCDiscTreeBuilder {
     /// them through the exact same `WOCLevelLoader.load` pipeline
     /// `WOCWorkspace` already uses for a real mounted folder -- no
     /// separate ISO-aware parsing logic to keep in sync.
+    /// Returns both the browsable `ChunkNode` tree and the `WOCLevelAsset`
+    /// it was built from -- callers that only need the tree can ignore the
+    /// second value, but `WorkspaceViewModel` keeps it (keyed by the
+    /// returned node's own `id`) so `WOCCompositeResolver` has the real
+    /// `objectMeshes`/`materialTextureIDs` reference chain to search later,
+    /// which nothing about the `ChunkNode` tree alone carries.
     static func buildLevelNode(
         recordID: UInt32,
         displayName: String,
@@ -39,7 +45,7 @@ enum WOCDiscTreeBuilder {
         gscData: Data,
         siblingData: [String: Data],
         levelName: String
-    ) throws -> ChunkNode {
+    ) throws -> (node: ChunkNode, asset: WOCLevelAsset) {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         let base = tempDir.appendingPathComponent(levelName)
@@ -49,7 +55,8 @@ enum WOCDiscTreeBuilder {
             try data.write(to: base.appendingPathExtension(ext))
         }
         let asset = try WOCLevelLoader.load(gscURL: gscURL, name: levelName)
-        return node(from: asset, recordID: recordID, displayName: displayName, byteSize: byteSize, fileOffset: fileOffset)
+        let builtNode = node(from: asset, recordID: recordID, displayName: displayName, byteSize: byteSize, fileOffset: fileOffset)
+        return (builtNode, asset)
     }
 
     private static func node(from asset: WOCLevelAsset, recordID: UInt32, displayName: String, byteSize: Int, fileOffset: Int) -> ChunkNode {

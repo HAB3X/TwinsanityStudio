@@ -893,6 +893,50 @@ public enum WOCContainerParser {
     /// numeric proxy for one. Confirming any further variant would need
     /// the same kind of direct visual render repeated against a new
     /// transform hypothesis, not a fundamentally different technique.
+    ///
+    /// **Update: closed off the remaining "different transform" escape
+    /// hatches this doc's previous update left open, with real numeric
+    /// tests across a bigger, more relevant sample (74 real arcs from
+    /// `CRATES.GSC`, 408 from `AIRSHIP.GSC` -- the crate-texture "parent
+    /// object" resolution work this session, not fresh guessing).** Divisor
+    /// genuinely doesn't matter for any of this: a uniform rescale can't
+    /// fix self-crossing triangle topology or winding, so "a different
+    /// divisor" (raised as an open possibility above) is now a closed
+    /// question, not just an untested one. Ran an actual **winding-
+    /// consistency sweep** (does a candidate UV mapping keep consistent
+    /// triangle winding sign, the real signature of a coherent unwrap)
+    /// across all 15 possible 2-of-6 slot pairings, both with and without
+    /// the strip-alternation correction `triangleIndices()` applies for
+    /// 3D winding (testing whether that correction, right for position,
+    /// might be wrong for UV): best case is slots (4,5) at ~68-69%
+    /// consistency either way -- real signal above the ~50% noise floor,
+    /// but far short of the ~95-100% a genuine clean unwrap should show.
+    /// Also tested and ruled out two structural alternatives to "these are
+    /// UV" the visual check didn't address: reinterpreting the 12 bytes as
+    /// 3 real `Float32`s (a per-vertex normal) produces garbage bit
+    /// patterns (exponents in the `1e29`+ range, not valid floats) --
+    /// definitively not that. And a real, previously-unnoted structural
+    /// fact emerged from a full 6x6 cross-correlation over the same
+    /// sample: slots (0,2,4) inter-correlate (r=0.60-0.75) as one group and
+    /// slots (1,3,5) inter-correlate (r=0.88-0.89, notably tighter) as a
+    /// separate group, with weak correlation *between* the two groups --
+    /// the signature of two interleaved 3-component values, not three
+    /// independent 2-component UV pairs. Neither group has near-constant
+    /// magnitude (ruling out "these are two normals" or similar unit-
+    /// vector data: coefficient of variation ~1.0-1.2, real normals would
+    /// be near 0), and neither correlates with the vertex's own real
+    /// position (`|r| < 0.11` against x/y/z for every slot) -- ruling out
+    /// a planar/box UV projection derived linearly from position. Net
+    /// result: **still unsolved**, but with a materially narrower and more
+    /// specific open question than before -- something that produces two
+    /// internally-correlated 3-tuples per vertex, not UV coordinates under
+    /// any transform tried, not a normal, not a position-derived value.
+    /// What it actually is remains open; closing it for real most likely
+    /// needs an external reference (a decompiled/disassembled WoC
+    /// executable, or community documentation of this specific TT-engine
+    /// tristream format) the way every original-Twinsanity parser in this
+    /// codebase is grounded in `twinsanity-editor-master` -- no equivalent
+    /// exists for WoC's `OBJ0` format as of this update.
     public static func parseOBJ0ChunkArcs(_ payload: Data, chunk: OBJ0Chunk) -> [OBJ0Arc] {
         let bytes = [UInt8](payload)
         let arcMagic: [UInt8] = [0xD2, 0x80, 0x01, 0x6C]
