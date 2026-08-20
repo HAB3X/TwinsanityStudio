@@ -86,6 +86,42 @@ import Foundation
 /// different file family (`.GSC`-embedded `ALIB` data) in the same engine
 /// lineage, not from a `CHARS.DAT` clip blob directly, and neither
 /// variant has been checked against a single real `Clip.blob` byte yet.
+///
+/// **Update, checked against real bytes**: the plain `nuanimdata_s`
+/// hypothesis above is now **refuted** for `Clip.blob` -- direct
+/// inspection of real blobs shows the first several dozen bytes are
+/// byte-*identical* across clips with different names and durations
+/// (`\attack` vs `\idle`, and separately `A\BodySlam`/`A\Crawl`/
+/// `A\CrchDwn`/`A\Land` from an unrelated 82-clip catalog), which is
+/// impossible for a format whose first field is a per-clip name length +
+/// name. `VIFInterpreter` (this codebase's existing, trusted PS2 VU
+/// microcode interpreter, built for the original Twinsanity's own VIF
+/// packet format) was also tried directly against a raw `Clip.blob`: it
+/// completes without error but decodes zero real vectors, using only the
+/// blob's first ~144 bytes under its own DMA-tag-style `qwc`-in-low-16-
+/// bits wrapper convention -- inconclusive, not a confirmation; the
+/// wrapper convention doesn't have to be the same between the two games.
+///
+/// A real, concrete, honestly-partial finding survives this check: a
+/// **~240-byte prefix that's exactly byte-identical across every sampled
+/// clip** (offsets 0-24 and 25-240 constant across all 8 real blobs
+/// checked, spanning 2 unrelated catalogs and clip sizes from 2,576 to
+/// 16,912 bytes), with only a handful of small varying fields inside that
+/// prefix: a 1-byte field at offset 0 (`0x08` for most clips, `0x04` for
+/// the shortest sampled one), a small `UInt16LE` at offset 2 that's
+/// roughly (not exactly) proportional to `blob.count`, and an 8-byte
+/// field at offset 8 that's identical for every clip *within* the same
+/// catalog entry but different (all-zero, in the one other catalog
+/// checked) *across* catalog entries -- i.e. catalog-level, not
+/// clip-level, data. Real per-clip divergence resumes at offset 241 and
+/// becomes dense from offset ~320 onward, consistent with real per-clip
+/// content starting somewhere in that neighborhood. This shape (a long,
+/// near-constant structured prefix, then real payload) is the kind of
+/// thing a PS2 VU microcode-upload header produces, but that's a
+/// plausible reading of the shape, not a confirmed format -- genuinely
+/// open, worth a dedicated investigation (ideally comparing against a
+/// much larger, more diverse sample of real clips than the 8 checked
+/// here) rather than further guessing from this vantage point.
 public enum WOCCharacterAnimationCatalogParser {
     public enum ParseError: Error, Equatable {
         case truncated
