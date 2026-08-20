@@ -253,6 +253,44 @@ import Foundation
 /// every catalog against every one of the 2 real multi-joint skeletons
 /// rather than assuming proximity.
 ///
+/// **Update: found the compressed variant's real struct layouts (`//PS2
+/// Match`-confirmed, i.e. matched against real PS2 disassembly, not just
+/// an NGC-port guess) -- but they directly contradict a naive "clip blob
+/// = this struct" reading, which is itself a useful, real result.**
+/// `Games Files/Reference Files/OpenCrashWOC-main/code/src/nu3dx/
+/// nuanim.c`'s `NuAnimData2FixPtrs` (a real, `//PS2 Match` pointer-
+/// relocation function -- and per this codebase's established
+/// `NuAnimDataLoadBuff`-style convention, on-disk data is loaded as one
+/// raw relocatable block then fixed up in place, so this function's own
+/// field-access order is real evidence of the true on-disk layout, not
+/// just an in-memory shape) plus the matching struct declarations in
+/// `code/src/newstructs_TBADDED_check.h` give a byte-exact candidate:
+/// ```
+/// nuanimdata2_s := endframe:Float32 nnodes:Int16 ncurves:Int16 nchunks:Int16 pad:Int16
+///                  curves:Ptr(nuanimcurve2_s) curveflags:Ptr(UInt8[]) curvesetflags:Ptr(UInt8[])
+///                  -- 24 bytes total
+/// nuanimcurve2_s := data:Ptr(nuanimcurvedata_s)|Float32(constant)  -- 4 bytes, a union
+/// nuanimcurvedata_s := mask:Ptr(UInt32) key_ixs:Ptr(UInt16) key_array:Ptr(Void)  -- 12 bytes
+/// ```
+/// **Directly contradicted by this doc's own already-confirmed finding**:
+/// `nuanimdata2_s` opens with a per-clip *varying* `endframe:Float32` at
+/// offset 0 -- but bytes 16-239 of `Clip.blob` are confirmed byte-
+/// *identical* across every one of 141 real catalogs regardless of name
+/// or duration (the "template prefix ends at exactly byte 240" finding
+/// above). A real per-clip duration value cannot sit at a position that's
+/// constant across clips with different durations. So `Clip.blob` is
+/// **not** `nuanimdata2_s` starting at byte 0 -- either `nuanimdata2_s`
+/// (if used at all) sits at some other offset within the blob reached by
+/// a pointer this parser hasn't found, or `CHARS.DAT`'s clip format is a
+/// distinct, WoC/game-specific container this generic engine code
+/// doesn't cover. The byte-248 table's own shape (a `0x0E` marker row and
+/// a fixed `0x51/0x52/0x53` 3-row terminator) has no counterpart anywhere
+/// in `nuanimdata2_s`/`nuanimcurve2_s`/`nuanimcurvedata_s`, reinforcing
+/// that reading. Kept here as a real, verified lead (not a guess) for a
+/// future session -- worth checking whether any `Ptr`-shaped field inside
+/// the still-undecoded sparse region resolves to something matching this
+/// struct family, rather than assuming the blob's own offset 0 does.
+///
 /// **Bottom line**: the byte-248 table is a small, fixed-shape per-clip
 /// header -- not the motion data itself. The real keyframe/curve payload
 /// almost certainly starts somewhere in the sparse region just
