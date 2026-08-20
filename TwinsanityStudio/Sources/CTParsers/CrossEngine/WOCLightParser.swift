@@ -8,11 +8,32 @@ import simd
 /// zero exceptions): `fileSize = 4 (leading count) + 24 (header) +
 /// 55*count + 12*K`, where `count` is the leading `UInt32LE` and `K` is a
 /// real, present count of "extended" 67-byte records mixed in among the
-/// otherwise-uniform 55-byte ones -- **which records are extended is not
-/// known**, so this parser only decodes files where `K == 0` (confirmed
-/// on 8 of the 37 real files -- every other file's `count`-many records
-/// really are all 55 bytes, no guessing needed). `K > 0` files have their
-/// record region exposed as one raw, undivided blob instead of a guess.
+/// otherwise-uniform 55-byte ones.
+///
+/// **CONFIRMED, extended record shape** (direct byte verification on
+/// `FARM.LGT`, `count=8, K=6`): an extended record is a real 12-byte
+/// prefix (present, not decoded -- a leading `UInt32` that was `2` on
+/// every extended record checked, plus two floats) immediately followed
+/// by the exact same 55-byte "normal" body described below, at
+/// `recordStart + 12`. Confirmed by validating the body's radius/color
+/// cross-check at that offset -- passes cleanly, and the file's own
+/// record order (2 normal records then 6 extended, matching `K=6`
+/// exactly by total byte count) resolves without ambiguity.
+///
+/// **Which records are extended is not knowable from a fixed rule alone**
+/// (only one real file's order -- "normal records first" -- has been
+/// directly verified, not enough to generalize), so this parser instead
+/// resolves record boundaries per file with a validated search: at each
+/// position, try both the 55-byte and 67-byte interpretation (bounded by
+/// how many of each shape remain per the file's own `count`/`K`), prune
+/// to whichever interpretation's body passes the same real
+/// radius/color-cross-check validation used for normal records, and only
+/// accept a full resolution when it's unique and consumes the record
+/// region exactly (byte-exact, no leftover). If a file's boundaries can't
+/// be resolved this way (no unique fit, or a search too large to
+/// exhaustively prove -- capped rather than guessed), the whole record
+/// region is exposed as one raw, undivided blob instead of a guess, same
+/// as before.
 ///
 /// **CONFIRMED, per-record "normal" shape** (independently re-verified
 /// against real bytes multiple times, most recently by directly decoding
@@ -79,20 +100,26 @@ public enum WOCLightParser {
         public let extendedRecordCount: Int
         /// One entry per `count`-many records, in file order. `nil` when
         /// either this specific record failed validation (the second,
-        /// undecoded shape) or `extendedRecordCount != 0` for the whole
-        /// file (record boundaries aren't reliably known at all in that
-        /// case -- see `rawRecordBlob`).
+        /// undecoded shape) or record boundaries couldn't be resolved at
+        /// all for this file (see `boundariesResolved`).
         public let lights: [Light?]
-        /// Every record's own raw 55 bytes, always present when
-        /// `extendedRecordCount == 0` (one entry per `lights` element,
-        /// same order) -- empty when `extendedRecordCount != 0`, since
-        /// individual record boundaries aren't known in that case (see
-        /// `rawRecordBlob` for the whole region instead).
+        /// `true` for an entry whose record is the 67-byte extended
+        /// shape (12-byte undecoded prefix + the normal body), `false`
+        /// for the normal 55-byte shape. Empty when `!boundariesResolved`.
+        public let isExtended: [Bool]
+        /// `false` when this file's record boundaries couldn't be
+        /// uniquely resolved (either no fit consumes the region exactly,
+        /// or the search space was too large to exhaustively prove
+        /// unique -- never guessed). `lights`/`isExtended`/`rawRecords`
+        /// are all-empty/all-nil in that case; use `rawRecordBlob`.
+        public let boundariesResolved: Bool
+        /// Every record's own raw bytes (55 or 67 depending on
+        /// `isExtended`), one entry per `lights` element, same order --
+        /// empty when `!boundariesResolved`.
         public let rawRecords: [Data]
         /// The entire record region as one undivided blob -- always
-        /// present, the only thing available when `extendedRecordCount
-        /// != 0` (record boundaries unknown), redundant with
-        /// `rawRecords`/`lights` when `extendedRecordCount == 0`.
+        /// present, redundant with `rawRecords`/`lights` when
+        /// `boundariesResolved`.
         public let rawRecordBlob: Data
     }
 
@@ -113,27 +140,88 @@ public enum WOCLightParser {
 
         let rawRecordBlob = Data(bytes[recordRegionStart...])
 
-        guard extendedRecordCount == 0 else {
-            // Record boundaries aren't reliably known when extended
-            // records are mixed in -- expose the whole region raw rather
-            // than guess at a 55-byte stride that would desync after the
-            // first extended record.
+        guard let resolved = resolveRecords(bytes, regionStart: recordRegionStart, count: count, extendedCount: extendedRecordCount) else {
             return File(header: header, headerFloats: headerFloats, extendedRecordCount: extendedRecordCount,
-                        lights: Array(repeating: nil, count: count), rawRecords: [], rawRecordBlob: rawRecordBlob)
+                        lights: Array(repeating: nil, count: count), isExtended: [], boundariesResolved: false,
+                        rawRecords: [], rawRecordBlob: rawRecordBlob)
         }
 
         var lights: [Light?] = []
+        var isExtended: [Bool] = []
         var rawRecords: [Data] = []
-        lights.reserveCapacity(count)
-        rawRecords.reserveCapacity(count)
-        for i in 0..<count {
-            let base = recordRegionStart + i * 55
-            let raw = Data(bytes[base..<(base + 55)])
+        var pos = recordRegionStart
+        for entry in resolved {
+            let raw = Data(bytes[pos..<(pos + entry.length)])
             rawRecords.append(raw)
-            lights.append(parseValidatedLight(bytes, base: base))
+            lights.append(entry.light)
+            isExtended.append(entry.length == 67)
+            pos += entry.length
         }
         return File(header: header, headerFloats: headerFloats, extendedRecordCount: extendedRecordCount,
-                    lights: lights, rawRecords: rawRecords, rawRecordBlob: rawRecordBlob)
+                    lights: lights, isExtended: isExtended, boundariesResolved: true,
+                    rawRecords: rawRecords, rawRecordBlob: rawRecordBlob)
+    }
+
+    /// Resolves each record's real length (55 = normal, 67 = extended) by
+    /// a validated, budget-bounded search -- see this file's own top
+    /// doc comment for the confirmed extended-record shape and why a
+    /// fixed ordering rule isn't assumed. Returns `nil` when no unique,
+    /// byte-exact resolution exists (or the search space is too large to
+    /// exhaustively prove unique within a sane node budget) -- callers
+    /// must fall back to the raw blob rather than guess.
+    private static func resolveRecords(_ bytes: [UInt8], regionStart: Int, count: Int, extendedCount: Int) -> [(length: Int, light: Light?)]? {
+        guard count >= 0, extendedCount >= 0, extendedCount <= count else { return nil }
+        let normalBudget = count - extendedCount
+
+        func validate(at base: Int, length: Int) -> Light?? {
+            let bodyBase = length == 67 ? base + 12 : base
+            guard bodyBase + 55 <= bytes.count else { return nil }
+            return .some(parseValidatedLight(bytes, base: bodyBase))
+        }
+
+        var solution: [(Int, Light?)]?
+        var ambiguous = false
+        var nodesExplored = 0
+        let nodeBudget = 200_000
+
+        func dfs(index: Int, pos: Int, normalUsed: Int, extendedUsed: Int, acc: [(Int, Light?)]) {
+            if ambiguous { return }
+            nodesExplored += 1
+            guard nodesExplored <= nodeBudget else { ambiguous = true; return }
+
+            if index == count {
+                guard pos == bytes.count else { return }
+                if solution != nil { ambiguous = true; solution = nil; return }
+                solution = acc
+                return
+            }
+
+            let normalResult: Light?? = normalUsed < normalBudget ? validate(at: pos, length: 55) : nil
+            let extendedResult: Light?? = extendedUsed < extendedCount ? validate(at: pos, length: 67) : nil
+            let normalValidates = (normalResult ?? nil) != nil
+            let extendedValidates = (extendedResult ?? nil) != nil
+
+            // Prune to whichever shape's body actually validates when
+            // only one does -- this keeps the search linear in the
+            // common case (confirmed: every record in FARM.LGT resolved
+            // this way, zero ambiguity). Explore both only when neither
+            // validates (the known "second undecoded shape") or -- in
+            // principle -- both do, since then real disambiguation
+            // requires the exact-fit constraint at the end.
+            let exploreNormal = normalResult != nil && (normalValidates || !extendedValidates)
+            let exploreExtended = extendedResult != nil && (extendedValidates || !normalValidates)
+
+            if exploreNormal {
+                dfs(index: index + 1, pos: pos + 55, normalUsed: normalUsed + 1, extendedUsed: extendedUsed, acc: acc + [(55, normalResult ?? nil)])
+            }
+            if ambiguous { return }
+            if exploreExtended {
+                dfs(index: index + 1, pos: pos + 67, normalUsed: normalUsed, extendedUsed: extendedUsed + 1, acc: acc + [(67, extendedResult ?? nil)])
+            }
+        }
+
+        dfs(index: 0, pos: regionStart, normalUsed: 0, extendedUsed: 0, acc: [])
+        return ambiguous ? nil : solution
     }
 
     /// Decodes one 55-byte record under the confirmed "normal" shape and

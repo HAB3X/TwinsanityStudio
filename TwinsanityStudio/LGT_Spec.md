@@ -2,12 +2,14 @@
 
 Status: **partially implemented** (`WOCLightParser.swift`) — every real
 "normal"-shape light record decodes with real, independently-validated
-fields (radius, byte + float color, position) on the 8 real files whose
-size formula confirms `K == 0` (no extended records mixed in). Every
-record — normal shape or not, `K == 0` or not — is either a verified,
-validated decode or an honest raw fallback, never a silent guess. See
-"Why a full parser doesn't exist yet" for what's still missing (`K > 0`
-files' record boundaries).
+fields (radius, byte + float color, position). All 8 `K == 0` files
+decode fully, and — new — a validated boundary-resolution search now
+also recovers real record boundaries for **14 of the 29 `K > 0` files**
+(see "Update: `K > 0` record boundaries resolved for most files" below);
+the remaining 15 don't have a unique byte-exact fit and correctly fall
+back to the raw blob rather than guess. Every record — normal shape or
+not, resolved or not — is either a verified, validated decode or an
+honest raw fallback, never a silent guess.
 
 ## What `.LGT` is
 
@@ -225,19 +227,62 @@ also has header value `0` for that same field and still has a broken
 record, breaking the correlation. Real, but not clean enough to build
 on.
 
+## Update: `K > 0` record boundaries resolved for most files
+
+Direct byte verification (`xxd`) on `FARM.LGT` (540 bytes, `count=8`,
+`K=6`) confirms the real shape of an "extended" record: a **12-byte
+prefix (present, not decoded -- a leading `UInt32` that reads `2` on
+every extended record checked, plus two floats)** immediately followed
+by the exact same 55-byte "normal" body already confirmed above, at
+`recordStart + 12`. Verified by validating the body's radius/color
+cross-check at that offset -- passes cleanly and self-consistently.
+`FARM.LGT`'s own real record order (2 normal records, then 6 extended)
+happens to match `K=6` exactly by total byte count, but this is only one
+file's evidence for *that specific ordering* -- not enough to assume
+"normal records always come first" as a general rule.
+
+Given that, `WOCLightParser.resolveRecords` doesn't assume a fixed
+order. It runs a validated, budget-bounded search: at each position, try
+both the 55-byte and 67-byte interpretation (bounded by how many of each
+shape remain per the file's own `count`/`K`), prune to whichever
+interpretation's body passes the same real radius/color validation
+already used for normal records, and only accept a resolution when it's
+**unique** and consumes the record region **exactly** (byte-exact, no
+leftover) -- matching this codebase's existing verification bar rather
+than a heuristic guess. In the common case this reduces to a single
+linear pass (confirmed: every one of `FARM.LGT`'s 8 records resolved
+with zero ambiguity), only branching when a record doesn't validate
+under either shape (the still-unsolved "second undecoded shape" from
+earlier in this doc) or when both shapes happen to validate.
+
+Real result across the full corpus: **14 of the 29 real `K > 0` files**
+now resolve unique, byte-exact record boundaries (up from 0). The other
+15 don't -- either no interpretation produces an exact fit, or the
+search hits its node budget before proving uniqueness -- and correctly
+fall back to the raw, undivided blob (`File.boundariesResolved == false`)
+rather than present a guessed boundary as fact. `File.isExtended: [Bool]`
+now exposes each resolved record's real shape alongside `File.lights`.
+
 ## Suggested next steps for a future session
 
-- **The real remaining blocker is `K>0` files, not the variant shape
-  itself** -- `WOCLightParser` already handles the variant safely via
-  validation; what it can't do is locate record boundaries at all once
-  extended (67-byte) records are mixed into a `K>0` file's otherwise
-  55-byte stream, since which records are extended isn't known. Solving
-  that would let every real `.LGT` file (not just the 8 `K=0` ones) get
-  a real per-record decode.
-- Gather more real broken-record samples from those `K>0` files once the
-  above is solved -- this doc's earlier "`K` doesn't always match the
-  header's own tracking field" finding means the two problems likely
-  need solving together, not sequentially.
+- **The remaining 15 unresolved `K > 0` files** are the real next
+  blocker -- worth checking by hand (same `xxd` approach used on
+  `FARM.LGT`) whether they fail because a record genuinely doesn't
+  validate under either shape (a 3rd record shape? the already-known
+  "second undecoded shape" occurring inside a `K>0` file?), or because
+  the search is finding multiple equally-valid-looking fits (which would
+  mean the validation check alone isn't a strong enough disambiguator
+  and a further structural clue is needed).
+- The 12-byte extended-record prefix is real and placed but its own
+  purpose is unconfirmed (leading `UInt32 == 2` on every instance
+  checked so far, plausibly a type tag; the two trailing floats
+  unexplained) -- gather more extended-record samples now that
+  boundaries resolve for many files, and check whether the leading `2`
+  is truly constant across all of them (a real type tag) or varies.
+- Gather more real broken-record samples from `K>0` files now that
+  boundaries resolve for most of them -- this doc's earlier "`K` doesn't
+  always match the header's own tracking field" finding means the two
+  problems likely need solving together, not sequentially.
 - If neither pans out, the PS2-native (not NGC-port) disassembly, if
   `OpenCrashWOC-main`'s `PS2_Version/` directory has anything equivalent
   to `lights.c`, would be worth checking specifically.
