@@ -1,78 +1,90 @@
 # SST0 Section Reverse Engineering Specification
 
-## Overview
-The SST0 section is always the last section in the PS2 GSC file (acts as a footer). It contains a small header, a blob of data, and a trailer. The structure varies slightly between files but follows a consistent pattern.
+Status: **solved and implemented** (`WOCSplineSetParser.swift`). The real
+handler is `ReadNuIFFGSplineSet` (`SST0` = "Spline Set", not an unnamed
+footer blob) -- found in real decompiled source and verified byte-exact
+against the entire real corpus (41/41 files with a nonempty blob, zero
+exceptions). See `WOCContainerParser.parseFooterHeader(_:)`'s doc comment
+for the outer-shape investigation history this builds on.
 
-## Binary Structure
+## Confirmed structure
 
-### Header (8 bytes)
-| Offset | Size | Type        | Description                                  |
-|--------|------|-------------|----------------------------------------------|
-| 0x00   | 4    | uint32_le   | FirstField                                   |
-| 0x04   | 4    | uint32_le   | BlobLength (size of the following blob data) |
+### Outer header (8 bytes) + blob
 
-### Blob Data (variable size, length = BlobLength)
-The blob consists of N records of a fixed size, where:
-- RecordSize = BlobLength / RecordCount
-- RecordCount varies per file (observed: 17, 94, ...)
-- Observed RecordSize values: 4 bytes (Farm.GSC), 124 bytes (Castle_C.GSC)
+| Offset | Size | Type      | Description                                    |
+|--------|------|-----------|-------------------------------------------------|
+| 0x00   | 4    | uint32_le | `numSplines`                                     |
+| 0x04   | 4    | uint32_le | `blobLength` (exact byte length of the blob below) |
+| 0x08   | `blobLength` | bytes | The blob -- `numSplines` back-to-back spline records |
 
-#### Farm.GSC Record Structure (4 bytes)
-| Offset | Size | Type        | Description         | Example Value |
-|--------|------|-------------|---------------------|---------------|
-| 0x00   | 1    | uint8       | Byte 0              | 0xE0          |
-| 0x01   | 1    | uint8       | Byte 1              | 0x09          |
-| 0x02   | 1    | uint8       | Byte 2              | 0xCC          |
-| 0x03   | 1    | uint8       | Byte 3              | 0x01          |
+This part was already confirmed by an earlier investigation pass
+(`WOCContainerParser.parseFooterHeader`) and is unchanged.
 
-Interpretations of the 4-byte pattern:
-- As little-endian uint32: 0x01CC09E0 (30,000,320 decimal)
-- As little-endian float32: ~7.495×10⁻³⁸
-- As big-endian uint32: 0xE009CC01
-- As little-endian int32: 30,000,320
+### Blob internals: `numSplines` inline spline records
 
-The pattern repeats identically for all records in Farm.GSC.
+**The real shape, found in `Games Files/Reference Files/OpenCrashWOC-main/
+code/src/nu3dx/nuscene.c:132-159` (`ReadNuIFFGSplineSet`, marked `//MATCH
+NGC`)**: not a separate header table (both earlier hypotheses below were
+wrong), but `numSplines` records placed directly back-to-back, each an
+8-byte inline header immediately followed by that spline's own point
+data:
 
-#### Castle_C.GSC Record Structure (124 bytes)
-More complex structure; initial bytes match the 4-byte pattern above followed by varying data.
-Further analysis needed to determine sub-fields.
+```
+SplineRecord := len:Int16LE  pad:Int16LE(unused)  nameOffset:Int16LE  pad2:Int16LE(unused)
+                Vec3(len)     -- len*12 bytes, immediately inline
+```
 
-### Trailer (variable size)
-| Offset | Size | Type        | Description                                  |
-|--------|------|-------------|----------------------------------------------|
-| 0      | N    | uint8[ ]    | Trailer data                                 |
-| N-4    | 4    | uint32_le   | EchoedSectionLength (optional, not universal) |
+`len` is the point count for this spline; `nameOffset` is a byte offset
+into a name table populated elsewhere in the file (the C source reads
+`gsc->nametable + nameOffset` -- not resolved by this parser, exposed as
+a raw offset). The next record starts immediately after this spline's
+own `len*12` bytes of points -- no padding, no alignment, self-describing
+purely via each record's own `len`.
 
-Trailer length varies:
-- Farm.GSC: 12 bytes (last 4 bytes echo the SST0 section length = 0x60)
-- Castle_C.GSC: 8 bytes (last 4 bytes = 0x08, does NOT echo section length)
-- Airship.GSC: 0 bytes (degenerate case)
+**One real correction to the decompiled source's exact byte offsets**:
+the C source reads `len`/`nameOffset` via `*(s16*)(temp+2)` -- i.e. at
+sub-offsets 2 and 6 within each 4-byte slot. Direct byte verification on
+`FARM.GSC` (`blob.count=68`, `numSplines=1`, real bytes `05 00 00 00 8e
+00 00 00 ...`) shows `len=5` actually sits at sub-offset **0**, not 2
+(`5*12+8 == 68` exactly; reading at offset+2 instead gives `len=0`, which
+cannot be right for a 68-byte single-spline blob). Trusting the real
+bytes over that one pointer-arithmetic detail (plausibly a decompiler
+artifact in this "reconstructed" source tree, not raw disassembly) is
+what achieves the 41/41 exact-fit result.
 
-## Observed Patterns
-1. **FirstField** correlates with record count or type:
-   - Farm.GSC: FirstField = 0x01, RecordCount = 17
-   - Castle_C.GSC: FirstField = 0x29 (41), RecordCount = 94
-   - Relationship not yet determined (possibly FirstField = RecordCount mod 256 or similar).
+**Verification, not sampling**: for every one of the 41 real files with a
+nonempty `SST0` blob, decoding `numSplines` records this way and summing
+`8 + len*12` per record lands on `blob.count` exactly -- zero leftover,
+zero overrun, checked programmatically across the whole real corpus (see
+`WOCSplineSetParserTests.testEveryRealSST0BlobConsumesExactly`).
 
-2. **BlobData** often begins with a repeating 4-byte sequence (E0 09 CC 01) that may represent:
-   - A GS (Graphics Synthesizer) packet header (NCYCLE + ADDR)
-   - A constant value used as a base for subsequent data
-   - A padding or alignment value
+### Trailer (variable size, unchanged from the outer-header investigation)
 
-3. **Trailer Echo** (last 4 bytes = SST0 total section length) appears in a subset of files (exactly 10/53 observed in corpus) and is always correct when present.
+A minority of files (10/53 observed) echo the section's own total length
+in the trailer's last 4 bytes; most don't. Not otherwise decoded.
 
-## Parsing Algorithm
-1. Read FirstField and BlobLength from header.
-2. Read BlobLength bytes as blob data.
-3. Determine record structure:
-   - If BlobLength % 4 == 0 and all 4-byte chunks are identical → uniform 4-byte records.
-   - Else if BlobLength % N == 0 for some N (e.g., 124) → treat as N-byte records.
-   - Otherwise treat as opaque blob.
-4. Read trailer as remaining bytes.
-5. If trailer length >= 4, check if last 4 bytes equal (16 + BlobLength + trailer length) [i.e., total SST0 section length].
+## What this supersedes
 
-## Open Questions
-- Exact meaning of FirstField (record count? version? flags?)
-- Semantics of the 4-byte pattern (E0 09 CC 01) – GS command, constant, or something else?
-- Structure of larger records (e.g., 124-byte records in Castle_C.GSC).
-- Whether trailer echo is intentional or coincidental in files where it appears.
+This document originally guessed a **fixed-width record table**
+(`RecordSize = BlobLength / RecordCount`, e.g. "4-byte records" for
+`Farm.GSC`, "124-byte records" for `Castle_C.GSC`) and treated `FirstField`
+as loosely correlated with record count. Both were wrong -- there is no
+fixed record width; each spline record's length is `8 + len*12`, which
+varies per spline, and `FirstField` is exactly `numSplines` (not a
+loosely-correlated count). Two more targeted hypotheses tried in a later
+investigation pass (an inline per-spline name between splines; a fixed
+12-byte header table matching `nugspline_s`'s field order) were also
+directly tested against real bytes and refuted -- see
+`WOCContainerParser.swift`'s `SST0` doc comment for that history. The real
+shape (found afterward, from real decompiled source rather than further
+guessing at variations on `.VIS`'s already-solved shape) is the one
+documented above.
+
+## Still open
+
+- What `nameOffset` resolves against -- which name table, and whether
+  it's the same `NTBL` section this codebase already decodes elsewhere in
+  `.GSC` files.
+- Semantic meaning of each spline's point data beyond "a spline" (e.g.
+  which gameplay/camera/AI system consumes these -- `.VIS`'s own solved
+  camera-path data is a structurally unrelated section).

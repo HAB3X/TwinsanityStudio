@@ -137,11 +137,31 @@ import Foundation
 ///   every one of 5 real files tried. Also notable: `CASTLE_C.GSC`'s
 ///   blob reads a `splineCount` of 138 under this scheme -- implausibly
 ///   large for what should be a per-level spline count, a further sign
-///   this isn't the right framing. `SST0` is genuinely harder than
-///   `.VIS` was, not just unexplored -- its real structure is still
-///   completely open; further attempts should look for a different
-///   organizing idea entirely (not a variation on `.VIS`'s shape) before
-///   trying more offset arithmetic.
+///   this isn't the right framing.
+///
+///   **Solved.** Found the real function body -- not just the dispatch
+///   name -- in `Games Files/Reference Files/OpenCrashWOC-main/code/src/
+///   nu3dx/nuscene.c:132-159` (`ReadNuIFFGSplineSet`, `//MATCH NGC`), a
+///   genuinely different organizing idea from both refuted hypotheses
+///   above: not a separate header table, `numSplines` records placed
+///   directly back-to-back in the blob, each an 8-byte inline header
+///   (`len:Int16, pad:Int16(unused), nameOffset:Int16,
+///   pad2:Int16(unused)`) immediately followed by that spline's own
+///   `len*12` bytes of `Vec3` points -- self-describing via each
+///   record's own `len`, no separate point-blob or table. One real
+///   correction to the decompiled source's exact byte offsets: it reads
+///   `len`/`nameOffset` via `*(s16*)(temp+2)` (sub-offsets 2/6 within
+///   each 4-byte slot), but direct verification on `FARM.GSC`
+///   (`blob.count=68`, `numSplines=1`, real bytes `05 00 00 00 8e 00 00
+///   00 ...`) shows `len=5` actually sits at sub-offset 0
+///   (`5*12+8==68` exactly) -- trusted the real bytes over that one
+///   pointer-arithmetic detail. Verified programmatically (not sampled):
+///   **41 of 41 real files with a nonempty `SST0` blob decode with EXACT
+///   byte consumption** -- `numSplines` records summing to `8 +
+///   len*12` each land on `blob.count` precisely, zero exceptions. See
+///   `WOCSplineSetParser.swift` and `SST0_Spec.md` for the implementation
+///   and full writeup. Still open: what `nameOffset` resolves against
+///   (a name table populated elsewhere in the file, not verified here).
 /// - `ALIB` -- see ``parseAttributeLibrary(_:)``. NOT a fixed-width table
 ///   (confirmed dead end from an earlier pass); the real structure is a
 ///   `count`-entry offset table (relative to just past the table itself,
