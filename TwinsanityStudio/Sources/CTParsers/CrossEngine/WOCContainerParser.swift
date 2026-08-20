@@ -145,11 +145,21 @@ import Foundation
 ///   data itself. This is the single most promising unexplored lead for
 ///   the still-unsolved "how are skeletal animation curves actually
 ///   encoded" question (see also `CHARS.DAT`'s own still-undecoded
-///   per-clip motion blobs) -- not yet
-///   pursued further because it needs real byte inspection to pin down
-///   `nuanimdata_s`/`nuanimdatachunk_s`/`nuanimcurveset_s`/`nuanimcurve_s`'s
-///   concrete field widths, none of which are given in the decompiled
-///   source (it only shows pointer-relocation logic, not struct layout).
+///   per-clip motion blobs, in ``WOCCharacterAnimationCatalogParser``).
+///   **Update, same follow-up session**: a separate reference file,
+///   `code/src/nu3dx/nuanim.c`/`.h` (not the `GHG_GSC_FUNCTIONS.txt` file
+///   this section's other corrections came from), contains WoC's actual
+///   on-disk animation-curve *reader* (`NuAnimDataRead`), not just
+///   pointer-relocation logic -- a complete, concrete, byte-exact
+///   candidate layout for `nuanimdata_s`/`nuanimdatachunk_s`/
+///   `nuanimcurveset_s`/`nuanimcurve_s`/`nuanimkey_s`, plus a documented
+///   compressed/quantized variant. See
+///   ``WOCCharacterAnimationCatalogParser``'s doc comment for the full
+///   byte-sequence sketch -- written up there since it's a stronger match
+///   for `CHARS.DAT`'s clip blobs than for this section, but it's the
+///   same underlying format either way. Still not checked against a
+///   single real byte of either `ALIB`'s own record blob or a
+///   `CHARS.DAT` clip.
 /// - `OBJ0` -- not fully decoded, the highest-value remaining target:
 ///   its per-entry format holds real embedded mesh geometry (a 16-byte
 ///   vertex quadword pattern was confirmed and visually verified -- see

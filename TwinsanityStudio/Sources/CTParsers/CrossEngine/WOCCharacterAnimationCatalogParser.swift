@@ -40,6 +40,52 @@ import Foundation
 /// a compressed/delta-coded bitstream rather than a plain per-frame
 /// transform array. `Clip.blob` is exposed as raw `Data` rather than
 /// guessed at.
+///
+/// **A concrete, byte-exact candidate hypothesis (found post-hoc, NOT yet
+/// checked against real bytes -- disc access was unavailable when this
+/// was written)**: `Games Files/Reference Files/OpenCrashWOC-main/code/src/nu3dx/nuanim.c`/`.h`
+/// contains WoC's real on-disk animation-curve reader, `NuAnimDataRead`
+/// (not just the pointer-relocation code found earlier in
+/// `GHG_GSC_FUNCTIONS.txt`'s `ReadAnimationLibrary` -- this is the actual
+/// byte-level decoder). Its on-disk sequence, read verbatim from the
+/// function body:
+/// ```
+/// AnimData := nameLen:Int32LE Name(nameLen)? time:Float32LE nchunks:Int32LE
+///             Chunk(nchunks)
+/// Chunk    := numnodes:Int32LE
+///             keyBlobLen16:Int32LE Bytes(keyBlobLen16*16)?   -- raw nuanimkey_s[]: {time,dtime,c,d}:Float32LE ×4 each
+///             curveBlobLen16:Int32LE Bytes(curveBlobLen16*16)?  -- raw nuanimcurve_s[]: {mask:UInt32LE, keyPtrPlaceholder:UInt32LE, numkeys:UInt32LE, flags:UInt32LE} each
+///             CurveSet(numnodes)
+/// CurveSet := curveCount:Int8
+///             (flags:Int32LE constants:Float32LE[curveCount])?   -- present only if curveCount != 0
+/// ```
+/// where a `constants[i] == FLOAT_MAX` sentinel marks "this is a real
+/// animated curve, consume the next entry from the flat `curves`/`keys`
+/// arrays" rather than a plain constant value -- i.e. the same
+/// count-then-conditional-blob, sentinel-gated-variant shape already
+/// familiar from this codebase's own `TAS0`/`ALIB` work, not a new
+/// pattern class. `nuanimkey_s`'s `{time, dtime, c, d}` fields are
+/// confirmed (by `NuAnimCurveCalcVal2`'s real interpolation math, not
+/// just the struct declaration) to be a Hermite-style cubic curve segment
+/// (`c`/`d` are tangent/value terms), and per-joint curve-set component
+/// order is fixed: indices 0-2 = translation XYZ, 3-5 = rotation XYZ
+/// (stored in degrees, converted via a `10430.378`-scale fixed-point
+/// constant before use), 6-8 = scale XYZ.
+///
+/// There's also a documented **compressed variant** (`nuanimdata2_s` /
+/// `nuanimcurve2_s` / `nuanimcurvedata_s`, same header) using a
+/// bitmask-plus-popcount key lookup (`BitCountTable`) and one of three
+/// quantized key formats (`NUANIMKEYBIG_s` 16 bytes, `NUANIMKEYINTEGER_s`
+/// 8 bytes, `NUANIMKEYSMALL_s` 4 bytes -- `SMALL` is explicitly
+/// unimplemented even in this reference source: `NuErrorProlog(...,"not
+/// supporting NUANIMKEYTYPE_SMALL yet")`) -- a materially closer match to
+/// this catalog's own "long zero runs punctuated by sparse nonzero bytes"
+/// observation than the plain variant above, and the leading hypothesis
+/// for what `Clip.blob` actually is. **Do not implement against this
+/// hypothesis without real-byte verification first** -- it comes from a
+/// different file family (`.GSC`-embedded `ALIB` data) in the same engine
+/// lineage, not from a `CHARS.DAT` clip blob directly, and neither
+/// variant has been checked against a single real `Clip.blob` byte yet.
 public enum WOCCharacterAnimationCatalogParser {
     public enum ParseError: Error, Equatable {
         case truncated
