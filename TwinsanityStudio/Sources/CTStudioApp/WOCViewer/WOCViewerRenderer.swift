@@ -153,14 +153,30 @@ final class WOCViewerRenderer: NSObject, MTKViewDelegate, OrbitCameraRenderer {
         return SIMD3(Float(rgb.0), Float(rgb.1), Float(rgb.2))
     }
 
+    /// Applies an instance's real, confirmed row-major 4x4 transform
+    /// (`WOCObjectInstance.matrix` -- same convention as
+    /// `WOCContainerParser.Instance.matrix`: translation in row 3) to a
+    /// local-space mesh vertex, as a row-vector multiply (`v * M`) --
+    /// matching this format's own confirmed layout, not simd's default
+    /// column-vector convention, so this is done by hand rather than via
+    /// `simd_float4x4 *` to avoid a row/column mixup.
+    static func applyTransform(_ v: SIMD3<Float>, _ m: WOCObjectInstance.MatrixTuple) -> SIMD3<Float> {
+        SIMD3(
+            v.x * m.0 + v.y * m.4 + v.z * m.8 + m.12,
+            v.x * m.1 + v.y * m.5 + v.z * m.9 + m.13,
+            v.x * m.2 + v.y * m.6 + v.z * m.10 + m.14
+        )
+    }
+
     /// Splits placed objects into two draw sets: real mesh geometry
     /// (`WOCMeshDecoder`-built, when `objectMeshes[objectIndex]` has at
     /// least one real triangle) drawn as actual lit triangles, and a
     /// point marker for everything else -- either this file's `OBJ0`
     /// walk was refused outright (see `WOCLevelAsset.objectMeshes`'s doc
     /// comment) or this specific entry's own chunks decoded to zero
-    /// triangles. No rotation is applied to placed meshes yet (see the
-    /// same doc comment) -- only real, decoded translation.
+    /// triangles. Each mesh vertex gets the instance's real, full
+    /// rotation/scale/translation transform applied (``applyTransform``),
+    /// not just translation.
     private func upload(objects: [WOCObjectInstance], objectCount: Int, objectMeshes: [MeshAsset]) {
         guard !objects.isEmpty else { pointCount = 0; meshVertexCount = 0; return }
 
@@ -183,9 +199,9 @@ final class WOCViewerRenderer: NSObject, MTKViewDelegate, OrbitCameraRenderer {
                 var addedAny = false
                 for submesh in mesh.submeshes {
                     for (a, b, c) in submesh.triangleIndices() {
-                        meshVertices.append(MeshVertexIn(position: submesh.vertices[a].position + object.worldPosition, color: color))
-                        meshVertices.append(MeshVertexIn(position: submesh.vertices[b].position + object.worldPosition, color: color))
-                        meshVertices.append(MeshVertexIn(position: submesh.vertices[c].position + object.worldPosition, color: color))
+                        meshVertices.append(MeshVertexIn(position: Self.applyTransform(submesh.vertices[a].position, object.matrix), color: color))
+                        meshVertices.append(MeshVertexIn(position: Self.applyTransform(submesh.vertices[b].position, object.matrix), color: color))
+                        meshVertices.append(MeshVertexIn(position: Self.applyTransform(submesh.vertices[c].position, object.matrix), color: color))
                         addedAny = true
                     }
                 }

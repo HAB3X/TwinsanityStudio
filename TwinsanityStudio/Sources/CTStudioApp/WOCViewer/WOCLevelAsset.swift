@@ -141,9 +141,21 @@ public struct WOCDecodedTexture: Identifiable {
 /// carries the full 4x4 matrix and still-unresolved tail fields; a viewer
 /// only needs the translation for a point-cloud/marker render.
 public struct WOCObjectInstance: Identifiable {
+    public typealias MatrixTuple = (Float, Float, Float, Float,
+                                     Float, Float, Float, Float,
+                                     Float, Float, Float, Float,
+                                     Float, Float, Float, Float)
+
     public let id: Int
     public let objectIndex: UInt32
     public let worldPosition: SIMD3<Float>
+    /// The instance's real, confirmed row-major 4x4 transform (see
+    /// `WOCContainerParser.Instance.matrix`'s own doc comment --
+    /// translation lives in row 3, `(tx, ty, tz, 1.0)`, same values as
+    /// `worldPosition`). Carried through separately from `worldPosition`
+    /// so renderers can apply the real rotation/scale instead of just
+    /// translating.
+    public let matrix: MatrixTuple
 }
 
 public enum WOCLevelLoader {
@@ -177,7 +189,7 @@ public enum WOCLevelLoader {
         if let inst = file.sections.first(where: { $0.tag == "INST" }) {
             let instances = (try? WOCContainerParser.parseInstances(inst.payload)) ?? []
             objects = instances.enumerated().map { index, instance in
-                WOCObjectInstance(id: index, objectIndex: instance.objectIndex, worldPosition: instance.translation)
+                WOCObjectInstance(id: index, objectIndex: instance.objectIndex, worldPosition: instance.translation, matrix: instance.matrix)
             }
         }
 
