@@ -776,12 +776,33 @@ public enum WOCContainerParser {
     /// now partially decoded -- see ``OBJ0Arc``'s doc comment for the
     /// confirmed fixed-header fields (`N` echoed at relative byte 10,
     /// three constant fields, one real per-arc `Float32`) -- but the
-    /// `12*N`-byte per-vertex portion that follows is still open (a
-    /// follow-up investigation found a per-vertex Y-position-shaped
-    /// 16-bit field in it on two small arcs, at a scale factor that did
-    /// *not* reproduce on a larger arc, so a general decode -- plausibly
-    /// UV coordinates, given it doesn't fit a global constant -- remains
-    /// open).
+    /// `12*N`-byte per-vertex portion that follows is still open. **A
+    /// sharper, but still unconfirmed, UV lead** (found by cross-
+    /// referencing this data against `MS00`'s texture-ID field and each
+    /// geo's real material): each 12-byte per-vertex block reads cleanly
+    /// as six `Int16`s; dividing every one by `4096` lands every single
+    /// value, across all 11,516 real vertices checked on `AIRSHIP.GSC`,
+    /// in a hard, consistent `±8` range -- and that range doesn't vary
+    /// with the vertex's own real texture dimensions (checked against
+    /// several different real textures via `MS00`'s confirmed `tid`
+    /// field), which is what real UV coordinates should look like (a
+    /// texture-size-independent parametric value, only becoming
+    /// texel-space after multiplying by width/height at sample time) --
+    /// a materially more specific, texture-cross-referenced signal than
+    /// the vague "a 16-bit field, scale factor didn't reproduce" note
+    /// this doc previously had. **Still not confirmed**: a direct
+    /// position/UV smoothness check (do adjacent strip vertices have
+    /// similar UV where they have similar position, as a real continuous
+    /// UV-mapped surface should) came back genuinely ambiguous on the
+    /// arcs checked -- their real 3D positions cluster extremely tightly
+    /// (consecutive-vertex position deltas of ~0.01-0.03 units
+    /// throughout), consistent with a small, repeated surface-detail
+    /// piece rather than a large unique surface, which undermines that
+    /// smoothness test's own assumption rather than cleanly refuting the
+    /// UV hypothesis. Confirming this for real needs either an
+    /// unambiguous visual check (rendering a mesh with this data as UVs
+    /// against its real texture and looking at it) or a geometrically
+    /// larger/more varied sample arc -- neither done here.
     public static func parseOBJ0ChunkArcs(_ payload: Data, chunk: OBJ0Chunk) -> [OBJ0Arc] {
         let bytes = [UInt8](payload)
         let arcMagic: [UInt8] = [0xD2, 0x80, 0x01, 0x6C]
