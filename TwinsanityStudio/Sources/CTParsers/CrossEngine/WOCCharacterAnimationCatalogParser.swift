@@ -165,13 +165,44 @@ import Foundation
 /// second boundary, 8 bytes into the first row after the byte-240
 /// template marker, and every row from there is a uniform 16-byte
 /// record. The row *count* before reaching this ascending 3-row tail
-/// varies per clip (7, 9, or 11 rows seen in the 17-sample check) and
-/// did NOT correlate cleanly with blob size, clip name, or the
-/// already-known byte-0/byte-2 header fields in that small sample --
-/// worth a much larger sweep (in progress) to find the real driver,
-/// and to check whether the ascending-by-1 pattern actually holds for
-/// the table's *earlier* rows too (only the last 3 were checked so far)
-/// or is genuinely tail-specific.
+/// varies per clip (7, 9, or 11 rows seen in the 17-sample check).
+///
+/// **Update, full-corpus sweep (261 clips, every one of the 141 real
+/// catalog entries in `CHARS.DAT`)** -- this table's real shape is now
+/// fully characterized end-to-end, zero exceptions:
+/// - Row 0: a small tag correlated with the already-known byte-0/byte-2
+///   header fields (`2`, `2`, or `4` depending on that clip's `(byte0,
+///   u16@2)` bucket).
+/// - Rows 1 through N-5: **exactly zero**, 261/261, zero exceptions.
+/// - Row N-4: a hard constant, `0x0E` (14), 261/261.
+/// - Rows N-3, N-2, N-1: a hard constant **3-row terminator**, `0x51,
+///   0x52, 0x53` (81/82/83) -- so the "ascending pattern" from the
+///   smaller sample was an illusion of only ever having sampled the
+///   tail; it is a fixed marker, not a per-clip-varying sequence.
+/// - **What determines row count**: not blob size directly and not
+///   nearby skeletons' joint counts (tried, clean negative -- row counts
+///   of 7-14 don't track a 47-joint rig at all). The real relationship:
+///   define `remainder = blobSize - 248 - 16*rowCount` (the byte count
+///   from the end of this table to the end of the blob) -- within each
+///   `(byte0, u16@2)` bucket, `remainder` is a **perfectly constant**
+///   value (e.g. `(8,2)` bucket: always exactly `8280`, 81/81 samples),
+///   meaning row count is the one real free variable per clip within its
+///   size class, trading off exactly against the fixed-size region that
+///   follows. Working hypothesis, not yet independently confirmed: row
+///   count is a per-clip *animated-node count* (a subset of the full
+///   skeleton, not the whole rig).
+/// - **What immediately follows the table**: 228/261 samples (87%) are 16
+///   bytes of pure zero; the other 33/261 show recurring nibble-repeat /
+///   solid-`0xFF`-run patterns (e.g. `11 11 11...`, `FF FF FF...`) more
+///   consistent with flag/bitmask data than with float-encoded motion --
+///   a real structural echo of this doc's own already-documented
+///   `nuanimcurve2_s` compressed-variant hypothesis (bitmask-plus-
+///   popcount key lookup), worth chasing next over the plain variant.
+///
+/// **Bottom line**: the byte-248 structure is a small, fixed-shape
+/// per-clip index/count header -- not the motion data itself. The real
+/// keyframe/curve payload, if it exists past this header, has not been
+/// located yet.
 public enum WOCCharacterAnimationCatalogParser {
     public enum ParseError: Error, Equatable {
         case truncated
