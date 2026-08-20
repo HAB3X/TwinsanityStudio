@@ -140,18 +140,64 @@ than an unrelated 4-int header -- worth checking directly: `AIRSHIP.LGT`'s
 own header is literally `(1,1,0,1)`, i.e. plausible small counts, not
 previously read that way.
 
+## Update: the bucketed-count hypothesis is tested, and refuted as stated
+
+Directly decoded `AIRSHIP.LGT`'s raw bytes field-by-field (a real Python
+script against the real mounted file, not hand arithmetic) to test
+whether the header `(1,1,0,1)` really means "1 narrower ambient record +
+1 normal record". It doesn't, in that specific form -- both of
+`AIRSHIP.LGT`'s records are the SAME 55-byte width (forced by the
+already-ironclad file-size formula: `138 = 4+24+55*2+12*0` leaves no
+room for a narrower first record), so the header counts can't be
+selecting between different record *widths*. **What they might still
+select between is different *field interpretations* within that same
+55-byte envelope** -- not yet tested.
+
+More importantly, this pass **refutes `lights.c`'s `LoadLights()` as a
+reliable byte-for-byte guide** to the working "normal" shape, not just to
+the broken variant. `LoadLights()`'s reconstructed read order is `type:
+Int32, pos.xyz, radius_pos.xyz, radius, r/g/b, colour.rgb, ...` -- but
+the working record (`AIRSHIP.LGT`'s light 0, offset 28) has **no room**
+for that: this doc's own confirmed field positions (`radius` at relative
+offset 16, `rgb` at 20-22, `colour` at 23-34) leave only 16 bytes before
+`radius`, not the 28 bytes `type(4)+pos(12)+radius_pos(12)` would need.
+Directly confirmed: bytes 0-15 of the working record are four ordinary,
+plausible-range floats (`16.36, -10.27, 38.38, 16.59`) -- nothing that
+reads as a small-integer type tag, and no second position-shaped triple
+anywhere before `radius`. So `LoadLights()` (already flagged `//94% NGC`,
+alpha-port, not retail PS2) got the *concepts* right (a type tag,
+direction for spot/point lights) but not WoC's actual on-disk field
+order for the base case -- treat it as a conceptual guide only from here,
+not a byte-offset source.
+
+**A real, new, but non-generalizing clue on the broken record itself**:
+`AIRSHIP.LGT`'s light 1 (the broken one) shows a genuine structural
+duplication -- the 4 bytes at relative offset 4-7 are byte-identical to
+offset 16-19, and offset 8-11 matches offset 20-23 on its first 3 bytes.
+This is real (verified via the same script, not a heuristic false
+positive) and distinctive -- but checking every other real `K=0` file
+(the only ones where a naive 55-byte stride is guaranteed correct, since
+`K>0` files interleave 67-byte extended records that desync a uniform
+stride) found only one other genuinely broken record, in `WESTERN.LGT`
+(`colorFloat` includes obviously-garbage values like `1.68e30`,
+`1.68e7`) -- and it does **not** share the same duplication pattern.
+Across all 8 real `K=0` files (17 total records), only these 2 are
+broken -- a real, small, honest sample, not enough to generalize a
+single unifying rule from. Either there are multiple distinct
+non-normal shapes, or the real unifying pattern hasn't been found yet.
+
 ## Suggested next steps for a future session
 
-- **Test the bucketed-count hypothesis directly**: check whether
-  `AIRSHIP.LGT`'s header `(1,1,0,1)` really means 1 ambient-type light (no
-  `pos`/`direction`, narrower record) + 1 directional/point light (the
-  already-confirmed 55-byte "normal" shape, matching light index 1) --
-  i.e. try decoding light 0 as a *narrower* ambient-specific record rather
-  than assuming it's the same 55-byte shape gone wrong. This is a much
-  more promising lead than continuing to search for a type tag inside a
-  uniform record.
-- If that doesn't resolve it, the PS2-native (not NGC-port) disassembly,
-  if `OpenCrashWOC-main`'s `PS2_Version/` directory has anything
-  equivalent to `lights.c`, would be worth checking specifically --
-  `lights.c` itself is explicitly flagged 94% confidence, alpha-port, not
-  retail PS2.
+- Test field-interpretation-only variants (same 55 bytes, different
+  meaning) against the header counts directly, now that the naive
+  width-bucketing idea is ruled out -- e.g. does `AMBIENTCOUNT`-style
+  bucketing predict WESTERN.LGT's broken record 2 (of 3), the same way
+  it might predict AIRSHIP's broken record 1 (of 2)?
+- Gather more real broken-record samples from `K>0` files -- this
+  requires first correctly identifying which of a file's records are the
+  67-byte extended ones (not yet solved either, per this doc's own
+  earlier "K doesn't always match the header's own tracking field"
+  finding), so the two problems may need solving together.
+- If neither pans out, the PS2-native (not NGC-port) disassembly, if
+  `OpenCrashWOC-main`'s `PS2_Version/` directory has anything equivalent
+  to `lights.c`, would be worth checking specifically.
