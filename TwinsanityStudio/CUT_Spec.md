@@ -857,15 +857,48 @@ video/audio:
 
 **Conclusion**: the large files are real, uncompressed, float-heavy
 *scene/animation* data -- almost certainly more nodes, transforms, and
-channel data of the same kind already confirmed in `STATION.CUT`, just
-either using shape variants this decoder's strict validators don't
-recognize (e.g. a dense array with different entry/closer constants, or
-a milestone table this decoder's node-cap or formula tolerance rejects)
-or genuinely new record types not yet characterized -- not embedded
-video/audio. This corrects the earlier guess with real evidence but does
-not itself decode any new structure; a future session should follow up
-directly on the periodic pattern and ascending-index sequence found here
-before assuming a video/audio codec is involved at all.
+channel data of the same kind already confirmed in `STATION.CUT` -- not
+embedded video/audio. This corrects the earlier guess with real evidence.
+
+## Update: the periodic pattern was a real, already-confirmed shape --
+## just capped too low
+
+Follow-up directly on the periodic pattern flagged above confirms it
+byte-for-byte: the region starting at `0x3190` in `SUNNY.CUT` is a real
+`SparseMilestoneTable` (the same confirmed 16-byte-entry, reciprocal-
+delta-weight shape from `STATION.CUT` Zone 1) -- **34 real entries**,
+verified by hand (`frame=1.0→117.0→120.0→126.0→139.0→171.0→176.0→186.0
+→...→442.0→448.0`, every single transition matching `weight ==
+1/(nextFrame-frame)` exactly, e.g. `120-117=3, weight=1/3=0.333` ✓,
+`126-120=6, weight=1/6=0.1666` ✓, `448-442=6, weight=1/6=0.1666` ✓). The
+earlier-flagged ascending `UInt16` sequence was a **misreading of this
+same region at the wrong byte alignment**, not a separate structure.
+
+The real blocker was `WOCCutsceneParser.trySparseMilestoneTable`'s own
+hardcoded entry cap of 16 -- added to prevent an O(n^2) performance
+blowup, but set from the largest table seen in `STATION.CUT` (5 entries)
+without evidence it would generalize to larger files. It didn't: a real
+34-entry table exists in even the *smallest* large `.CUT` file. Fixed by
+validating the reciprocal-delta formula **incrementally** (between each
+newly-read entry and the one before it, rather than collecting a batch
+first) -- this keeps the O(n^2) risk closed (a non-matching candidate
+still bails after 2 entries, same as before) while safely raising the
+cap to 4096. Verified no regression on the 3 fully-mapped files (all 18
+`WOCCutsceneParserTests` still pass, byte-exact) and a real improvement
+on `SUNNY.CUT`: recognized bytes roughly tripled (1.2% → 3.4%), 17 real
+sparse milestone tables now found (up to 28 entries each) where
+previously only a handful of small ones were.
+
+**Revised takeaway**: large `.CUT` files are not a different format --
+they're the same confirmed shape vocabulary (transforms, Record C/D,
+sparse/dense frame-channel arrays, chain headers) at a larger scale than
+any of the 3 hand-mapped files exercised, with at least one of this
+decoder's own detectors (the sparse milestone table) having been
+under-provisioned for that scale. A future session should re-check
+whether the dense frame-channel array detector (currently capped at 256
+entries, chosen from `STATION.CUT`'s confirmed 110-entry maximum) has
+the same problem, and continue widening detector coverage on large files
+rather than assuming new record types are needed.
 
 ## Suggested next steps for a future session
 

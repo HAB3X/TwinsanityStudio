@@ -319,9 +319,18 @@ public enum WOCCutsceneParser {
             var entries: [DenseFrameChannelEntry] = []
             var cursor = o
             var n: Float = 1
-            // Bounded loop, same rationale as the sparse-table cap above
-            // -- the real confirmed maximum is 110 entries.
-            while cursor + 16 <= bytes.count, entries.count < 256 {
+            // Bounded loop. Unlike the sparse-table cap (see that
+            // function's own comment for the real 34-entry counter-
+            // example that motivated raising it), this check was already
+            // effectively incremental -- `frameIndex == n` exactly is
+            // checked every iteration, so a non-matching candidate always
+            // bails within 1 entry regardless of the cap. Raised from 256
+            // (chosen from STATION.CUT's confirmed 110-entry maximum) to
+            // 4096 defensively, matching the sparse-table cap, since
+            // large .CUT files are now confirmed to exercise this
+            // decoder's shapes at a bigger scale than the 3 hand-mapped
+            // files did.
+            while cursor + 16 <= bytes.count, entries.count < 4096 {
                 let frameIndex = WOCCutsceneParser.leFloat32(bytes, cursor)
                 let constant = WOCCutsceneParser.leUInt32(bytes, cursor + 4)
                 guard frameIndex == n, constant == Float(1.0).bitPattern else { break }
@@ -362,16 +371,27 @@ public enum WOCCutsceneParser {
         /// (checked within 0.5% relative tolerance) and the final entry's
         /// weight is exactly 0. Requires >=2 entries to accept.
         func trySparseMilestoneTable(at o: Int) -> (Node, Int)? {
-            // Bounded loop: "all 4 floats finite" is too weak a stop
-            // condition on its own (most random binary reinterprets as
-            // finite floats) and would otherwise scan toward EOF for
-            // every candidate offset inside a large unrecognized region
-            // -- O(n) per candidate, O(n^2) overall on the multi-hundred-
-            // KB files. The largest confirmed real table has 5 entries,
-            // so 16 is a generous cap, not a guessed format limit.
+            // Validates the reciprocal-delta formula INCREMENTALLY,
+            // between each newly-read entry and the one before it, rather
+            // than collecting a fixed-size batch and validating
+            // afterward. This matters for two reasons:
+            // - Correctness: a real table found in a large .CUT file
+            //   (SUNNY.CUT, offset 0x3190) has 34 real entries -- far
+            //   past the old fixed cap of 16, which silently rejected it
+            //   even though every single transition validates cleanly.
+            // - Performance: "all 4 floats finite" alone is too weak a
+            //   stop condition (most random binary reinterprets as finite
+            //   floats), so the cap can't just be raised blindly -- that
+            //   reintroduces the O(n) -per-candidate / O(n^2)-overall scan
+            //   this function was previously capped at 16 to avoid. With
+            //   incremental validation, a non-matching candidate still
+            //   bails after reading just 2 entries (the formula check
+            //   between them fails almost always on real random data), so
+            //   raising the cap doesn't reintroduce that blowup -- it only
+            //   lets a genuinely-matching long run keep extending.
             var raw: [(Float, Float, Float, Float)] = []
             var cursor = o
-            while cursor + 16 <= bytes.count, raw.count < 16 {
+            while cursor + 16 <= bytes.count, raw.count < 4096 {
                 let frame = WOCCutsceneParser.leFloat32(bytes, cursor)
                 let weight = WOCCutsceneParser.leFloat32(bytes, cursor + 4)
                 let vx = WOCCutsceneParser.leFloat32(bytes, cursor + 8)
@@ -385,25 +405,25 @@ public enum WOCCutsceneParser {
                 // near 0 too (a real false positive found on garbage
                 // filler data during development).
                 guard abs(frame) < 100_000, abs(weight) < 1000 else { break }
+                if let last = raw.last {
+                    let delta = frame - last.0
+                    guard delta != 0 else { break }
+                    let expected = 1.0 / delta
+                    // A near-zero (e.g. subnormal) delta makes `1/delta`
+                    // overflow to +/-Infinity in Float arithmetic -- and
+                    // without this guard, both the difference and the
+                    // tolerance below become Infinity too, so `Inf <= Inf`
+                    // silently passes instead of rejecting (a real false
+                    // positive found on garbage filler data).
+                    guard expected.isFinite else { break }
+                    guard abs(last.1 - expected) <= max(abs(expected) * 0.005, 0.00001) else { break }
+                }
                 raw.append((frame, weight, vx, vy))
                 if weight == 0 { cursor += 16; break }
                 cursor += 16
             }
             guard raw.count >= 2 else { return nil }
             guard raw.last!.1 == 0 else { return nil }
-            for i in 0..<(raw.count - 1) {
-                let delta = raw[i + 1].0 - raw[i].0
-                guard delta != 0 else { return nil }
-                let expected = 1.0 / delta
-                // A near-zero (e.g. subnormal) delta makes `1/delta`
-                // overflow to +/-Infinity in Float arithmetic -- and
-                // without this guard, both the difference and the
-                // tolerance below become Infinity too, so `Inf <= Inf`
-                // silently passes instead of rejecting (a real false
-                // positive found on garbage filler data).
-                guard expected.isFinite else { return nil }
-                guard abs(raw[i].1 - expected) <= max(abs(expected) * 0.005, 0.00001) else { return nil }
-            }
             let entries = raw.map { SparseMilestoneEntry(milestoneFrame: $0.0, weight: $0.1, valueX: $0.2, valueY: $0.3) }
             return (.sparseMilestoneTable(entries), raw.count * 16)
         }
