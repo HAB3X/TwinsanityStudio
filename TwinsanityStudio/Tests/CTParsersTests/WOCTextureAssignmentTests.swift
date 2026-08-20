@@ -60,7 +60,9 @@ final class WOCTextureAssignmentTests: XCTestCase {
 
             checked += 1
         }
-        XCTAssertGreaterThan(checked, 0, "no real sample files with TAS0 were available to check")
+        guard checked > 0 else {
+            throw XCTSkip("Real WoC disc image not mounted -- see WOCContainerParserTests for how to mount it")
+        }
     }
 
     /// Every real 32-byte entry record must be captured intact (raw bytes
@@ -89,6 +91,8 @@ final class WOCTextureAssignmentTests: XCTestCase {
             XCTAssertEqual(accounted, tas0.payload.count, "\(relativePath): TAS0 framing should account for every payload byte")
             checked += 1
         }
-        XCTAssertGreaterThan(checked, 0, "no real sample files with TAS0 were available to check")
+        guard checked > 0 else {
+            throw XCTSkip("Real WoC disc image not mounted -- see WOCContainerParserTests for how to mount it")
+        }
     }
 }

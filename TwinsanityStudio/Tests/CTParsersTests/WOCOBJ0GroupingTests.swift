@@ -41,7 +41,9 @@ final class WOCOBJ0GroupingTests: XCTestCase {
             XCTAssertEqual(groups.count, leadingCount, "\(relativePath): grouped entry count should match OBJ0's own leading count")
             checked += 1
         }
-        XCTAssertGreaterThan(checked, 0, "no real sample files were available to check")
+        guard checked > 0 else {
+            throw XCTSkip("Real WoC disc image not mounted -- see WOCContainerParserTests for how to mount it")
+        }
     }
 
     /// `CASTLE_C.GSC`/`HUB.GSC` have heterogeneous per-chunk header sizes
@@ -68,6 +70,8 @@ final class WOCOBJ0GroupingTests: XCTestCase {
             XCTAssertLessThan(groups.count, leadingCount, "\(sample.path): coverage on this file is known-incomplete -- update this test if a fuller OBJ0 fix lands")
             checked += 1
         }
-        XCTAssertGreaterThan(checked, 0, "no real sample files were available to check")
+        guard checked > 0 else {
+            throw XCTSkip("Real WoC disc image not mounted -- see WOCContainerParserTests for how to mount it")
+        }
     }
 }
