@@ -14,6 +14,11 @@ struct CollisionSurfaceEditorSheet: View {
     let original: CollisionSurfaceInfo
 
     @State private var flags: String
+    /// Mirrors `flags` above as a live `UInt32` for the experimental
+    /// toggle section below — kept as a separate `@State` (not re-parsed
+    /// from `flags` on every toggle) so a toggle keeps working even while
+    /// `flags`'s own text field holds a momentarily-invalid string.
+    @State private var flagsValue: UInt32
     @State private var surfaceID: String
     @State private var sound1: String
     @State private var sound2: String
@@ -32,6 +37,7 @@ struct CollisionSurfaceEditorSheet: View {
         self.node = node
         self.original = surface
         _flags = State(initialValue: "\(surface.flags)")
+        _flagsValue = State(initialValue: surface.flags)
         _surfaceID = State(initialValue: "\(surface.surfaceID)")
         _sound1 = State(initialValue: "\(surface.sound1)")
         _sound2 = State(initialValue: "\(surface.sound2)")
@@ -57,8 +63,29 @@ struct CollisionSurfaceEditorSheet: View {
 
             Form {
                 Section("Core") {
-                    LabeledContent("Flags") { TextField("value", text: $flags).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Flags") {
+                        TextField("value", text: $flags)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: flags) { _, newValue in
+                                if let parsed = UInt32(newValue) { flagsValue = parsed }
+                            }
+                    }
                     LabeledContent("Surface ID") { TextField("value", text: $surfaceID).textFieldStyle(.roundedBorder) }
+                }
+                Section("Collision Behavior (experimental, unconfirmed)") {
+                    Text("No reference source names any bit of this record's Flags field — the reference tool itself only ever prints it as one raw hex value. These four toggles probe specific bit positions this build chose arbitrarily for experimentation; none of them are confirmed to have this (or any) effect in-game. Toggle, save an edited copy, and test in-emulator to find out.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                    ForEach(CollisionSurfaceInfo.ExperimentalFlagBit.allCases, id: \.self) { bit in
+                        Toggle("\(bit.label) (bit \(bit.rawValue), unconfirmed)", isOn: Binding(
+                            get: { (flagsValue >> UInt32(bit.rawValue)) & 1 != 0 },
+                            set: { newValue in
+                                if newValue { flagsValue |= (1 << UInt32(bit.rawValue)) } else { flagsValue &= ~(1 << UInt32(bit.rawValue)) }
+                                flags = "\(flagsValue)"
+                            }
+                        ))
+                        .toggleStyle(.checkbox)
+                    }
                 }
                 Section("Sound / Particle Slots") {
                     LabeledContent("Sound 1") { TextField("value", text: $sound1).textFieldStyle(.roundedBorder) }

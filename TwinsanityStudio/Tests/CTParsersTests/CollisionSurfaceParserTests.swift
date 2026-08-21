@@ -61,6 +61,47 @@ final class CollisionSurfaceParserTests: XCTestCase {
         XCTAssertEqual(surface.assignedParticleIDs, [200])
     }
 
+    /// "Collision Property Semantics" (roadmap item 4b): `experimentalFlag`/
+    /// `setExperimentalFlag` are plain bit-index get/set over `flags` —
+    /// this only proves that arithmetic is correct, not that any of these
+    /// four bits actually mean "Walkable by Player"/etc. in-game (no
+    /// reference source confirms that — see `CollisionSurfaceInfo.
+    /// ExperimentalFlagBit`'s own doc comment).
+    func testExperimentalFlagBitsToggleIndependently() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(0) // Flags — start with every bit clear
+        w.writeUInt16(1)
+        for _ in 0..<9 { w.writeUInt16(65535) }
+        w.writeUInt16(0)
+        for _ in 0..<10 { w.writeFloat32(0) }
+        for _ in 0..<12 { w.writeFloat32(0) }
+
+        var cursor = BinaryCursor(data: w.data)
+        var surface = try CollisionSurfaceParser.parse(&cursor, recordID: 1)
+
+        XCTAssertFalse(surface.experimentalFlag(.walkableByPlayer))
+        XCTAssertFalse(surface.experimentalFlag(.climbable))
+
+        surface.setExperimentalFlag(.walkableByPlayer, true)
+        surface.setExperimentalFlag(.dealsDamage, true)
+        XCTAssertTrue(surface.experimentalFlag(.walkableByPlayer))
+        XCTAssertFalse(surface.experimentalFlag(.walkableByAI))
+        XCTAssertTrue(surface.experimentalFlag(.dealsDamage))
+        XCTAssertFalse(surface.experimentalFlag(.climbable))
+        XCTAssertEqual(surface.flags, 0b0101)
+
+        surface.setExperimentalFlag(.walkableByPlayer, false)
+        XCTAssertFalse(surface.experimentalFlag(.walkableByPlayer))
+        XCTAssertEqual(surface.flags, 0b0100)
+    }
+
+    /// Every entry of `flagNames` is real evidence of absence, not a stand-in
+    /// forgotten to fill in — see that property's own doc comment.
+    func testFlagNamesAreAllEmptyBecauseNoneAreConfirmed() {
+        XCTAssertEqual(CollisionSurfaceInfo.flagNames.count, 32)
+        XCTAssertTrue(CollisionSurfaceInfo.flagNames.allSatisfy(\.isEmpty))
+    }
+
     func testWriterRoundTripsExactBytesIncludingPadding() throws {
         var w = BinaryWriter()
         w.writeUInt32(0x001FF0F0)

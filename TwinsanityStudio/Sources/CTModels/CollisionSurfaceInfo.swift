@@ -95,4 +95,62 @@ public struct CollisionSurfaceInfo: Sendable, Identifiable {
     /// times over.
     public var assignedSoundIDs: [UInt16] { [sound1, sound2, sound3, sound4, sound5, sound6].filter { $0 != 65535 } }
     public var assignedParticleIDs: [UInt16] { [particle1, particle2, particle3].filter { $0 != 65535 } }
+
+    /// Unlike `PlacedInstance.flagNames` (which ports real, verified names
+    /// from the reference tool's own `InstanceFlagsEditor.flagtext`), the
+    /// reference tool has **no** per-bit names for `CollisionSurface.Flags`
+    /// anywhere: `CollisionSurface.cs` stores it as a bare `uint` (default
+    /// `0x001FF0F0`, never decomposed), and its own
+    /// `CollisionSurfaceController.GenText()` prints it back as one raw hex
+    /// blob (`$"Flags: {Data.Flags:X8}"`) with no bit-level breakdown at
+    /// all — confirmed by reading both files directly, not assumed from
+    /// their absence. So every one of these 32 entries is an empty string,
+    /// following the exact same "don't invent a name the reference tool
+    /// itself never gave" convention `PlacedInstance.flagNames` documents
+    /// for its own genuinely unnamed bits — there just happen to be zero
+    /// named ones here instead of a handful.
+    public static let flagNames: [String] = Array(repeating: "", count: 32)
+
+    /// "Collision Property Semantics" (roadmap item 4b): four bit positions
+    /// this build lets a user toggle experimentally to probe what
+    /// `CollisionSurface.flags` actually controls in-game, since no
+    /// reference source names any of them (see `flagNames`'s doc comment).
+    /// The bit index each label uses here is this build's own arbitrary
+    /// choice for probing, **not** a claim about what that bit does — see
+    /// `CollisionSurfaceEditorSheet`'s "Collision Behavior (experimental)"
+    /// section, whose UI copy repeats this same caveat next to every
+    /// toggle. Change an index here only after finding real evidence for a
+    /// *different* bit — don't just relabel this array without also
+    /// updating that disclosure.
+    public enum ExperimentalFlagBit: Int, CaseIterable {
+        case walkableByPlayer = 0
+        case walkableByAI = 1
+        case dealsDamage = 2
+        case climbable = 3
+
+        public var label: String {
+            switch self {
+            case .walkableByPlayer: return "Walkable by Player"
+            case .walkableByAI: return "Walkable by AI"
+            case .dealsDamage: return "Deals Damage"
+            case .climbable: return "Climbable"
+            }
+        }
+    }
+
+    /// Reads `ExperimentalFlagBit.rawValue` as a bit index into `flags` —
+    /// unconfirmed, see `ExperimentalFlagBit`'s own doc comment.
+    public func experimentalFlag(_ bit: ExperimentalFlagBit) -> Bool {
+        (flags >> UInt32(bit.rawValue)) & 1 != 0
+    }
+
+    /// The exact inverse of `experimentalFlag(_:)`, for the same
+    /// unconfirmed bit — used by the toggle UI's own `Binding`.
+    public mutating func setExperimentalFlag(_ bit: ExperimentalFlagBit, _ value: Bool) {
+        if value {
+            flags |= (1 << UInt32(bit.rawValue))
+        } else {
+            flags &= ~(1 << UInt32(bit.rawValue))
+        }
+    }
 }
