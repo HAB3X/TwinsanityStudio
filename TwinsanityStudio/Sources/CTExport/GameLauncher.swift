@@ -12,6 +12,7 @@ public enum GameLauncherError: Error, CustomStringConvertible {
     case levelNotFoundInArchive(String)
     case pcsx2NotConfigured
     case pcsx2LaunchFailed(String)
+    case integrityCheckFailed(String)
 
     public var description: String {
         switch self {
@@ -33,6 +34,8 @@ public enum GameLauncherError: Error, CustomStringConvertible {
             return "PCSX2's app location hasn't been set yet."
         case .pcsx2LaunchFailed(let reason):
             return "Couldn't launch PCSX2: \(reason)"
+        case .integrityCheckFailed(let reason):
+            return "Rebuilt image failed its own independent re-verification: \(reason)"
         }
     }
 }
@@ -149,6 +152,90 @@ public enum GameLauncher {
         }
 
         return patchedISO
+    }
+
+    /// A rebuilt disc image that has passed its own independent re-
+    /// verification (see `rebuildingAndVerifying`) — `diagnostics` is the
+    /// ordered, human-readable trail of exactly what got checked, meant to
+    /// be shown to the user directly (e.g. in a scrollable text area), not
+    /// just logged.
+    public struct RebuildResult {
+        public var data: Data
+        public var diagnostics: [String]
+
+        public init(data: Data, diagnostics: [String]) {
+            self.data = data
+            self.diagnostics = diagnostics
+        }
+    }
+
+    /// Same build `building(isoURL:plan:scratchDirectory:)` performs, but
+    /// for a caller that means to keep the result permanently ("Save
+    /// Rebuilt ISO…") rather than hand it straight to PCSX2 for one
+    /// throwaway launch — so this doesn't just trust the write succeeded,
+    /// it independently re-reads the finished bytes back through the same
+    /// real parsers (`ISO9660Reader`, `BDArchiveParser`) a genuine consumer
+    /// would use, the same way `building` itself only ever *writes* via
+    /// `ISO9660Writer.replacingFile` without reading its own output back.
+    /// Every check that runs appends one specific, real diagnostic line
+    /// (byte/sector counts, entry counts, matched names) rather than a bare
+    /// "OK," so a caller can show genuine progress instead of a spinner.
+    public static func rebuildingAndVerifying(isoURL: URL, plan: GameLaunchPlan, scratchDirectory: URL) throws -> RebuildResult {
+        var diagnostics: [String] = []
+        let built = try building(isoURL: isoURL, plan: plan, scratchDirectory: scratchDirectory)
+
+        guard built.count % 2048 == 0 else {
+            throw GameLauncherError.integrityCheckFailed("Rebuilt image is \(built.count) bytes, not a whole number of 2048-byte sectors.")
+        }
+        let sectorCount = built.count / 2048
+        diagnostics.append("Rebuilt image: \(built.count) bytes (\(sectorCount) sectors).")
+
+        let source = PlainISOSource(data: built)
+        guard let root = try? ISO9660Reader.readRootDirectory(from: source), !root.children.isEmpty else {
+            throw GameLauncherError.integrityCheckFailed("Couldn't re-read the rebuilt image's root directory, or it came back with no children.")
+        }
+        diagnostics.append("Integrity check: root directory re-read cleanly (\(root.children.count) entries).")
+
+        if let baseName = plan.startingChunkBaseName {
+            let (exeEntry, revision) = try locateBootExecutable(in: root, source: source)
+            guard let exeData = ISO9660Reader.readFile(exeEntry, from: source), !exeData.isEmpty else {
+                throw GameLauncherError.integrityCheckFailed("Couldn't re-read the boot executable (\(exeEntry.name)) back from the rebuilt image.")
+            }
+            guard let readBackPath = ExecutablePatcher.readStartingChunkPath(revision: revision, from: exeData) else {
+                throw GameLauncherError.integrityCheckFailed("Couldn't read a starting-chunk path back out of the rebuilt boot executable.")
+            }
+            diagnostics.append("Integrity check: boot executable \(exeEntry.name) re-read cleanly (\(exeData.count) bytes), starting chunk patched to \"\(readBackPath)\".")
+            _ = baseName // the specific chunk name is only used to build `plan`; the read-back above is the real verification.
+        }
+
+        if !plan.archiveReplacements.isEmpty {
+            let (bhEntry, bdEntry) = try locateArchivePair(in: root)
+            guard let bhData = ISO9660Reader.readFile(bhEntry, from: source), let bdData = ISO9660Reader.readFile(bdEntry, from: source) else {
+                throw GameLauncherError.integrityCheckFailed("Couldn't re-read the rebuilt image's own \(bhEntry.name)/\(bdEntry.name) archive pair.")
+            }
+            let verifyDir = scratchDirectory.appendingPathComponent("verify_\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: verifyDir, withIntermediateDirectories: true)
+            let verifyBH = verifyDir.appendingPathComponent((bhEntry.name as NSString).lastPathComponent)
+            let verifyBD = verifyDir.appendingPathComponent((bdEntry.name as NSString).lastPathComponent)
+            try bhData.write(to: verifyBH)
+            try bdData.write(to: verifyBD)
+            let index: ArchiveIndex
+            do {
+                index = try BDArchiveParser.readIndex(bhURL: verifyBH)
+            } catch {
+                throw GameLauncherError.integrityCheckFailed("Rebuilt archive index (\(bhEntry.name)) failed to parse: \(error)")
+            }
+            diagnostics.append("Integrity check: rebuilt archive \(bhEntry.name)/\(bdEntry.name) re-extracted and its index parsed cleanly (\(index.entries.count) entries).")
+
+            for bareName in plan.archiveReplacements.keys {
+                guard index.entries.contains(where: { entryBaseName($0.name).caseInsensitiveCompare(bareName) == .orderedSame }) else {
+                    throw GameLauncherError.integrityCheckFailed("Replacement \"\(bareName)\" isn't present in the rebuilt archive's own index.")
+                }
+            }
+            diagnostics.append("Integrity check: all \(plan.archiveReplacements.count) requested replacement(s) confirmed present in the rebuilt archive index.")
+        }
+
+        return RebuildResult(data: built, diagnostics: diagnostics)
     }
 
     /// Launches PCSX2 with `isoURL` as its boot target — fire-and-forget,

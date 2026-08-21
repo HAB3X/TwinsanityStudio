@@ -18,8 +18,11 @@ struct GameLauncherView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var isBuilding = false
+    @State private var isSaving = false
     @State private var statusMessage = ""
     @State private var errorMessage: String?
+    @State private var isIntegrityFailure = false
+    @State private var diagnostics: [String] = []
 
     private var context: WorkspaceViewModel.GameLauncherContext? { workspace.gameLauncherContext }
 
@@ -73,7 +76,7 @@ struct GameLauncherView: View {
             }
 
             if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle")
+                Label(errorMessage, systemImage: isIntegrityFailure ? "xmark.octagon" : "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.red)
             } else if !statusMessage.isEmpty {
@@ -82,11 +85,32 @@ struct GameLauncherView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if !diagnostics.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Verification log").font(.caption.bold())
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(diagnostics.enumerated()), id: \.offset) { _, line in
+                                Text(line)
+                                    .font(.caption.monospaced())
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(minHeight: 60, maxHeight: 140)
+                    .padding(6)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                }
+            }
+
             HStack {
                 Spacer()
+                Button(isSaving ? "Saving…" : "Save Rebuilt ISO…") { rebuildAndSave() }
+                    .disabled(isBuilding || isSaving || workspace.discImageURL == nil)
                 Button(isBuilding ? "Building…" : (context != nil ? "Build & Quick Launch" : "Build & Launch")) { buildAndLaunch() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(isBuilding || workspace.discImageURL == nil || workspace.pcsx2AppURL == nil)
+                    .disabled(isBuilding || isSaving || workspace.discImageURL == nil || workspace.pcsx2AppURL == nil)
             }
         }
         .padding()
@@ -128,6 +152,8 @@ struct GameLauncherView: View {
             archiveReplacements: context?.archiveReplacements ?? [:]
         )
         errorMessage = nil
+        isIntegrityFailure = false
+        diagnostics = []
         isBuilding = true
         statusMessage = "Building…"
         Task.detached(priority: .userInitiated) {
@@ -151,6 +177,58 @@ struct GameLauncherView: View {
             } catch {
                 await MainActor.run {
                     isBuilding = false
+                    isIntegrityFailure = (error as? GameLauncherError).map { if case .integrityCheckFailed = $0 { return true } else { return false } } ?? false
+                    errorMessage = "\(error)"
+                }
+            }
+        }
+    }
+
+    /// Rebuilds `plan` on top of the chosen disc image, independently
+    /// re-verifies the result (`GameLauncher.rebuildingAndVerifying`), and —
+    /// only once that verification actually passes — lets the user pick a
+    /// permanent destination for it. Unlike `buildAndLaunch`, this never
+    /// touches PCSX2 and never writes into a throwaway scratch directory the
+    /// caller doesn't control the lifetime of.
+    private func rebuildAndSave() {
+        guard let discImageURL = workspace.discImageURL else { return }
+        let plan = GameLaunchPlan(
+            startingChunkBaseName: context?.startingChunkBaseName,
+            archiveReplacements: context?.archiveReplacements ?? [:]
+        )
+        errorMessage = nil
+        isIntegrityFailure = false
+        diagnostics = []
+        isSaving = true
+        statusMessage = "Rebuilding and verifying…"
+        Task.detached(priority: .userInitiated) {
+            do {
+                let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("TwinsanityStudioRebuild", isDirectory: true)
+                try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+                let result = try GameLauncher.rebuildingAndVerifying(isoURL: discImageURL, plan: plan, scratchDirectory: scratch)
+                await MainActor.run {
+                    diagnostics = result.diagnostics
+                }
+                let suggestedName = discImageURL.deletingPathExtension().lastPathComponent + "-rebuilt.iso"
+                let destination: URL? = await MainActor.run {
+                    ExportPanel.chooseSaveLocation(suggestedName: suggestedName, message: "Choose where to save the rebuilt, verified disc image.")
+                }
+                guard let destination else {
+                    await MainActor.run {
+                        isSaving = false
+                        statusMessage = "Save canceled."
+                    }
+                    return
+                }
+                try result.data.write(to: destination)
+                await MainActor.run {
+                    isSaving = false
+                    statusMessage = "Saved verified rebuilt image to \(destination.lastPathComponent)."
+                }
+            } catch {
+                await MainActor.run {
+                    isSaving = false
+                    isIntegrityFailure = (error as? GameLauncherError).map { if case .integrityCheckFailed = $0 { return true } else { return false } } ?? false
                     errorMessage = "\(error)"
                 }
             }

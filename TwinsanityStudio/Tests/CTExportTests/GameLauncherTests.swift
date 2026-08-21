@@ -124,6 +124,46 @@ final class GameLauncherTests: XCTestCase {
         XCTAssertGreaterThan(untouched.size, 0)
     }
 
+    /// `rebuildingAndVerifying` for the no-plan (global "Play in PCSX2")
+    /// case: no starting-chunk override, no archive replacements, so the
+    /// image comes back byte-identical to the source (same as `building`
+    /// itself already proves in `testBuildingWithNoPlanReturnsTheImageUnchanged`)
+    /// — what this pins down that the other test doesn't is that the
+    /// *independent re-verification* pass itself actually runs and reports
+    /// real, non-empty diagnostics against a genuinely valid rebuilt image,
+    /// not just that `building`'s own bytes happen to be correct.
+    func testRebuildingAndVerifyingWithNoPlanReturnsValidImageAndNonEmptyDiagnostics() throws {
+        try skipIfMissing()
+        let result = try GameLauncher.rebuildingAndVerifying(isoURL: Self.isoURL, plan: GameLaunchPlan(), scratchDirectory: scratchDir)
+
+        XCTAssertFalse(result.data.isEmpty)
+        XCTAssertEqual(result.data.count % 2048, 0, "a real disc image is always a whole number of 2048-byte sectors")
+        XCTAssertFalse(result.diagnostics.isEmpty, "the UI relies on this to show real progress, not just a spinner")
+        XCTAssertTrue(result.diagnostics.contains { $0.contains("sectors") }, "expected a diagnostic line reporting the rebuilt image's byte/sector counts, got: \(result.diagnostics)")
+        XCTAssertTrue(result.diagnostics.contains { $0.localizedCaseInsensitiveContains("root directory") }, "expected a diagnostic line about the re-read root directory, got: \(result.diagnostics)")
+
+        // Independently confirm the returned bytes are actually a real,
+        // readable disc image — the same check a genuine consumer (writing
+        // it to disk and booting it) would perform.
+        let source = PlainISOSource(data: result.data)
+        let root = try ISO9660Reader.readRootDirectory(from: source)
+        XCTAssertFalse(root.children.isEmpty)
+    }
+
+    /// The archive-replacement path of `rebuildingAndVerifying`'s own
+    /// verification: confirms it actually re-locates and re-parses the
+    /// rebuilt `.BH`/`.BD` pair and reports the replaced entry as present,
+    /// not just that `building`'s own repackaging succeeded.
+    func testRebuildingAndVerifyingWithArchiveReplacementVerifiesTheRebuiltArchive() throws {
+        try skipIfMissing()
+        let markerBytes = Data("GAMELAUNCHERTEST".utf8)
+        let plan = GameLaunchPlan(archiveReplacements: ["cavent.rm2": markerBytes])
+        let result = try GameLauncher.rebuildingAndVerifying(isoURL: Self.isoURL, plan: plan, scratchDirectory: scratchDir)
+
+        XCTAssertTrue(result.diagnostics.contains { $0.localizedCaseInsensitiveContains("archive") }, "expected an archive-verification diagnostic line, got: \(result.diagnostics)")
+        XCTAssertTrue(result.diagnostics.contains { $0.contains("1 requested replacement") }, "expected a diagnostic confirming the one requested replacement was found, got: \(result.diagnostics)")
+    }
+
     // MARK: - Helpers mirroring GameLauncher's own private tree-walking, for read-back verification only
 
     private static func readBackBootExecutable(from isoData: Data) throws -> (revision: GameExecutableRevision, exeData: Data) {
