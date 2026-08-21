@@ -24,6 +24,10 @@ struct GameObjectEditorSheet: View {
     @State private var editableObject: GameObjectInfo
     @State private var editingCommand: AgentLabCommand?
     @State private var newCommandIDText = ""
+    /// "Sound-to-Entity Mapping UI" (roadmap item 4d): index into
+    /// `editableObject.soundIDs` currently being reassigned via
+    /// `SoundEffectPickerSheet` — `nil` when the sheet isn't showing.
+    @State private var pickingSoundSlotIndex: Int?
     @State private var errorMessage: String?
     @State private var isSaving = false
 
@@ -180,10 +184,71 @@ struct GameObjectEditorSheet: View {
             uint16ListEditor(title: "Animations", values: $editableObject.animIDs)
             uint16ListEditor(title: "Scripts", values: $editableObject.scriptIDs)
             uint16ListEditor(title: "Objects", values: $editableObject.objectIDs)
-            uint16ListEditor(title: "Sounds", values: $editableObject.soundIDs)
+            soundIDListEditor
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.08)))
+    }
+
+    /// Same shape as `uint16ListEditor` but with a real "Pick…" button per
+    /// slot — see `SoundEffectPickerSheet`'s own doc comment for why this
+    /// replaces a bare numeric field with a picker over this file's real,
+    /// decoded sounds. The raw text field stays too: a level's sound bank
+    /// isn't guaranteed to be in the same file this `GameObject` lives in,
+    /// so a picker that finds nothing shouldn't be the only way to set
+    /// this value.
+    @ViewBuilder
+    private var soundIDListEditor: some View {
+        DisclosureGroup("Sounds (\(editableObject.soundIDs.count))") {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(editableObject.soundIDs.indices, id: \.self) { i in
+                    HStack {
+                        TextField("value", text: Binding(
+                            get: { "\(editableObject.soundIDs[i])" },
+                            set: { if let v = UInt16($0) { editableObject.soundIDs[i] = v } }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption.monospaced())
+                        .frame(width: 70)
+                        Button("Pick…") { pickingSoundSlotIndex = i }
+                            .controlSize(.small)
+                        Button(role: .destructive) { editableObject.soundIDs.remove(at: i) } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                HStack {
+                    Button("Add") { editableObject.soundIDs.append(0) }
+                        .controlSize(.small)
+                    Button("Add via Picker…") {
+                        editableObject.soundIDs.append(0)
+                        pickingSoundSlotIndex = editableObject.soundIDs.count - 1
+                    }
+                    .controlSize(.small)
+                }
+            }
+            .padding(.leading, 8)
+        }
+        .font(.caption)
+        .sheet(item: Binding<PickingSoundSlot?>(
+            get: { pickingSoundSlotIndex.map(PickingSoundSlot.init) },
+            set: { pickingSoundSlotIndex = $0?.index }
+        )) { slot in
+            SoundEffectPickerSheet(node: node) { selectedID in
+                if editableObject.soundIDs.indices.contains(slot.index) {
+                    editableObject.soundIDs[slot.index] = selectedID
+                }
+            }
+        }
+    }
+
+    /// `Identifiable` wrapper so `pickingSoundSlotIndex: Int?` (a plain
+    /// optional Int has no stable per-presentation identity of its own)
+    /// can drive `.sheet(item:)`.
+    private struct PickingSoundSlot: Identifiable {
+        let index: Int
+        var id: Int { index }
     }
 
     // MARK: - Instance properties ("Template")

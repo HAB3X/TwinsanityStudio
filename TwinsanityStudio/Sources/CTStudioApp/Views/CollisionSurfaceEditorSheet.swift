@@ -32,6 +32,13 @@ struct CollisionSurfaceEditorSheet: View {
     @State private var unkFloats: [String]
     @State private var errorMessage: String?
     @State private var isSaving = false
+    /// "Sound-to-Entity Mapping UI" (roadmap item 4d): which sound slot's
+    /// `SoundEffectPickerSheet` is currently showing — `nil` when none is.
+    @State private var pickingSoundSlot: SoundSlot?
+
+    private enum SoundSlot: Identifiable { case sound1, sound2, sound3, sound4, sound5, sound6
+        var id: Self { self }
+    }
 
     init(node: ChunkNode, surface: CollisionSurfaceInfo) {
         self.node = node
@@ -88,15 +95,18 @@ struct CollisionSurfaceEditorSheet: View {
                     }
                 }
                 Section("Sound / Particle Slots") {
-                    LabeledContent("Sound 1") { TextField("value", text: $sound1).textFieldStyle(.roundedBorder) }
-                    LabeledContent("Sound 2") { TextField("value", text: $sound2).textFieldStyle(.roundedBorder) }
+                    Text("\"Pick…\" turns a bare ID into a real choice from this file's own decoded SoundEffect records — this format has no confirmed particle-ID list to pick from the same way, so Particle 1–3 stay raw numeric fields.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    soundSlotField("Sound 1", text: $sound1, slot: .sound1)
+                    soundSlotField("Sound 2", text: $sound2, slot: .sound2)
                     LabeledContent("Particle 1") { TextField("value", text: $particle1).textFieldStyle(.roundedBorder) }
                     LabeledContent("Particle 2") { TextField("value", text: $particle2).textFieldStyle(.roundedBorder) }
-                    LabeledContent("Sound 3") { TextField("value", text: $sound3).textFieldStyle(.roundedBorder) }
-                    LabeledContent("Sound 4") { TextField("value", text: $sound4).textFieldStyle(.roundedBorder) }
+                    soundSlotField("Sound 3", text: $sound3, slot: .sound3)
+                    soundSlotField("Sound 4", text: $sound4, slot: .sound4)
                     LabeledContent("Particle 3") { TextField("value", text: $particle3).textFieldStyle(.roundedBorder) }
-                    LabeledContent("Sound 5") { TextField("value", text: $sound5).textFieldStyle(.roundedBorder) }
-                    LabeledContent("Sound 6") { TextField("value", text: $sound6).textFieldStyle(.roundedBorder) }
+                    soundSlotField("Sound 5", text: $sound5, slot: .sound5)
+                    soundSlotField("Sound 6", text: $sound6, slot: .sound6)
                 }
                 Section("Unknown Floats (real, undetermined meaning)") {
                     ForEach(unkFloats.indices, id: \.self) { i in
@@ -122,6 +132,33 @@ struct CollisionSurfaceEditorSheet: View {
         }
         .padding()
         .frame(minWidth: 420)
+        .sheet(item: $pickingSoundSlot) { slot in
+            SoundEffectPickerSheet(node: node, allowsNone: true) { selectedID in
+                setSoundSlotText(slot, to: "\(selectedID)")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func soundSlotField(_ label: String, text: Binding<String>, slot: SoundSlot) -> some View {
+        LabeledContent(label) {
+            HStack {
+                TextField("value", text: text).textFieldStyle(.roundedBorder)
+                Button("Pick…") { pickingSoundSlot = slot }
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private func setSoundSlotText(_ slot: SoundSlot, to value: String) {
+        switch slot {
+        case .sound1: sound1 = value
+        case .sound2: sound2 = value
+        case .sound3: sound3 = value
+        case .sound4: sound4 = value
+        case .sound5: sound5 = value
+        case .sound6: sound6 = value
+        }
     }
 
     private func save() {
