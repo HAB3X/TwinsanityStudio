@@ -48,7 +48,28 @@ public enum CrateExporter {
     /// name and the resulting crate lands it at the mod's root; a user
     /// installing it can relocate it into the right in-game subfolder same
     /// as any other layer file.
-    public static func export(files: [(relativePath: String, data: Data)], metadata: CrateMetadata, to crateURL: URL) throws {
+    ///
+    /// - Parameters:
+    ///   - settings: Written as a real `modcratesettings.txt`
+    ///     (`ModCrateSettings.serialize`) when non-empty — CrateModLoader's
+    ///     optional per-mod key/value settings file (`ModCrates.
+    ///     SettingsFileName`). Omitted entirely (not written as an empty
+    ///     file) when empty, matching the common case of a crate with no
+    ///     settings at all.
+    ///   - modAssets: Written under a real `modassets/` folder
+    ///     (`ModLoaderGlobals.ModAssetsFolderName`, verified lowercase) when
+    ///     non-empty — CrateModLoader's optional bundled-external-resource
+    ///     folder (`ModCrates.SaveSettingsToCrate`/`SaveSimpleCrateToFile`'s
+    ///     own `zipFolderName` handling), used by settings values that
+    ///     reference a bundled file with a `"crate:modassets/…"` prefix
+    ///     (see `ModAssetTexture`'s own doc comment).
+    public static func export(
+        files: [(relativePath: String, data: Data)],
+        metadata: CrateMetadata,
+        settings: [String: String] = [:],
+        modAssets: [(relativePath: String, data: Data)] = [],
+        to crateURL: URL
+    ) throws {
         let stagingDir = FileManager.default.temporaryDirectory.appendingPathComponent("TwinsanityStudioCrate-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: stagingDir) }
@@ -65,11 +86,25 @@ public enum CrateExporter {
         try (infoLines.joined(separator: "\n") + "\n")
             .write(to: stagingDir.appendingPathComponent("modcrateinfo.txt"), atomically: true, encoding: .utf8)
 
+        if !settings.isEmpty {
+            try ModCrateSettings.serialize(settings)
+                .write(to: stagingDir.appendingPathComponent("modcratesettings.txt"), atomically: true, encoding: .utf8)
+        }
+
         let layerDir = stagingDir.appendingPathComponent("layer0")
         for file in files {
             let destination = layerDir.appendingPathComponent(file.relativePath)
             try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             try file.data.write(to: destination)
+        }
+
+        if !modAssets.isEmpty {
+            let modAssetsDir = stagingDir.appendingPathComponent("modassets")
+            for asset in modAssets {
+                let destination = modAssetsDir.appendingPathComponent(asset.relativePath)
+                try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try asset.data.write(to: destination)
+            }
         }
 
         if FileManager.default.fileExists(atPath: crateURL.path) {

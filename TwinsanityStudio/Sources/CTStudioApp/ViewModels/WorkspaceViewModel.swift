@@ -3167,9 +3167,20 @@ public final class WorkspaceViewModel: ObservableObject {
     /// Loader & Multi-Game Packager" export path (blueprint 3.3), built on
     /// top of the one record type this build can actually write edits back
     /// to (see `PositionInspectorView`'s doc comment).
-    public func exportAsCrate(patchedBytes: Data, originalFileName: String, metadata: CrateMetadata, to crateURL: URL) {
+    ///
+    /// - Parameter settings: Optional `modcratesettings.txt` key/value pairs
+    ///   (see `ModCrateSettings`), defaulting to none. This app has no
+    ///   general "mod property/settings" registry to populate these from
+    ///   (its editing model is per-record-type inspectors, not
+    ///   CrateModLoader's own global Mod Menu property list) — this
+    ///   parameter is real, tested file-format/crate plumbing, wired
+    ///   through as an inert pass-through for whichever caller has an
+    ///   actual key/value pair to attach (e.g. a `GameRegion` declaration,
+    ///   or a Cross-Engine Texture Variant's `TextureOverride_<id>` entry —
+    ///   see `exportCrossEngineTextureOverrideAsCrate`).
+    public func exportAsCrate(patchedBytes: Data, originalFileName: String, metadata: CrateMetadata, settings: [String: String] = [:], to crateURL: URL) {
         do {
-            try CrateExporter.export(files: [(relativePath: originalFileName, data: patchedBytes)], metadata: metadata, to: crateURL)
+            try CrateExporter.export(files: [(relativePath: originalFileName, data: patchedBytes)], metadata: metadata, settings: settings, to: crateURL)
             statusMessage = "Exported mod crate to \(crateURL.lastPathComponent)."
         } catch {
             lastError = "Crate export failed: \(error)"
