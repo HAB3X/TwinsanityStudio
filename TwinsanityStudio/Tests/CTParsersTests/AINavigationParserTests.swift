@@ -40,6 +40,19 @@ final class AINavigationParserTests: XCTestCase {
         XCTAssertEqual(path.args, [10, 20, 30, 40, 50])
         XCTAssertEqual(cursor.position, w.data.count)
     }
+
+    /// `startAIPositionID`/`endAIPositionID` are exactly `args[0]`/
+    /// `args[1]` — see `AIPathRecord`'s doc comment for the real reference-
+    /// tool UI label ("AI Pos 1"/"AI Pos 2") backing that reading.
+    func testAIPathStartEndPositionIDsMapToFirstTwoArgs() throws {
+        var w = BinaryWriter()
+        for value: UInt16 in [111, 222, 30, 40, 50] { w.writeUInt16(value) }
+        var cursor = BinaryCursor(data: w.data)
+        let path = try AINavigationParser.parseAIPath(&cursor, recordID: 3)
+
+        XCTAssertEqual(path.startAIPositionID, 111)
+        XCTAssertEqual(path.endAIPositionID, 222)
+    }
 }
 
 extension AINavigationParserTests {

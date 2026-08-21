@@ -231,10 +231,82 @@ struct GameObjectEditorSheet: View {
                     get: { editableObject.instanceProperties?.integers ?? [] },
                     set: { editableObject.instanceProperties?.integers = $0 }
                 ))
+                aiBehaviorExperimentalSection
             }
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.blue.opacity(0.06)))
+    }
+
+    /// "AI/Behavior Inspector" (roadmap item 4c): "Aggression"/"Patrol
+    /// Radius"/"Health"/"Respawn Delay" have no confirmed mapping anywhere
+    /// in this project's reference material — `ObjectEditor.Designer.cs`
+    /// labels the three lists above only generically ("Instance flags"/
+    /// "Instance floats"/"Instance integers", plus a self-contradictory
+    /// "Instance angles" label on the widget group actually wired to the
+    /// flags list — see `ObjectEditor.cs`'s own `instFlagsManipulator`
+    /// binding), never per-index. So this is the honest scaffold the task
+    /// calls for: real, working, wired-to-real-on-disk-data editors for a
+    /// few chosen slots of `instanceProperties.floats`/`integers`, tagged
+    /// with these user-facing labels for convenience only — **not** a
+    /// claim that slot 0 of `floats` really is "Aggression" in the game's
+    /// own logic. Padding a short array up to the needed length rather
+    /// than disabling the field keeps this usable on a record that hasn't
+    /// populated these slots yet.
+    private var aiBehaviorExperimentalSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+            Text("AI Behavior (experimental, unconfirmed)").font(.caption.bold())
+            Text("No reference source maps any index of Instance Floats/Integers to a specific gameplay meaning — these four fields just relabel chosen slots of the real lists above for convenience. Editing here edits the exact same underlying data as the raw list editors; the labels themselves are this build's own guess, not verified.")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+            experimentalFloatSlotField(label: "Aggression", index: 0)
+            experimentalFloatSlotField(label: "Patrol Radius", index: 1)
+            experimentalFloatSlotField(label: "Respawn Delay", index: 2)
+            experimentalIntegerSlotField(label: "Health", index: 0)
+        }
+    }
+
+    private func experimentalFloatSlotField(label: String, index: Int) -> some View {
+        LabeledContent("\(label) (Floats[\(index)], unconfirmed)") {
+            TextField("value", text: Binding(
+                get: {
+                    let floats = editableObject.instanceProperties?.floats ?? []
+                    return floats.indices.contains(index) ? "\(floats[index])" : "0"
+                },
+                set: { newValue in
+                    guard let parsed = Float(newValue) else { return }
+                    var floats = editableObject.instanceProperties?.floats ?? []
+                    while floats.count <= index { floats.append(0) }
+                    floats[index] = parsed
+                    editableObject.instanceProperties?.floats = floats
+                }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 100)
+        }
+        .font(.caption)
+    }
+
+    private func experimentalIntegerSlotField(label: String, index: Int) -> some View {
+        LabeledContent("\(label) (Integers[\(index)], unconfirmed)") {
+            TextField("value", text: Binding(
+                get: {
+                    let integers = editableObject.instanceProperties?.integers ?? []
+                    return integers.indices.contains(index) ? "\(integers[index])" : "0"
+                },
+                set: { newValue in
+                    guard let parsed = UInt32(newValue) else { return }
+                    var integers = editableObject.instanceProperties?.integers ?? []
+                    while integers.count <= index { integers.append(0) }
+                    integers[index] = parsed
+                    editableObject.instanceProperties?.integers = integers
+                }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 100)
+        }
+        .font(.caption)
     }
 
     // MARK: - Linked IDs ("Resources")

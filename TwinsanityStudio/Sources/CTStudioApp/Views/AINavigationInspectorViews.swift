@@ -173,10 +173,12 @@ struct AIPathInspectorView: View {
                         }
                     }
                 }
-                Section {
-                    Text("This record has no position of its own and no confirmed link to any AIPosition waypoint — the reference tool's own editor shows these same 5 raw values with no further interpretation, so this build doesn't guess at one either.")
+                Section("Linked Waypoints (candidate — see doc comment)") {
+                    Text("This record has no position of its own. The reference tool's own tree-node summary never interprets these 5 raw values beyond printing them, but its dedicated AIPathEditor form labels Arg 0/Arg 1 \"AI Pos 1\"/\"AI Pos 2\" — real evidence they're meant as AIPosition IDs, though no reference-tool code ever actually resolves them. Shown here as candidates, not a confirmed link.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    linkedWaypointRow(label: "AI Pos 1 (Arg 0)", positionID: path.startAIPositionID)
+                    linkedWaypointRow(label: "AI Pos 2 (Arg 1)", positionID: path.endAIPositionID)
                 }
             }
             .formStyle(.grouped)
@@ -214,6 +216,33 @@ struct AIPathInspectorView: View {
     private func loadFields() {
         argTexts = path.args.map { "\($0)" }
         errorMessage = nil
+    }
+
+    /// Resolves `positionID` against every real `AIPosition` in this same
+    /// file (`WorkspaceViewModel.aiPositionRecords(inSameFileAs:)`, the
+    /// same lookup already backing the Level Viewer's own AI Waypoints
+    /// layer) and shows what it finds — or honestly says it found nothing,
+    /// since a candidate ID from `AIPathRecord.startAIPositionID`/
+    /// `endAIPositionID` isn't guaranteed to resolve.
+    @ViewBuilder
+    private func linkedWaypointRow(label: String, positionID: UInt16?) -> some View {
+        if let positionID {
+            let match = workspace.aiPositionRecords(inSameFileAs: node).first { $0.marker.id == UInt32(positionID) }
+            LabeledContent(label) {
+                if let match {
+                    HStack {
+                        Text("#\(positionID) — (\(String(format: "%.1f, %.1f, %.1f", match.marker.position.x, match.marker.position.y, match.marker.position.z)))")
+                            .font(.caption.monospaced())
+                        Button("Select") { workspace.select(match.node) }
+                            .controlSize(.small)
+                    }
+                } else {
+                    Text("#\(positionID) — not found in this file's AIPosition collection")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     private var editedArgs: [UInt16]? {
