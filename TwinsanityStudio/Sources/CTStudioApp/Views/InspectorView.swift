@@ -142,15 +142,31 @@ struct InspectorView: View {
                     .padding(20)
                 }
                 .onChange(of: node.id) { _, _ in
+                    // Lazy load (matches the `SceneryLoadCache` posture
+                    // elsewhere in this app): a node selection alone used to
+                    // eagerly call the expensive `resolveComposite` here —
+                    // rebuilding the whole file's Graphics/Code index and
+                    // resolving full geometry/textures — for *every*
+                    // composite-eligible node browsed in the sidebar, even
+                    // though the result is only ever shown after the user
+                    // explicitly flips "View Parent / Composite" on. Just
+                    // drop the stale value on selection change; the actual
+                    // resolve now only happens in the `showComposite`
+                    // `onChange` below, when a view that needs it
+                    // (`compositeContent`/`CompositePreviewView`) is about
+                    // to actually appear.
                     showComposite = false
-                    updateResolvedComposite(for: node)
+                    resolvedComposite = nil
                     updateHexQuickViewBytes(for: node)
+                }
+                .onChange(of: showComposite) { _, isOn in
+                    if isOn { updateResolvedComposite(for: node) }
                 }
                 .onChange(of: showHexQuickView) { _, isShown in
                     if isShown { updateHexQuickViewBytes(for: node) }
                 }
                 .onAppear {
-                    updateResolvedComposite(for: node)
+                    if showComposite { updateResolvedComposite(for: node) }
                     updateHexQuickViewBytes(for: node)
                 }
                 if showHexQuickView {
