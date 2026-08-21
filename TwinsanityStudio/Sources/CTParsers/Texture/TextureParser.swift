@@ -179,7 +179,12 @@ public enum TextureParser {
 
     /// `SwapPalette` — undoes PS2 CSM1 palette storage, which interleaves
     /// 8-entry blocks within each 32-entry group (`Texture.cs:378-389`).
-    private static func swapPalette(_ palette: inout [[UInt8]]) {
+    /// Self-inverse (a set of disjoint element swaps, applied twice is a
+    /// no-op) -- `TextureWriter.encodePSMT8` reuses this exact function to
+    /// re-interleave an encoded palette back into CSM1 storage order, same
+    /// reasoning as why that's correct rather than needing a separate
+    /// "unswap." Not `private` for exactly that reuse.
+    static func swapPalette(_ palette: inout [[UInt8]]) {
         for i in 0..<8 {
             for j in stride(from: 8 + i * 32, to: 16 + i * 32, by: 1) {
                 guard j + 8 < palette.count else { continue }
@@ -215,7 +220,11 @@ public enum TextureParser {
         return rgba
     }
 
-    private static func flip(_ indexes: inout [UInt8], width: Int, height: Int) {
+    /// Vertical mirror, applied to `indexes` in place -- self-inverse for
+    /// the same reason `swapPalette` is (row-pair swaps, applied twice is a
+    /// no-op). Not `private` so `TextureWriter.encodePSMT8` can apply it
+    /// before writing, undoing the mirror this applies after reading.
+    static func flip(_ indexes: inout [UInt8], width: Int, height: Int) {
         guard width > 0, height > 0 else { return }
         for y in 0..<(height / 2) {
             for x in 0..<width {
