@@ -11,6 +11,7 @@ struct SceneryInspectorView: View {
     let scenery: SceneryAsset
 
     @State private var isResolving = false
+    @State private var isEditingLighting = false
 
     var body: some View {
         // `SceneryAsset.placements` walks the record's whole recursive
@@ -36,6 +37,8 @@ struct SceneryInspectorView: View {
                         if !scenery.directionalLights.isEmpty { LabeledContent("Directional", value: "\(scenery.directionalLights.count)") }
                         if !scenery.pointLights.isEmpty { LabeledContent("Point", value: "\(scenery.pointLights.count)") }
                         if !scenery.negativeLights.isEmpty { LabeledContent("Negative", value: "\(scenery.negativeLights.count)") }
+                        Button("Edit Lighting…") { isEditingLighting = true }
+                            .disabled(!workspace.canSaveEdits(for: node))
                     }
                 }
             }
@@ -63,6 +66,15 @@ struct SceneryInspectorView: View {
                 }
                 .disabled(isResolving)
             }
+
+            if !workspace.canSaveEdits(for: node) {
+                Text("Editing lighting only saves for a standalone-opened .RM2/.SM2 file — this record's file is archive-packed, which this build doesn't have a write path for yet.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .sheet(isPresented: $isEditingLighting) {
+            SceneryLightingEditorSheet(node: node, scenery: scenery)
         }
     }
 }
