@@ -436,6 +436,12 @@ public enum RM2Parser {
                 return .script(try ScriptParser.parse(&cursor, recordID: recordID, size: size, platform: .demo))
             case .xboxSE:
                 return .soundEffectX(try SoundEffectXParser.parse(&cursor, recordID: recordID))
+            case .modelX:
+                return .xboxModel(try XboxMeshParser.parseModelX(&cursor, recordID: recordID))
+            case .skinX:
+                return .xboxSkin(try XboxMeshParser.parseSkinX(&cursor, recordID: recordID))
+            case .blendSkinX:
+                return .xboxBlendSkin(try XboxMeshParser.parseBlendSkinX(&cursor, recordID: recordID))
             default:
                 return .raw(byteCount: size)
             }

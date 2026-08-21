@@ -109,6 +109,15 @@ public enum ChunkPayload: Sendable {
     /// A `Script`/`ScriptX`/`ScriptDemo` record — the AI condition/state-
     /// machine system. See `ScriptAsset`'s doc comment.
     case script(ScriptAsset)
+    /// A `ModelX` record (Xbox static mesh, `SectionType.modelX`) — see
+    /// `XboxMeshAssets.swift`'s top-of-file doc comment for how confirmed
+    /// this real (non-VIF) layout is.
+    case xboxModel(XboxModelXAsset)
+    /// A `SkinX` record (Xbox skinned mesh, `SectionType.skinX`).
+    case xboxSkin(XboxSkinXAsset)
+    /// A `BlendSkinX` record (Xbox skinned + morph-target mesh,
+    /// `SectionType.blendSkinX`) — "Xbox Morphs" (roadmap item 4e).
+    case xboxBlendSkin(XboxBlendSkinXAsset)
     /// Understood record kind, but not (yet) decoded into a typed model —
     /// still browsable/exportable as a hex/raw blob.
     case raw(byteCount: Int)
@@ -139,7 +148,7 @@ public enum ChunkPayload: Sendable {
     public var kind: Kind? {
         switch self {
         case .texture: return .texture
-        case .mesh, .rigidModel: return .model
+        case .mesh, .rigidModel, .xboxModel, .xboxSkin, .xboxBlendSkin: return .model
         case .skeleton: return .skeleton
         case .animation: return .animation
         case .instance, .instanceDemo, .instanceMB: return .instance

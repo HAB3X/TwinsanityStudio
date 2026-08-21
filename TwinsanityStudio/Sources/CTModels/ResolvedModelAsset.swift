@@ -138,7 +138,14 @@ public enum AssetResolver {
                         index.rigidModels[leaf.recordID] = rigidModel
                     case .lodModel(let lodModel):
                         index.lodModels[leaf.recordID] = lodModel
-                    case .skeleton, .animation, .position, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .soundEffectX, .gameObject, .chunkLinks, .aiPosition, .aiPath, .collisionSurface, .skydome, .path, .particleData, .script, .raw, .instanceTemplate, .instanceTemplateDemo, .instanceDemo, .instanceMB:
+                    case .skeleton, .animation, .position, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .soundEffectX, .gameObject, .chunkLinks, .aiPosition, .aiPath, .collisionSurface, .skydome, .path, .particleData, .script, .raw, .instanceTemplate, .instanceTemplateDemo, .instanceDemo, .instanceMB,
+                         .xboxModel, .xboxSkin, .xboxBlendSkin:
+                        // Real, decoded (see `XboxMeshAssets.swift`), but not yet
+                        // wired into `GraphicsAssetIndex`/the render pipeline —
+                        // this pass's scope was decoding the real vertex data,
+                        // not building the material/texture resolution and
+                        // Metal upload path a renderable `ResolvedModelAsset`
+                        // needs (a materially larger, separate piece of work).
                         break
                     }
                 }

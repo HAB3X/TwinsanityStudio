@@ -320,6 +320,9 @@ private struct SidebarRow: View {
         case .texture: return "photo"
         case .mesh(let mesh): return mesh.isSkinned ? "figure.walk" : "cube"
         case .rigidModel: return "cube.transparent"
+        case .xboxModel: return "cube.transparent"
+        case .xboxSkin: return "figure.walk"
+        case .xboxBlendSkin: return "figure.walk.motion"
         case .material: return "paintpalette"
         case .skeleton: return "figure.stand"
         case .animation: return "play.circle"
@@ -351,6 +354,8 @@ private struct SidebarRow: View {
         case .texture: return .purple
         case .mesh: return .blue
         case .rigidModel: return .teal
+        case .xboxModel: return .teal
+        case .xboxSkin, .xboxBlendSkin: return .blue
         case .material: return .pink
         case .skeleton: return .orange
         case .animation: return .green
@@ -389,7 +394,7 @@ extension ChunkNode {
     /// undecoded Object/Script/Trigger/Position records to find it.
     private var displaySortRank: Int {
         switch payload {
-        case .texture, .mesh, .rigidModel, .skeleton, .animation, .instance, .instanceDemo, .instanceMB, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .soundEffectX, .chunkLinks, .aiPosition, .aiPath, .path, .script: return 0
+        case .texture, .mesh, .rigidModel, .xboxModel, .xboxSkin, .xboxBlendSkin, .skeleton, .animation, .instance, .instanceDemo, .instanceMB, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .soundEffectX, .chunkLinks, .aiPosition, .aiPath, .path, .script: return 0
         case .material, .position, .gameObject, .lodModel, .collisionSurface, .skydome, .particleData, .instanceTemplate, .instanceTemplateDemo: return 1
         case .none: return children.isEmpty ? 3 : 2
         case .raw: return 3
