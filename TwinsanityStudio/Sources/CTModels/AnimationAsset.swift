@@ -63,7 +63,15 @@ public struct AnimFrame: Sendable, Codable {
         self.values = values
     }
 
-    public func linearValue(at index: Int) -> Float { Float(values[index]) / 4096.0 }
+    // `index` ultimately traces back to a raw on-disk `animatedTransformIndex`
+    // (see this type's own doc comment) -- both current call sites already
+    // guard before calling this, but it's public API, so a future caller
+    // that doesn't guard gets a safe fallback instead of a crash on a
+    // corrupt/truncated animation file.
+    public func linearValue(at index: Int) -> Float {
+        guard values.indices.contains(index) else { return 0 }
+        return Float(values[index]) / 4096.0
+    }
 }
 
 /// One of the two independent curve sets in an `Animation` record (body,

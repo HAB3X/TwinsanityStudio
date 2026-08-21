@@ -112,7 +112,7 @@ final class EzSwizzle {
                         let cw = Self.columnWord32[cx + cy * 8]
 
                         let dst = startBlockPos + page * 2048 + block * 64 + column * 16 + cw
-                        guard src + 4 <= srcBuf.count, 4 * dst + 3 < gsBuf.count else { src += 4; continue }
+                        guard src + 4 <= srcBuf.count, dst >= 0, 4 * dst + 3 < gsBuf.count else { src += 4; continue }
                         for i in 0..<4 { gsBuf[4 * dst + i] = srcBuf[src + i] }
                         src += 4
                     }
@@ -151,7 +151,7 @@ final class EzSwizzle {
                         let cw = Self.columnWord32[cx + cy * 8]
 
                         let dst = startBlockPos + page * 2048 + block * 64 + column * 16 + cw
-                        guard src + 4 <= dstBuf.count, 4 * dst + 3 < gsBuf.count else { src += 4; continue }
+                        guard src + 4 <= dstBuf.count, dst >= 0, 4 * dst + 3 < gsBuf.count else { src += 4; continue }
                         for i in 0..<4 { dstBuf[src + i] = gsBuf[4 * dst + i] }
                         src += 4
                     }
@@ -192,7 +192,7 @@ final class EzSwizzle {
                         let cb = Self.columnByte8[cx + cy * 16]
 
                         let dst = startBlockPos + page * 2048 + block * 64 + column * 16 + cw
-                        guard src < srcBuf.count, 4 * dst + cb < gsBuf.count else { src += 1; continue }
+                        guard src < srcBuf.count, dst >= 0, 4 * dst + cb < gsBuf.count else { src += 1; continue }
                         gsBuf[4 * dst + cb] = srcBuf[src]
                         src += 1
                     }
@@ -234,7 +234,7 @@ final class EzSwizzle {
                         let cb = Self.columnByte8[cx + cy * 16]
 
                         let dst = startBlockPos + page * 2048 + block * 64 + column * 16 + cw
-                        guard src < dstBuf.count, 4 * dst + cb < gsBuf.count else { src += 1; continue }
+                        guard src < dstBuf.count, dst >= 0, 4 * dst + cb < gsBuf.count else { src += 1; continue }
                         dstBuf[src] = gsBuf[4 * dst + cb]
                         src += 1
                     }

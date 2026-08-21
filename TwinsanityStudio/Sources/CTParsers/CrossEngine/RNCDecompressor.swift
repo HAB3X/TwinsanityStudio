@@ -27,6 +27,7 @@ public enum RNCDecompressor {
         case packedCRCMismatch(expected: UInt16, actual: UInt16)
         case unpackedCRCMismatch(expected: UInt16, actual: UInt16)
         case encryptionKeyRequired
+        case corruptMatchOffset
     }
 
     public struct Header {
@@ -265,9 +266,15 @@ public enum RNCDecompressor {
             unpackedCRCReal = RNCDecompressor.crcTable[idx] ^ (unpackedCRCReal >> 8)
         }
 
-        func copyMatch() {
+        func copyMatch() throws {
             var count = matchCount
             let offset = Int(matchOffset)
+            // `matchOffset` comes straight off the compressed bitstream with
+            // no bound relative to how much output exists yet -- a
+            // corrupted stream (that still happens to pass the packed-CRC
+            // check) could reference before the start of output, which
+            // would otherwise index `output` out of bounds.
+            guard offset > 0, offset <= output.count else { throw RNCError.corruptMatchOffset }
             while count > 0 {
                 writeDecodedByte(output[output.count - offset])
                 count -= 1
@@ -325,13 +332,13 @@ public enum RNCDecompressor {
                             matchOffset = UInt32(try readSourceByte()) + 1
                         }
                         processedSize += matchCount
-                        copyMatch()
+                        try copyMatch()
                     } else {
                         try decodeMatchCountM2()
                         if matchCount != 9 {
                             try decodeMatchOffsetM2()
                             processedSize += matchCount
-                            copyMatch()
+                            try copyMatch()
                         } else {
                             let dataLength = (try inputBitsM2(4)) * 4 + 12
                             processedSize += dataLength
@@ -455,7 +462,7 @@ public enum RNCDecompressor {
                         matchOffset = (try decodeTableData(lenTable)) + 1
                         matchCount = (try decodeTableData(posTable)) + 2
                         processedSize += matchCount
-                        copyMatch()
+                        try copyMatch()
                     }
                 }
             }

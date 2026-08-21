@@ -137,7 +137,13 @@ public enum TextureParser {
             let rgba = applyPalette(indexes, palette: palette)
 
             var mips: [[UInt8]] = []
-            for level in 0..<mipLevels {
+            // `mipLevelsTBP`/`mipLevelsTBW` are fixed 6-slot arrays (the GS
+            // mip chain never carries more), but `m` is an arbitrary on-disk
+            // byte -- a corrupt/hand-modded texture record with `m >= 8` on
+            // a large enough base texture would otherwise index past slot 5
+            // before `mipWidth`/`mipHeight` ever hits 0 and crashes the app
+            // on file open.
+            for level in 0..<min(mipLevels, mipLevelsTBP.count) {
                 let mipWidth = width / (1 << (level + 1))
                 let mipHeight = height / (1 << (level + 1))
                 guard mipWidth > 0, mipHeight > 0 else { break }

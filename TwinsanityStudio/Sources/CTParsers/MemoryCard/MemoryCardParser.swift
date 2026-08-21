@@ -125,10 +125,16 @@ public enum MemoryCardParser {
 
     /// Reads one `clusterSize`-byte cluster at an **absolute** cluster
     /// number — see this type's doc comment for when that applies.
-    private static func readAbsoluteCluster(_ clusterNumber: UInt32, data: Data, superblock: MemoryCardSuperblock) throws -> Data {
+    private static func readAbsoluteCluster(_ clusterNumber: Int, data: Data, superblock: MemoryCardSuperblock) throws -> Data {
         let clusterSize = superblock.clusterSize
-        let byteOffset = Int(clusterNumber) * clusterSize
-        guard byteOffset >= 0, byteOffset + clusterSize <= data.count else {
+        // `clusterNumber` traces back to raw on-disk fields (directory
+        // entries, FAT/indirect-FAT tables) with no validation against the
+        // card's real geometry -- a corrupt `.mcr`/`.ps2` file can make this
+        // product overflow `Int`, which traps rather than throwing. Using
+        // `multipliedReportingOverflow` keeps that a catchable parse error
+        // like every other malformed-geometry case here.
+        let (byteOffset, overflowed) = clusterNumber.multipliedReportingOverflow(by: clusterSize)
+        guard !overflowed, byteOffset >= 0, byteOffset + clusterSize <= data.count else {
             throw MemoryCardParserError.invalidGeometry
         }
         return data.subdata(in: (data.startIndex + byteOffset)..<(data.startIndex + byteOffset + clusterSize))
@@ -137,7 +143,11 @@ public enum MemoryCardParser {
     /// Reads one cluster at an `alloc_offset`-relative cluster number — see
     /// this type's doc comment for when that applies.
     private static func readAllocRelativeCluster(_ clusterNumber: UInt32, data: Data, superblock: MemoryCardSuperblock) throws -> Data {
-        try readAbsoluteCluster(UInt32(superblock.allocOffset) + clusterNumber, data: data, superblock: superblock)
+        // Both operands are widened to `Int` before adding -- `allocOffset`
+        // and `clusterNumber` are each independently untrusted, disk-derived
+        // values, and adding them as `UInt32` (as this used to) traps if
+        // their sum overflows 32 bits instead of surfacing a parse error.
+        try readAbsoluteCluster(superblock.allocOffset + Int(clusterNumber), data: data, superblock: superblock)
     }
 
     /// Resolves the FAT entry for an `alloc_offset`-relative cluster index
@@ -159,11 +169,11 @@ public enum MemoryCardParser {
         guard dblIndirectIndex >= 0, dblIndirectIndex < superblock.indirectFATClusters.count else {
             throw MemoryCardParserError.invalidGeometry
         }
-        let indirectFATCluster = try readAbsoluteCluster(superblock.indirectFATClusters[dblIndirectIndex], data: data, superblock: superblock)
+        let indirectFATCluster = try readAbsoluteCluster(Int(superblock.indirectFATClusters[dblIndirectIndex]), data: data, superblock: superblock)
         var indirectCursor = BinaryCursor(data: indirectFATCluster, startPosition: Int(indirectOffset) * 4)
         let fatClusterNumber = try indirectCursor.readUInt32()
 
-        let fatCluster = try readAbsoluteCluster(fatClusterNumber, data: data, superblock: superblock)
+        let fatCluster = try readAbsoluteCluster(Int(fatClusterNumber), data: data, superblock: superblock)
         var fatCursor = BinaryCursor(data: fatCluster, startPosition: Int(fatOffset) * 4)
         return try fatCursor.readUInt32()
     }
