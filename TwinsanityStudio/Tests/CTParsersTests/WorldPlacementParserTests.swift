@@ -797,6 +797,163 @@ final class WorldPlacementParserTests: XCTestCase {
         XCTAssertEqual(patched.count, originalBytes.count)
     }
 
+    /// The real 187-byte fixed block every `Camera` record's sub-payload
+    /// sits after (non-Demo) — factored out so the round-trip tests below
+    /// can each supply just their own payload bytes rather than repeating
+    /// this fixture 12 times.
+    private func fixedCameraPrefixBytes(cameraType1: UInt32, cameraType2: UInt32 = CameraKind.none.rawValue) -> BinaryWriter {
+        var w = BinaryWriter()
+        w.writeUInt32(0); w.writeUInt32(1); w.writeFloat32(0.3)
+        for _ in 0..<3 { w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1) }
+        w.writeInt32(0); w.writeInt32(0); w.writeUInt32(10)
+        w.writeUInt32(0)
+        w.writeUInt16(0)
+        w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0)
+        w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0)
+        w.writeInt32(0); w.writeInt32(0)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0)
+        w.writeUInt32(0); w.writeInt32(0); w.writeUInt32(0); w.writeFloat32(0)
+        w.writeUInt32(cameraType1)
+        w.writeUInt32(cameraType2)
+        w.writeUInt8(0)
+        return w
+    }
+
+    /// `WorldPlacementWriter.writeCameraSubtype` is the inverse of
+    /// `parseCameraSubtype` for every real `CameraKind` payload — this
+    /// proves it byte-for-byte for all 10 payload-carrying variants that
+    /// aren't already covered by `testParseCameraWithPointSubtype`/
+    /// `testCameraPathControlPointOffsetsRoundTripAWriteBack`, plus that
+    /// `subtype1FileOffset` genuinely points at the payload's own first
+    /// byte (not just "some" offset that happens to work for `.point`).
+    func testWriteCameraSubtypeRoundTripsEveryPayloadCarryingVariant() throws {
+        var payload = BinaryWriter() // .boss (0xA19)
+        payload.writeUInt32(11)
+        payload.writeFloat32(1.5); payload.writeFloat32(2.5)
+        for _ in 0..<4 { payload.writeFloat32(1); payload.writeFloat32(2); payload.writeFloat32(3); payload.writeFloat32(4) }
+        for _ in 0..<4 { payload.writeFloat32(5); payload.writeFloat32(6); payload.writeFloat32(7); payload.writeFloat32(8) }
+        payload.writeFloat32(9); payload.writeFloat32(10); payload.writeFloat32(11); payload.writeFloat32(12)
+        payload.writeUInt8(77)
+        payload.writeFloat32(3); payload.writeFloat32(4); payload.writeFloat32(5); payload.writeFloat32(6)
+        payload.writeUInt8(88)
+        try assertCameraSubtypeRoundTrips(type: 0xA19, payload: payload)
+
+        var line = BinaryWriter() // .line (0x1C03)
+        line.writeUInt32(3); line.writeFloat32(1); line.writeFloat32(2)
+        line.writeFloat32(1); line.writeFloat32(1); line.writeFloat32(1); line.writeFloat32(1)
+        line.writeFloat32(2); line.writeFloat32(2); line.writeFloat32(2); line.writeFloat32(1)
+        try assertCameraSubtypeRoundTrips(type: 0x1C03, payload: line)
+
+        let null1C05 = BinaryWriter() // .null1C05 (0x1C05) — genuinely zero bytes
+        try assertCameraSubtypeRoundTrips(type: 0x1C05, payload: null1C05)
+
+        var spline = BinaryWriter() // .spline (0x1C06)
+        spline.writeInt32(4); spline.writeFloat32(1); spline.writeFloat32(2)
+        spline.writeUInt32(1) // segmentCount
+        spline.writeFloat32(3)
+        for _ in 0..<4 { spline.writeFloat32(1); spline.writeFloat32(2); spline.writeFloat32(3); spline.writeFloat32(1) } // (1+1)*2 = 4 vectors
+        spline.writeBytes(Data(repeating: 0xAB, count: 8)) // segmentCount * 8 trailing bytes
+        spline.writeUInt16(42)
+        try assertCameraSubtypeRoundTrips(type: 0x1C06, payload: spline)
+
+        var unused1C09 = BinaryWriter() // .unused1C09 (0x1C09)
+        unused1C09.writeUInt32(5); unused1C09.writeFloat32(1); unused1C09.writeFloat32(2)
+        try assertCameraSubtypeRoundTrips(type: 0x1C09, payload: unused1C09)
+
+        var point2 = BinaryWriter() // .point2 (0x1C0B)
+        point2.writeUInt32(6); point2.writeFloat32(1); point2.writeFloat32(2)
+        point2.writeFloat32(1); point2.writeFloat32(2); point2.writeFloat32(3); point2.writeFloat32(1)
+        point2.writeFloat32(9); point2.writeUInt8(1)
+        try assertCameraSubtypeRoundTrips(type: 0x1C0B, payload: point2)
+
+        var unused1C0C = BinaryWriter() // .unused1C0C (0x1C0C)
+        unused1C0C.writeUInt8(1); unused1C0C.writeUInt8(2); unused1C0C.writeUInt8(3); unused1C0C.writeUInt8(4)
+        try assertCameraSubtypeRoundTrips(type: 0x1C0C, payload: unused1C0C)
+
+        var line2 = BinaryWriter() // .line2 (0x1C0D)
+        line2.writeUInt32(7); line2.writeFloat32(1); line2.writeFloat32(2)
+        line2.writeFloat32(1); line2.writeFloat32(1); line2.writeFloat32(1); line2.writeFloat32(1)
+        line2.writeFloat32(2); line2.writeFloat32(2); line2.writeFloat32(2); line2.writeFloat32(1)
+        line2.writeFloat32(3); line2.writeFloat32(4)
+        try assertCameraSubtypeRoundTrips(type: 0x1C0D, payload: line2)
+
+        let empty1C0E = BinaryWriter() // .empty1C0E (0x1C0E) — genuinely zero bytes
+        try assertCameraSubtypeRoundTrips(type: 0x1C0E, payload: empty1C0E)
+
+        var zone = BinaryWriter() // .zone (0x1C0F)
+        for _ in 0..<4 { zone.writeFloat32(1); zone.writeFloat32(2); zone.writeFloat32(3); zone.writeFloat32(1) }
+        zone.writeUInt32(1); zone.writeUInt32(2); zone.writeUInt64(0xDEADBEEF)
+        for _ in 0..<4 { zone.writeFloat32(4); zone.writeFloat32(5); zone.writeFloat32(6); zone.writeFloat32(1) }
+        zone.writeUInt32(3); zone.writeUInt32(4); zone.writeUInt64(0xCAFEBABE)
+        try assertCameraSubtypeRoundTrips(type: 0x1C0F, payload: zone)
+    }
+
+    private func assertCameraSubtypeRoundTrips(type: UInt32, payload: BinaryWriter, file: StaticString = #filePath, line: UInt = #line) throws {
+        var full = fixedCameraPrefixBytes(cameraType1: type)
+        full.writeBytes(payload.data)
+
+        var cursor = BinaryCursor(data: full.data)
+        let camera = try WorldPlacementParser.parseCamera(&cursor, recordID: 1, isDemo: false)
+        XCTAssertEqual(cursor.position, full.count, "parser didn't consume exactly the fixed block + payload for type 0x\(String(type, radix: 16))", file: file, line: line)
+
+        guard let subtype1 = camera.subtype1 else {
+            return XCTFail("Expected a decoded subtype1 for type 0x\(String(type, radix: 16))", file: file, line: line)
+        }
+
+        // `subtype1FileOffset` must land exactly on the payload's own first
+        // byte — reproduce the payload bytes straight from the original
+        // buffer at that offset, independent of `writeCameraSubtype`.
+        let rangeFromOffset = full.data.subdata(in: camera.subtype1FileOffset..<full.count)
+        XCTAssertEqual(rangeFromOffset, payload.data, "subtype1FileOffset didn't point at the real payload bytes for type 0x\(String(type, radix: 16))", file: file, line: line)
+
+        let reEncoded = WorldPlacementWriter.writeCameraSubtype(subtype1)
+        XCTAssertEqual(reEncoded, payload.data, "writeCameraSubtype didn't reproduce the original payload bytes for type 0x\(String(type, radix: 16))", file: file, line: line)
+    }
+
+    /// Both slots filled — `subtype2FileOffset` must land exactly where
+    /// slot 1's *actual* variable-length payload ends (not some fixed
+    /// guess), and patching slot 2's payload in place via
+    /// `writeCameraSubtype` must leave slot 1 completely untouched. Uses
+    /// `.point` (fixed 16-byte payload) for slot 1 and `.line` for slot 2
+    /// so the two are distinguishable in the patched output.
+    func testSubtype2FileOffsetAccountsForSubtype1AndPatchesIndependently() throws {
+        var full = fixedCameraPrefixBytes(cameraType1: 0x1C02, cameraType2: 0x1C03) // point, line
+        // Slot 1 payload: .point
+        full.writeUInt32(1); full.writeFloat32(1); full.writeFloat32(2)
+        full.writeFloat32(10); full.writeFloat32(20); full.writeFloat32(30); full.writeFloat32(1)
+        // Slot 2 payload: .line
+        full.writeUInt32(2); full.writeFloat32(3); full.writeFloat32(4)
+        full.writeFloat32(1); full.writeFloat32(1); full.writeFloat32(1); full.writeFloat32(1)
+        full.writeFloat32(2); full.writeFloat32(2); full.writeFloat32(2); full.writeFloat32(1)
+
+        let originalBytes = full.data
+        var cursor = BinaryCursor(data: originalBytes)
+        let camera = try WorldPlacementParser.parseCamera(&cursor, recordID: 1, isDemo: false)
+        XCTAssertEqual(cursor.position, originalBytes.count)
+
+        guard case .point = camera.subtype1 else { return XCTFail("Expected .point in slot 1") }
+        guard case .line(let originalLine) = camera.subtype2 else { return XCTFail("Expected .line in slot 2") }
+        // Slot 1 (.point) is unkInt(4) + unkFloat1(4) + unkFloat2(4) + vector(16) = 28 bytes; slot 2 must start exactly there.
+        XCTAssertEqual(camera.subtype2FileOffset, camera.subtype1FileOffset + 28)
+
+        var editedLine = originalLine
+        editedLine.unkInt = 999
+        var patched = originalBytes
+        let encoded = WorldPlacementWriter.writeCameraSubtype(.line(editedLine))
+        patched.replaceSubrange(camera.subtype2FileOffset..<(camera.subtype2FileOffset + encoded.count), with: encoded)
+        XCTAssertEqual(patched.count, originalBytes.count)
+
+        var reparseCursor = BinaryCursor(data: patched)
+        let reparsed = try WorldPlacementParser.parseCamera(&reparseCursor, recordID: 1, isDemo: false)
+        guard case .point(let point) = reparsed.subtype1 else { return XCTFail("Expected .point in slot 1 after patch") }
+        XCTAssertEqual(point.unkInt, 1, "slot 1 must be untouched by a patch scoped to slot 2")
+        guard case .line(let line) = reparsed.subtype2 else { return XCTFail("Expected .line in slot 2 after patch") }
+        XCTAssertEqual(line.unkInt, 999)
+    }
+
     func testParseCameraUnknownSubtypeThrows() throws {
         var w = BinaryWriter()
         w.writeUInt32(0); w.writeUInt32(1); w.writeFloat32(0.3)

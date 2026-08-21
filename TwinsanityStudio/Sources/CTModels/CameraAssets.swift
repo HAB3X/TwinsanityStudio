@@ -359,6 +359,17 @@ public struct PlacedCamera: Sendable, Identifiable {
     /// trailing variable-length sub-payload, real, separate structural
     /// work this pass doesn't attempt.
     public var fixedFieldsFileOffset: Int
+    /// Byte offset of `subtype1`'s own first byte (right after `unkByte`/
+    /// `cameraType2`), relative to this `Camera` record's own start —
+    /// captured during parse the same way `fixedFieldsFileOffset` is, so
+    /// `WorldPlacementWriter.writeCameraSubtype` can patch a slot's whole
+    /// payload in place. `nil`-payload slots (`cameraType1 == .none`)
+    /// still get a real offset here (where a payload *would* start) even
+    /// though there's nothing to patch there.
+    public var subtype1FileOffset: Int
+    /// Same role as `subtype1FileOffset`, for `subtype2` — its own start
+    /// is wherever `subtype1`'s payload (if any) ends.
+    public var subtype2FileOffset: Int
 
     public init(
         id: UInt32,
@@ -396,7 +407,9 @@ public struct PlacedCamera: Sendable, Identifiable {
         unkByte: UInt8?,
         subtype1: CameraSubtype?,
         subtype2: CameraSubtype?,
-        fixedFieldsFileOffset: Int = 0
+        fixedFieldsFileOffset: Int = 0,
+        subtype1FileOffset: Int = 0,
+        subtype2FileOffset: Int = 0
     ) {
         self.id = id
         self.header = header
@@ -434,6 +447,8 @@ public struct PlacedCamera: Sendable, Identifiable {
         self.subtype1 = subtype1
         self.subtype2 = subtype2
         self.fixedFieldsFileOffset = fixedFieldsFileOffset
+        self.subtype1FileOffset = subtype1FileOffset
+        self.subtype2FileOffset = subtype2FileOffset
     }
 
     /// Rotation angle in degrees — same `2 * acos(w)` decode as

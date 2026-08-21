@@ -166,7 +166,9 @@ public enum WorldPlacementParser {
         let cameraType2Raw = try cursor.readUInt32()
         let unkByte: UInt8? = isDemo ? nil : try cursor.readUInt8()
 
+        let subtype1FileOffset = cursor.position
         let subtype1 = cameraType1Raw != CameraKind.none.rawValue ? try parseCameraSubtype(&cursor, type: cameraType1Raw) : nil
+        let subtype2FileOffset = cursor.position
         let subtype2 = cameraType2Raw != CameraKind.none.rawValue ? try parseCameraSubtype(&cursor, type: cameraType2Raw) : nil
 
         return PlacedCamera(
@@ -205,7 +207,9 @@ public enum WorldPlacementParser {
             unkByte: unkByte,
             subtype1: subtype1,
             subtype2: subtype2,
-            fixedFieldsFileOffset: fixedFieldsFileOffset
+            fixedFieldsFileOffset: fixedFieldsFileOffset,
+            subtype1FileOffset: subtype1FileOffset,
+            subtype2FileOffset: subtype2FileOffset
         )
     }
 

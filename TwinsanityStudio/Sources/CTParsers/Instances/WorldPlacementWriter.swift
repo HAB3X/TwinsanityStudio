@@ -309,6 +309,119 @@ public enum WorldPlacementWriter {
         return writer.data
     }
 
+    /// Encodes a whole `CameraSubtype` payload back to its exact on-disk
+    /// form — the inverse of `WorldPlacementParser.parseCameraSubtype`,
+    /// field-for-field in the same order that function reads them. Meant
+    /// to be patched at `PlacedCamera.subtype1FileOffset`/
+    /// `subtype2FileOffset`.
+    ///
+    /// `.path`/`.spline` re-encode their `unkVectors`/`trailingData`
+    /// verbatim from the struct (never re-derived from a count a caller
+    /// could change) — same "no restructuring" boundary
+    /// `writeCameraFixedFields`'s own doc comment draws for the
+    /// `cameraType1`/`cameraType2` fields themselves: editing which
+    /// control points exist is `writeCameraControlPoint`'s job (one
+    /// same-size point at a time), not this function's. As long as the
+    /// caller only edits a subtype's own scalar fields, this always
+    /// produces exactly as many bytes as the slot originally occupied,
+    /// making it safe to patch in place without touching anything after it
+    /// (the other subtype slot, `Instances`, or the next record).
+    public static func writeCameraSubtype(_ subtype: CameraSubtype) -> Data {
+        var writer = BinaryWriter()
+        switch subtype {
+        case .boss(let boss):
+            writer.writeUInt32(boss.unkInt)
+            writer.writeFloat32(boss.unkFloat1)
+            writer.writeFloat32(boss.unkFloat2)
+            for row in boss.unkMatrix1 { writer.writeVector4(row) }
+            for row in boss.unkMatrix2 { writer.writeVector4(row) }
+            writer.writeVector4(boss.unkVector)
+            writer.writeUInt8(boss.unkByte1)
+            writer.writeFloat32(boss.unkFloat3)
+            writer.writeFloat32(boss.unkFloat4)
+            writer.writeFloat32(boss.unkFloat5)
+            writer.writeFloat32(boss.unkFloat6)
+            writer.writeUInt8(boss.unkByte2)
+
+        case .point(let point):
+            writer.writeUInt32(point.unkInt)
+            writer.writeFloat32(point.unkFloat1)
+            writer.writeFloat32(point.unkFloat2)
+            writer.writeVector4(point.unkVector)
+
+        case .line(let line):
+            writer.writeUInt32(line.unkInt)
+            writer.writeFloat32(line.unkFloat1)
+            writer.writeFloat32(line.unkFloat2)
+            writer.writeVector4(line.boundingBoxVector1)
+            writer.writeVector4(line.boundingBoxVector2)
+
+        case .path(let path):
+            writer.writeUInt32(path.unkInt)
+            writer.writeFloat32(path.unkFloat1)
+            writer.writeFloat32(path.unkFloat2)
+            writer.writeUInt32(UInt32(path.unkVectors.count))
+            for vector in path.unkVectors { writer.writeVector4(vector) }
+            writer.writeInt32(Int32(path.trailingData.count / 8))
+            writer.writeBytes(path.trailingData)
+
+        case .null1C05:
+            break
+
+        case .spline(let spline):
+            writer.writeInt32(spline.unkInt)
+            writer.writeFloat32(spline.unkFloat1)
+            writer.writeFloat32(spline.unkFloat2)
+            writer.writeUInt32(spline.segmentCount)
+            writer.writeFloat32(spline.unkFloat3)
+            for vector in spline.unkVectors { writer.writeVector4(vector) }
+            writer.writeBytes(spline.trailingData)
+            writer.writeUInt16(spline.unkShort)
+
+        case .unused1C09(let minor):
+            writer.writeUInt32(minor.unkInt)
+            writer.writeFloat32(minor.unkFloat1)
+            writer.writeFloat32(minor.unkFloat2)
+
+        case .point2(let point2):
+            writer.writeUInt32(point2.unkInt)
+            writer.writeFloat32(point2.unkFloat1)
+            writer.writeFloat32(point2.unkFloat2)
+            writer.writeVector4(point2.unkVector)
+            writer.writeFloat32(point2.unkFloat3)
+            writer.writeUInt8(point2.unkByte)
+
+        case .unused1C0C(let bytes):
+            writer.writeUInt8(bytes.byte1)
+            writer.writeUInt8(bytes.byte2)
+            writer.writeUInt8(bytes.byte3)
+            writer.writeUInt8(bytes.byte4)
+
+        case .line2(let line2):
+            writer.writeUInt32(line2.unkInt)
+            writer.writeFloat32(line2.unkFloat1)
+            writer.writeFloat32(line2.unkFloat2)
+            writer.writeVector4(line2.boundingBoxVector1)
+            writer.writeVector4(line2.boundingBoxVector2)
+            writer.writeFloat32(line2.unkFloat3)
+            writer.writeFloat32(line2.unkFloat4)
+
+        case .empty1C0E:
+            break
+
+        case .zone(let zone):
+            for row in zone.data1Vectors { writer.writeVector4(row) }
+            writer.writeUInt32(zone.data1UnkInt1)
+            writer.writeUInt32(zone.data1UnkInt2)
+            writer.writeUInt64(zone.data1Padding)
+            for row in zone.data2Vectors { writer.writeVector4(row) }
+            writer.writeUInt32(zone.data2UnkInt1)
+            writer.writeUInt32(zone.data2UnkInt2)
+            writer.writeUInt64(zone.data2Padding)
+        }
+        return writer.data
+    }
+
     /// Encodes a single element of `Instance.unknownFloatList` (`UnkI322`)
     /// back to its on-disk 4-byte form — "Gameplay Mods" (see
     /// `GameplayModCatalog`) write-back, patched at

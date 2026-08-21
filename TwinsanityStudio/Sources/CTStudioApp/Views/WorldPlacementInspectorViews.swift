@@ -661,6 +661,15 @@ struct CameraInspectorView: View {
     /// of always passing the original, unedited camera through.
     @State private var coords1Texts: (x: String, y: String, z: String, w: String) = ("", "", "", "")
     @State private var coords2Texts: (x: String, y: String, z: String, w: String) = ("", "", "", "")
+    /// "CameraTriggerEditor variant payloads" — per-slot editable text for
+    /// whichever `CameraSubtype` case that slot currently holds, keyed by
+    /// the case's own field names (`CameraSubtypeEditorView`'s job to
+    /// populate/read). Only one case's fields are ever live in a given
+    /// dictionary at a time (whatever `camera.subtype1`/`2` actually is),
+    /// so field-name collisions across different cases (several share
+    /// names like `unkInt`) never matter in practice.
+    @State private var subtype1Texts: [String: String] = [:]
+    @State private var subtype2Texts: [String: String] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -683,12 +692,12 @@ struct CameraInspectorView: View {
                 }
                 if let subtype1 = camera.subtype1 {
                     Section("Slot 1 Data") {
-                        CameraSubtypeSummaryView(subtype: subtype1)
+                        CameraSubtypeEditorView(subtype: subtype1, texts: $subtype1Texts)
                     }
                 }
                 if let subtype2 = camera.subtype2 {
                     Section("Slot 2 Data") {
-                        CameraSubtypeSummaryView(subtype: subtype2)
+                        CameraSubtypeEditorView(subtype: subtype2, texts: $subtype2Texts)
                     }
                 }
                 if !camera.instanceIDs.isEmpty {
@@ -719,7 +728,7 @@ struct CameraInspectorView: View {
                     fixedField("unkInt8", label: "Unk Int 8")
                     fixedField("unkUInt9", label: "Unk UInt 9")
                     fixedField("unkFloat8", label: "Unk Float 8")
-                    Text("These are the record's own fixed-size scalar fields, real and now writable — same \"never trusted from any prior stored value, but never invented either\" naming the reference tool itself uses for its `unk`-prefixed fields. Everything from the camera type onward (subtype payloads) stays read-only: changing which `CameraKind` a slot uses would reshape the trailing variable-length payload, real, separate structural work.")
+                    Text("These are the record's own fixed-size scalar fields, real and now writable — same \"never trusted from any prior stored value, but never invented either\" naming the reference tool itself uses for its `unk`-prefixed fields. Each sub-camera slot's own scalar fields (above, under \"Slot 1/2 Data\") are writable the same way; only their vector arrays/control points and which `CameraKind` a slot uses stay read-only — reshaping those is real, separate structural work.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     coordsField("Coords 1", $coords1Texts)
@@ -732,7 +741,7 @@ struct CameraInspectorView: View {
 
             HStack {
                 Button("Save Edited Copy…") { save() }
-                    .disabled(editedPrefix == nil || editedFixedFields == nil || !workspace.canSaveEdits(for: node))
+                    .disabled(editedPrefix == nil || editedFixedFields == nil || !isSubtype1Valid || !isSubtype2Valid || !workspace.canSaveEdits(for: node))
                 Spacer()
             }
             .padding(.horizontal)
@@ -801,6 +810,8 @@ struct CameraInspectorView: View {
         ]
         coords1Texts = ("\(camera.unkCoords1.x)", "\(camera.unkCoords1.y)", "\(camera.unkCoords1.z)", "\(camera.unkCoords1.w)")
         coords2Texts = ("\(camera.unkCoords2.x)", "\(camera.unkCoords2.y)", "\(camera.unkCoords2.z)", "\(camera.unkCoords2.w)")
+        subtype1Texts = camera.subtype1.map(CameraSubtypeEditorView.fieldTexts) ?? [:]
+        subtype2Texts = camera.subtype2.map(CameraSubtypeEditorView.fieldTexts) ?? [:]
     }
 
     private var editedPrefix: Data? {
@@ -865,12 +876,37 @@ struct CameraInspectorView: View {
         return WorldPlacementWriter.writeCameraFixedFields(edited, isDemo: camera.unkShort == nil)
     }
 
+    /// `nil` when the slot has no payload (nothing to validate) or the
+    /// slot's fields don't all parse; a real `Data` (possibly zero-length,
+    /// for `.null1C05`/`.empty1C0E`) when they do. Distinct from
+    /// `editedFixedFields`'s "always required" shape since a slot can
+    /// legitimately be absent (`CameraKind.none`) — that case has to
+    /// never block Save, unlike an actually-present slot with a bad field.
+    private func editedSubtypePayload(original: CameraSubtype?, texts: [String: String]) -> Data?? {
+        guard let original else { return .some(nil) }
+        guard let rebuilt = CameraSubtypeEditorView.rebuildSubtype(original, texts: texts) else { return nil }
+        return .some(WorldPlacementWriter.writeCameraSubtype(rebuilt))
+    }
+
+    private var isSubtype1Valid: Bool { editedSubtypePayload(original: camera.subtype1, texts: subtype1Texts) != nil }
+    private var isSubtype2Valid: Bool { editedSubtypePayload(original: camera.subtype2, texts: subtype2Texts) != nil }
+
     private func save() {
         guard let prefix = editedPrefix, let fixedFields = editedFixedFields else { return }
-        guard let patchedBytes = workspace.patchedFileBytes(applyingAbsoluteByteRangePatches: [
+        var patches: [(node: ChunkNode, absoluteOffset: Int, encoded: Data)] = [
             (node: node, absoluteOffset: node.fileOffset, encoded: prefix),
             (node: node, absoluteOffset: node.fileOffset + camera.fixedFieldsFileOffset, encoded: fixedFields)
-        ]) else { return }
+        ]
+        guard let subtype1Payload = editedSubtypePayload(original: camera.subtype1, texts: subtype1Texts),
+              let subtype2Payload = editedSubtypePayload(original: camera.subtype2, texts: subtype2Texts)
+        else { return }
+        if let subtype1Payload {
+            patches.append((node: node, absoluteOffset: node.fileOffset + camera.subtype1FileOffset, encoded: subtype1Payload))
+        }
+        if let subtype2Payload {
+            patches.append((node: node, absoluteOffset: node.fileOffset + camera.subtype2FileOffset, encoded: subtype2Payload))
+        }
+        guard let patchedBytes = workspace.patchedFileBytes(applyingAbsoluteByteRangePatches: patches) else { return }
         guard let url = ExportPanel.chooseSaveLocation(suggestedName: "\(node.displayName)_edited.rm2", message: "Save the edited copy of this file. The original file on disk is not modified.") else { return }
         Task {
             do {
@@ -916,52 +952,225 @@ private func quaternionFromEuler(_ degrees: SIMD3<Float>) -> SIMD4<Float> {
     return (qz * qy * qx).vector
 }
 
-/// Compact, per-subtype field summary — full raw byte-for-byte detail
-/// (matrices, control-point arrays, undecoded trailing blobs) is available
-/// but not exhaustively spelled out here; counts/sizes are shown instead of
-/// dumping e.g. a Spline's full control-point list into a form.
-private struct CameraSubtypeSummaryView: View {
+/// "CameraTriggerEditor variant payloads" — a real, writable form per
+/// `CameraKind`, not just a summary: every scalar field on the current
+/// slot's subtype is an editable `TextField`, keyed into the parent's
+/// `subtype1Texts`/`subtype2Texts` dictionary by plain field name (see
+/// `CameraInspectorView.subtype1Texts`'s own doc comment for why key
+/// collisions across different cases never matter). What stays read-only
+/// is exactly what `WorldPlacementWriter.writeCameraSubtype`'s own doc
+/// comment draws the line at: fixed-count vector/matrix arrays (`.boss`'s
+/// two matrices, `.zone`'s two vector sets) and genuinely variable-length
+/// data (`.path`/`.spline`'s control points and trailing bytes) — editing
+/// those would restructure the record, real, separate work; single
+/// vectors that aren't part of a count-driven array (`unkVector`,
+/// `boundingBoxVector1/2`) are just as editable as any other scalar.
+private struct CameraSubtypeEditorView: View {
     let subtype: CameraSubtype
+    @Binding var texts: [String: String]
+
+    /// Every scalar field's on-disk value, stringified, for whichever
+    /// case `subtype` is — the parent's `loadFields()` seeds
+    /// `subtype1Texts`/`subtype2Texts` from this each time the selected
+    /// record changes.
+    static func fieldTexts(for subtype: CameraSubtype) -> [String: String] {
+        switch subtype {
+        case .boss(let boss):
+            return [
+                "unkInt": "\(boss.unkInt)", "unkFloat1": "\(boss.unkFloat1)", "unkFloat2": "\(boss.unkFloat2)",
+                "unkVector.x": "\(boss.unkVector.x)", "unkVector.y": "\(boss.unkVector.y)", "unkVector.z": "\(boss.unkVector.z)", "unkVector.w": "\(boss.unkVector.w)",
+                "unkByte1": "\(boss.unkByte1)", "unkFloat3": "\(boss.unkFloat3)", "unkFloat4": "\(boss.unkFloat4)",
+                "unkFloat5": "\(boss.unkFloat5)", "unkFloat6": "\(boss.unkFloat6)", "unkByte2": "\(boss.unkByte2)"
+            ]
+        case .point(let point):
+            return [
+                "unkInt": "\(point.unkInt)", "unkFloat1": "\(point.unkFloat1)", "unkFloat2": "\(point.unkFloat2)",
+                "unkVector.x": "\(point.unkVector.x)", "unkVector.y": "\(point.unkVector.y)", "unkVector.z": "\(point.unkVector.z)", "unkVector.w": "\(point.unkVector.w)"
+            ]
+        case .line(let line):
+            return [
+                "unkInt": "\(line.unkInt)", "unkFloat1": "\(line.unkFloat1)", "unkFloat2": "\(line.unkFloat2)",
+                "bb1.x": "\(line.boundingBoxVector1.x)", "bb1.y": "\(line.boundingBoxVector1.y)", "bb1.z": "\(line.boundingBoxVector1.z)", "bb1.w": "\(line.boundingBoxVector1.w)",
+                "bb2.x": "\(line.boundingBoxVector2.x)", "bb2.y": "\(line.boundingBoxVector2.y)", "bb2.z": "\(line.boundingBoxVector2.z)", "bb2.w": "\(line.boundingBoxVector2.w)"
+            ]
+        case .path(let path):
+            return ["unkInt": "\(path.unkInt)", "unkFloat1": "\(path.unkFloat1)", "unkFloat2": "\(path.unkFloat2)"]
+        case .null1C05:
+            return [:]
+        case .spline(let spline):
+            return ["unkInt": "\(spline.unkInt)", "unkFloat1": "\(spline.unkFloat1)", "unkFloat2": "\(spline.unkFloat2)", "unkFloat3": "\(spline.unkFloat3)"]
+        case .unused1C09(let minor):
+            return ["unkInt": "\(minor.unkInt)", "unkFloat1": "\(minor.unkFloat1)", "unkFloat2": "\(minor.unkFloat2)"]
+        case .point2(let point2):
+            return [
+                "unkInt": "\(point2.unkInt)", "unkFloat1": "\(point2.unkFloat1)", "unkFloat2": "\(point2.unkFloat2)",
+                "unkVector.x": "\(point2.unkVector.x)", "unkVector.y": "\(point2.unkVector.y)", "unkVector.z": "\(point2.unkVector.z)", "unkVector.w": "\(point2.unkVector.w)",
+                "unkFloat3": "\(point2.unkFloat3)", "unkByte": "\(point2.unkByte)"
+            ]
+        case .unused1C0C(let bytes):
+            return ["byte1": "\(bytes.byte1)", "byte2": "\(bytes.byte2)", "byte3": "\(bytes.byte3)", "byte4": "\(bytes.byte4)"]
+        case .line2(let line2):
+            return [
+                "unkInt": "\(line2.unkInt)", "unkFloat1": "\(line2.unkFloat1)", "unkFloat2": "\(line2.unkFloat2)",
+                "bb1.x": "\(line2.boundingBoxVector1.x)", "bb1.y": "\(line2.boundingBoxVector1.y)", "bb1.z": "\(line2.boundingBoxVector1.z)", "bb1.w": "\(line2.boundingBoxVector1.w)",
+                "bb2.x": "\(line2.boundingBoxVector2.x)", "bb2.y": "\(line2.boundingBoxVector2.y)", "bb2.z": "\(line2.boundingBoxVector2.z)", "bb2.w": "\(line2.boundingBoxVector2.w)",
+                "unkFloat3": "\(line2.unkFloat3)", "unkFloat4": "\(line2.unkFloat4)"
+            ]
+        case .empty1C0E:
+            return [:]
+        case .zone:
+            return [:]
+        }
+    }
+
+    /// The inverse of `fieldTexts(for:)` — reparses every key it produced
+    /// back into the matching struct, carrying every non-editable field
+    /// (matrices, control-point arrays, trailing data, counts) over
+    /// unchanged from `original` so the result always encodes to exactly
+    /// as many bytes as `original` did. `nil` if any field fails to parse.
+    static func rebuildSubtype(_ original: CameraSubtype, texts: [String: String]) -> CameraSubtype? {
+        func f(_ key: String) -> Float? { texts[key].flatMap(Float.init) }
+        func u32(_ key: String) -> UInt32? { texts[key].flatMap(UInt32.init) }
+        func i32(_ key: String) -> Int32? { texts[key].flatMap(Int32.init) }
+        func u8(_ key: String) -> UInt8? { texts[key].flatMap(UInt8.init) }
+        func vec(_ prefix: String) -> SIMD4<Float>? {
+            guard let x = f("\(prefix).x"), let y = f("\(prefix).y"), let z = f("\(prefix).z"), let w = f("\(prefix).w") else { return nil }
+            return SIMD4(x, y, z, w)
+        }
+
+        switch original {
+        case .boss(var boss):
+            guard let unkInt = u32("unkInt"), let f1 = f("unkFloat1"), let f2 = f("unkFloat2"), let vector = vec("unkVector"),
+                  let b1 = u8("unkByte1"), let f3 = f("unkFloat3"), let f4 = f("unkFloat4"), let f5 = f("unkFloat5"), let f6 = f("unkFloat6"), let b2 = u8("unkByte2")
+            else { return nil }
+            boss.unkInt = unkInt; boss.unkFloat1 = f1; boss.unkFloat2 = f2; boss.unkVector = vector
+            boss.unkByte1 = b1; boss.unkFloat3 = f3; boss.unkFloat4 = f4; boss.unkFloat5 = f5; boss.unkFloat6 = f6; boss.unkByte2 = b2
+            return .boss(boss)
+
+        case .point(var point):
+            guard let unkInt = u32("unkInt"), let f1 = f("unkFloat1"), let f2 = f("unkFloat2"), let vector = vec("unkVector") else { return nil }
+            point.unkInt = unkInt; point.unkFloat1 = f1; point.unkFloat2 = f2; point.unkVector = vector
+            return .point(point)
+
+        case .line(var line):
+            guard let unkInt = u32("unkInt"), let f1 = f("unkFloat1"), let f2 = f("unkFloat2"), let bb1 = vec("bb1"), let bb2 = vec("bb2") else { return nil }
+            line.unkInt = unkInt; line.unkFloat1 = f1; line.unkFloat2 = f2; line.boundingBoxVector1 = bb1; line.boundingBoxVector2 = bb2
+            return .line(line)
+
+        case .path(var path):
+            guard let unkInt = u32("unkInt"), let f1 = f("unkFloat1"), let f2 = f("unkFloat2") else { return nil }
+            path.unkInt = unkInt; path.unkFloat1 = f1; path.unkFloat2 = f2
+            return .path(path)
+
+        case .null1C05:
+            return .null1C05
+
+        case .spline(var spline):
+            guard let unkInt = i32("unkInt"), let f1 = f("unkFloat1"), let f2 = f("unkFloat2"), let f3 = f("unkFloat3") else { return nil }
+            spline.unkInt = unkInt; spline.unkFloat1 = f1; spline.unkFloat2 = f2; spline.unkFloat3 = f3
+            return .spline(spline)
+
+        case .unused1C09(var minor):
+            guard let unkInt = u32("unkInt"), let f1 = f("unkFloat1"), let f2 = f("unkFloat2") else { return nil }
+            minor.unkInt = unkInt; minor.unkFloat1 = f1; minor.unkFloat2 = f2
+            return .unused1C09(minor)
+
+        case .point2(var point2):
+            guard let unkInt = u32("unkInt"), let f1 = f("unkFloat1"), let f2 = f("unkFloat2"), let vector = vec("unkVector"),
+                  let f3 = f("unkFloat3"), let byte = u8("unkByte")
+            else { return nil }
+            point2.unkInt = unkInt; point2.unkFloat1 = f1; point2.unkFloat2 = f2; point2.unkVector = vector
+            point2.unkFloat3 = f3; point2.unkByte = byte
+            return .point2(point2)
+
+        case .unused1C0C:
+            guard let b1 = u8("byte1"), let b2 = u8("byte2"), let b3 = u8("byte3"), let b4 = u8("byte4") else { return nil }
+            return .unused1C0C(CameraFourBytes(byte1: b1, byte2: b2, byte3: b3, byte4: b4))
+
+        case .line2(var line2):
+            guard let unkInt = u32("unkInt"), let f1 = f("unkFloat1"), let f2 = f("unkFloat2"), let bb1 = vec("bb1"), let bb2 = vec("bb2"),
+                  let f3 = f("unkFloat3"), let f4 = f("unkFloat4")
+            else { return nil }
+            line2.unkInt = unkInt; line2.unkFloat1 = f1; line2.unkFloat2 = f2; line2.boundingBoxVector1 = bb1; line2.boundingBoxVector2 = bb2
+            line2.unkFloat3 = f3; line2.unkFloat4 = f4
+            return .line2(line2)
+
+        case .empty1C0E:
+            return .empty1C0E
+
+        case .zone:
+            return original // no editable fields — always carries through unchanged
+        }
+    }
 
     var body: some View {
         switch subtype {
-        case .boss(let boss):
-            LabeledContent("Vector", value: vectorString(boss.unkVector))
-            LabeledContent("Floats", value: String(format: "%.2f, %.2f, %.2f, %.2f", boss.unkFloat3, boss.unkFloat4, boss.unkFloat5, boss.unkFloat6))
-        case .point(let point):
-            LabeledContent("Point", value: vectorString(point.unkVector))
-        case .line(let line):
-            LabeledContent("Box Min", value: vectorString(line.boundingBoxVector1))
-            LabeledContent("Box Max", value: vectorString(line.boundingBoxVector2))
+        case .boss:
+            scalarField("unkInt", "Unk Int"); scalarField("unkFloat1", "Unk Float 1"); scalarField("unkFloat2", "Unk Float 2")
+            vectorField("Unk Vector", prefix: "unkVector")
+            scalarField("unkByte1", "Unk Byte 1"); scalarField("unkFloat3", "Unk Float 3"); scalarField("unkFloat4", "Unk Float 4")
+            scalarField("unkFloat5", "Unk Float 5"); scalarField("unkFloat6", "Unk Float 6"); scalarField("unkByte2", "Unk Byte 2")
+            Text("Two 4×4 matrices (read-only) sit between the vector above and the fields below — real data, not shown field-by-field here.")
+                .font(.caption2).foregroundStyle(.secondary)
+        case .point:
+            scalarField("unkInt", "Unk Int"); scalarField("unkFloat1", "Unk Float 1"); scalarField("unkFloat2", "Unk Float 2")
+            vectorField("Unk Vector", prefix: "unkVector")
+        case .line:
+            scalarField("unkInt", "Unk Int"); scalarField("unkFloat1", "Unk Float 1"); scalarField("unkFloat2", "Unk Float 2")
+            vectorField("Box Min", prefix: "bb1"); vectorField("Box Max", prefix: "bb2")
         case .path(let path):
-            LabeledContent("Control Points", value: "\(path.unkVectors.count)")
-            LabeledContent("Trailing Data", value: "\(path.trailingData.count) bytes")
+            scalarField("unkInt", "Unk Int"); scalarField("unkFloat1", "Unk Float 1"); scalarField("unkFloat2", "Unk Float 2")
+            LabeledContent("Control Points (read-only)", value: "\(path.unkVectors.count)")
+            LabeledContent("Trailing Data (read-only)", value: "\(path.trailingData.count) bytes")
         case .null1C05:
             Text("No payload for this sub-camera type.").foregroundStyle(.secondary)
         case .spline(let spline):
-            LabeledContent("Segments", value: "\(spline.segmentCount)")
-            LabeledContent("Control Points", value: "\(spline.unkVectors.count)")
-            LabeledContent("Trailing Data", value: "\(spline.trailingData.count) bytes")
-        case .unused1C09(let minor):
-            LabeledContent("Floats", value: String(format: "%.2f, %.2f", minor.unkFloat1, minor.unkFloat2))
-        case .point2(let point2):
-            LabeledContent("Point", value: vectorString(point2.unkVector))
-        case .unused1C0C(let bytes):
-            LabeledContent("Bytes", value: "\(bytes.byte1), \(bytes.byte2), \(bytes.byte3), \(bytes.byte4)")
-        case .line2(let line2):
-            LabeledContent("Box Min", value: vectorString(line2.boundingBoxVector1))
-            LabeledContent("Box Max", value: vectorString(line2.boundingBoxVector2))
+            scalarField("unkInt", "Unk Int"); scalarField("unkFloat1", "Unk Float 1")
+            scalarField("unkFloat2", "Unk Float 2"); scalarField("unkFloat3", "Unk Float 3")
+            LabeledContent("Segments (read-only)", value: "\(spline.segmentCount)")
+            LabeledContent("Control Points (read-only)", value: "\(spline.unkVectors.count)")
+            LabeledContent("Trailing Data (read-only)", value: "\(spline.trailingData.count) bytes")
+        case .unused1C09:
+            scalarField("unkInt", "Unk Int"); scalarField("unkFloat1", "Unk Float 1"); scalarField("unkFloat2", "Unk Float 2")
+        case .point2:
+            scalarField("unkInt", "Unk Int"); scalarField("unkFloat1", "Unk Float 1"); scalarField("unkFloat2", "Unk Float 2")
+            vectorField("Unk Vector", prefix: "unkVector")
+            scalarField("unkFloat3", "Unk Float 3"); scalarField("unkByte", "Unk Byte")
+        case .unused1C0C:
+            scalarField("byte1", "Byte 1"); scalarField("byte2", "Byte 2"); scalarField("byte3", "Byte 3"); scalarField("byte4", "Byte 4")
+        case .line2:
+            scalarField("unkInt", "Unk Int"); scalarField("unkFloat1", "Unk Float 1"); scalarField("unkFloat2", "Unk Float 2")
+            vectorField("Box Min", prefix: "bb1"); vectorField("Box Max", prefix: "bb2")
+            scalarField("unkFloat3", "Unk Float 3"); scalarField("unkFloat4", "Unk Float 4")
         case .empty1C0E:
             Text("No payload for this sub-camera type.").foregroundStyle(.secondary)
         case .zone(let zone):
-            LabeledContent("Data 1 Vectors", value: "\(zone.data1Vectors.count)")
-            LabeledContent("Data 2 Vectors", value: "\(zone.data2Vectors.count)")
+            LabeledContent("Data 1 Vectors (read-only)", value: "\(zone.data1Vectors.count)")
+            LabeledContent("Data 2 Vectors (read-only)", value: "\(zone.data2Vectors.count)")
+            Text("Every field in this payload is a fixed-count vector array/64-bit padding pair — nothing scalar to edit.")
+                .font(.caption2).foregroundStyle(.secondary)
         }
     }
-}
 
-private func vectorString(_ v: SIMD4<Float>) -> String {
-    String(format: "%.3f, %.3f, %.3f, %.3f", v.x, v.y, v.z, v.w)
+    @ViewBuilder
+    private func scalarField(_ key: String, _ label: String) -> some View {
+        LabeledContent(label) {
+            TextField("", text: Binding(get: { texts[key] ?? "" }, set: { texts[key] = $0 }))
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+
+    @ViewBuilder
+    private func vectorField(_ label: String, prefix: String) -> some View {
+        LabeledContent(label) {
+            HStack {
+                ForEach(["x", "y", "z", "w"], id: \.self) { axis in
+                    TextField(axis, text: Binding(get: { texts["\(prefix).\(axis)"] ?? "" }, set: { texts["\(prefix).\(axis)"] = $0 }))
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+        }
+    }
 }
 
 private func degreesString(_ v: SIMD3<Float>) -> String {
