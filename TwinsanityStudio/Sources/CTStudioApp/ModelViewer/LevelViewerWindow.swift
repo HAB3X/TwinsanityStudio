@@ -296,6 +296,11 @@ struct LevelViewerWindow: View {
     @State private var isScenePreviewMode = false
     /// "Free Camera System in Chunk Editor".
     @State private var isFreeCameraMode = false
+    /// "Top-Down/Minimap" — mutually exclusive with `isFreeCameraMode` at
+    /// the renderer level; kept as its own `@State` (not derived) so this
+    /// view's Toggle bindings stay simple two-way bindings like the free
+    /// camera one above.
+    @State private var isTopDownMode = false
     @State private var scenePreviewTimer: Timer?
     /// "Recipe Book" (roadmap 6.4).
     @State private var isRecipeBookPresented = false
@@ -516,6 +521,7 @@ struct LevelViewerWindow: View {
                         },
                         onGizmoDragStarted: { transformBeforeEdit = currentSnapshot() },
                         onGizmoModeChanged: { gizmoMode = renderer.gizmoMode },
+                        onTopDownModeChanged: { isOn in isTopDownMode = isOn },
                         onObjectPicked: { index in select(index) },
                         onObjectPlaced: { index in
                             selectedIndex = index
@@ -930,6 +936,7 @@ struct LevelViewerWindow: View {
                 controlLegendRow("Arrow keys", "Nudge the selection along X/Z")
                 controlLegendRow("⇧ + ↑ / ↓", "Nudge the selection along Y")
                 controlLegendRow("F", "Frame the current selection")
+                controlLegendRow("T", "Toggle the top-down orthographic view")
                 controlLegendRow("1-9", "Place whatever's pinned to that hotbar slot")
                 controlLegendRow("Hold Q", "Radial marking menu — release on a slice to run it")
                 controlLegendRow("⌘D", "Duplicate the selected object")
@@ -983,6 +990,9 @@ struct LevelViewerWindow: View {
             freeCameraToggle
 
             Divider()
+            topDownToggle
+
+            Divider()
             scenePreviewModeToggle
 
             Divider()
@@ -1031,11 +1041,35 @@ struct LevelViewerWindow: View {
                 .toggleStyle(.checkbox)
                 .font(.caption)
                 .onChange(of: isFreeCameraMode) { _, isOn in
+                    if isOn { isTopDownMode = false }
                     renderer?.isFreeCameraMode = isOn
                 }
             Text(isFreeCameraMode
                 ? "WASD to move, E/Q for up/down, right-click-drag to look, scroll to adjust speed."
                 : "Fly freely instead of orbiting a fixed point.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// "Top-Down/Minimap" — snaps to a straight-down orthographic view for
+    /// spatial layout work (placing objects, reading overall level shape)
+    /// without perspective foreshortening. Scroll still "zooms" (scales
+    /// the orthographic extents), drag still pans around the orbit target;
+    /// only the projection and eye angle change. Mutually exclusive with
+    /// Free Camera, same as that toggle is with this one.
+    private var topDownToggle: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Top-Down View", isOn: $isTopDownMode)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .onChange(of: isTopDownMode) { _, isOn in
+                    if isOn { isFreeCameraMode = false }
+                    renderer?.isTopDownMode = isOn
+                }
+            Text(isTopDownMode
+                ? "Orthographic straight-down view. Toggle off to return to the perspective camera."
+                : "Snap to a straight-down orthographic minimap view. (T)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

@@ -281,6 +281,58 @@ final class ModelViewerRendererTests: XCTestCase {
         XCTAssertEqual(hit.z, 0, accuracy: 0.01)
     }
 
+    // MARK: - Top-Down/Minimap
+
+    /// A straight-down view is exactly the case that breaks a naive
+    /// `pitch = .pi/2` reuse of the orbit look-at math: `eye - target`
+    /// would become parallel to the orbit camera's hardcoded
+    /// `up = (0,1,0)`, collapsing `cross(up, z)` in `lookAtMatrix` to zero
+    /// and producing a NaN view matrix (a blank/garbage viewport).
+    /// `topDownViewProjection` avoids this with an explicit
+    /// `up = (0,0,-1)`; verified end-to-end here since a regression back
+    /// to the naive approach would silently produce NaNs rather than a
+    /// compile error, and a NaN view matrix would make this either fail
+    /// the unwrap or return garbage coordinates instead of the real,
+    /// finite ground-plane hit at the orbit target.
+    func testTopDownModeProducesAFiniteGroundHitAtScreenCenter() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device available in this environment")
+        }
+        let asset = makeTestAsset()
+        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), SIMD3<Float>(1, 1, 1), asset)]))
+        renderer.isTopDownMode = true
+        let viewSize = CGSize(width: 800, height: 600)
+        let center = CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)
+
+        let hit = try XCTUnwrap(renderer.worldPositionOnGroundPlane(at: center, viewSize: viewSize, planeY: 0))
+
+        XCTAssertFalse(hit.x.isNaN)
+        XCTAssertFalse(hit.z.isNaN)
+        XCTAssertEqual(hit.x, 0, accuracy: 0.01)
+        XCTAssertEqual(hit.y, 0, accuracy: 0.01)
+        XCTAssertEqual(hit.z, 0, accuracy: 0.01)
+    }
+
+    /// Top-Down and Free Camera don't compose (an orthographic straight-
+    /// down view plus a flying 6-DOF camera isn't a meaningful state) —
+    /// each toggling on must turn the other off, in both directions.
+    func testTopDownModeAndFreeCameraAreMutuallyExclusive() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("No Metal device available in this environment")
+        }
+        let asset = makeTestAsset()
+        let renderer = try XCTUnwrap(LevelViewerRenderer(placements: [(SIMD3<Float>(0, 0, 0), simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)), SIMD3<Float>(1, 1, 1), asset)]))
+
+        renderer.isFreeCameraMode = true
+        renderer.isTopDownMode = true
+        XCTAssertFalse(renderer.isFreeCameraMode)
+        XCTAssertTrue(renderer.isTopDownMode)
+
+        renderer.isFreeCameraMode = true
+        XCTAssertTrue(renderer.isFreeCameraMode)
+        XCTAssertFalse(renderer.isTopDownMode)
+    }
+
     /// Samples a grid of pixels and counts roughly-distinct colors — cheap
     /// proxy for "did anything actually render" without needing exact pixel
     /// matching.

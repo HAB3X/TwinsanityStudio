@@ -1215,6 +1215,26 @@ final class ModelViewerRenderer: NSObject, MTKViewDelegate {
         )
     }
 
+    /// Symmetric orthographic projection, built with the exact same Metal
+    /// `[0, 1]`-z NDC convention as `perspectiveMatrix` above (verified the
+    /// same way: view-space `vz = -near` maps to `clip.z/w = 0`, `vz =
+    /// -far` maps to `clip.z/w = 1`) so `Frustum`, `project()`, and the
+    /// collision-mesh unprojection all keep working unmodified under an
+    /// orthographic camera — none of them assume a converging eye point,
+    /// they all consume `viewProjection` generically.
+    fileprivate static func orthographicMatrix(halfWidth: Float, halfHeight: Float, near: Float, far: Float) -> simd_float4x4 {
+        let sx = 1 / halfWidth
+        let sy = 1 / halfHeight
+        let sz = 1 / (near - far)
+        let tz = near / (near - far)
+        return simd_float4x4(
+            SIMD4<Float>(sx, 0, 0, 0),
+            SIMD4<Float>(0, sy, 0, 0),
+            SIMD4<Float>(0, 0, sz, 0),
+            SIMD4<Float>(0, 0, tz, 1)
+        )
+    }
+
     fileprivate static func lookAtMatrix(eye: SIMD3<Float>, center: SIMD3<Float>, up: SIMD3<Float>) -> simd_float4x4 {
         let z = normalize(eye - center)
         let x = normalize(cross(up, z))
@@ -3362,6 +3382,9 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
 
     private func currentViewProjection(viewSize: CGSize) -> simd_float4x4 {
         let aspect = Float(viewSize.width / max(viewSize.height, 1))
+        if isTopDownMode {
+            return topDownViewProjection(aspect: aspect)
+        }
         let projection = ModelViewerRenderer.perspectiveMatrix(fovYRadians: .pi / 4, aspect: aspect, near: 0.05, far: boundsRadius * 20 + 50)
         let view4x4: simd_float4x4
         if isFreeCameraMode {
@@ -3369,6 +3392,33 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         } else {
             view4x4 = ModelViewerRenderer.lookAtMatrix(eye: orbitEyeWorldPosition, center: orbitTarget, up: SIMD3<Float>(0, 1, 0))
         }
+        return projection * view4x4
+    }
+
+    /// Straight-down orthographic "minimap" view. Deliberately does *not*
+    /// reuse the orbit `lookAtMatrix` call with `pitch` snapped to `.pi/2`
+    /// — at exactly straight-down, `eye - target` is parallel to the
+    /// hardcoded `up = (0,1,0)` orbit uses, so `cross(up, z)` in
+    /// `lookAtMatrix` collapses to zero and `normalize` produces NaNs (a
+    /// blank/garbage viewport). Using an explicit `up = (0,0,-1)` (screen
+    /// "up" faces world -Z) keeps `up` and the look direction perpendicular
+    /// by construction. "Zoom" reuses `distanceMultiplier` — scrolling
+    /// scales the orthographic half-extents the same lever that scales
+    /// orbit distance, rather than moving the eye (which wouldn't change
+    /// apparent size under an orthographic projection).
+    private func topDownViewProjection(aspect: Float) -> simd_float4x4 {
+        let target = orbitTarget
+        let distance = max(boundsRadius * distanceMultiplier, 1)
+        let eye = target + SIMD3<Float>(0, distance, 0)
+        let view4x4 = ModelViewerRenderer.lookAtMatrix(eye: eye, center: target, up: SIMD3<Float>(0, 0, -1))
+        let halfHeight = distance
+        let halfWidth = halfHeight * aspect
+        let projection = ModelViewerRenderer.orthographicMatrix(
+            halfWidth: halfWidth,
+            halfHeight: halfHeight,
+            near: 0.05,
+            far: distance + boundsRadius * 2 + 50
+        )
         return projection * view4x4
     }
 
@@ -3391,7 +3441,9 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// first-person player controller/physics body) stated as such in the
     /// Level Viewer's own UI, not dressed up as gameplay.
     var cameraEyeWorldPosition: SIMD3<Float> {
-        isFreeCameraMode ? freeCameraPosition : orbitEyeWorldPosition
+        if isFreeCameraMode { return freeCameraPosition }
+        if isTopDownMode { return orbitTarget + SIMD3<Float>(0, max(boundsRadius * distanceMultiplier, 1), 0) }
+        return orbitEyeWorldPosition
     }
 
     /// "F to Focus/Frame" — resets angle/distance to a sensible default;
@@ -3416,12 +3468,26 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     var isFreeCameraMode = false {
         didSet {
             guard isFreeCameraMode, !oldValue else { return }
+            isTopDownMode = false
             let eye = orbitEyeWorldPosition
             freeCameraPosition = eye
             let lookDirection = simd_normalize(orbitTarget - eye)
             freeCameraPitch = asin(max(-1, min(1, lookDirection.y)))
             freeCameraYaw = atan2(lookDirection.x, lookDirection.z)
             freeCameraVelocity = .zero
+        }
+    }
+
+    /// "Top-Down/Minimap" — snaps to the orthographic straight-down view
+    /// built by `topDownViewProjection`. Mutually exclusive with the free
+    /// camera (each turns the other off); orbiting the normal perspective
+    /// camera while this is on just doesn't apply, so `yaw`/`pitch` keep
+    /// their last values underneath and are restored automatically when
+    /// this is toggled back off.
+    var isTopDownMode = false {
+        didSet {
+            guard isTopDownMode, !oldValue else { return }
+            isFreeCameraMode = false
         }
     }
     private var freeCameraPosition: SIMD3<Float> = .zero

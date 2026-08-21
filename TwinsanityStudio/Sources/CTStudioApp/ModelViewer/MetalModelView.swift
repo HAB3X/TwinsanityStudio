@@ -50,6 +50,16 @@ protocol FreeCameraRenderer: OrbitCameraRenderer {
 
 extension LevelViewerRenderer: FreeCameraRenderer {}
 
+/// "Top-Down/Minimap" — implemented only by `LevelViewerRenderer`, same
+/// reasoning as `FreeCameraRenderer` above. Checked via `as?` from
+/// `keyDown` to drive the `T` hotkey without `MetalModelView` needing to
+/// know which concrete renderer type it's holding.
+protocol TopDownCameraRenderer: OrbitCameraRenderer {
+    var isTopDownMode: Bool { get set }
+}
+
+extension LevelViewerRenderer: TopDownCameraRenderer {}
+
 /// `MTKView` subclass that turns mouse drag into orbit and scroll into zoom.
 /// Kept as a thin, dumb input adapter — all the actual camera math lives on
 /// the renderer, this just forwards deltas to it.
@@ -70,6 +80,12 @@ final class InteractiveMTKView: MTKView {
     /// mode picker has no other way to notice a change AppKit's `keyDown`
     /// made directly on the (plain, non-`ObservableObject`) renderer.
     var onGizmoModeChanged: (() -> Void)?
+    /// Fired when the T hotkey toggles `TopDownCameraRenderer.isTopDownMode`
+    /// — same reasoning as `onGizmoModeChanged`: the SwiftUI-side checkbox
+    /// binding has no other way to notice a change `keyDown` made directly
+    /// on the renderer. Carries the new value so the SwiftUI side can just
+    /// assign it, rather than reading back through the renderer.
+    var onTopDownModeChanged: ((Bool) -> Void)?
     /// "Click any rendered element to select it" (Level Editor overhaul):
     /// fired with the picked object's index when a `mouseDown` didn't grab
     /// a gizmo handle but did land on/near a visible object — see
@@ -351,6 +367,11 @@ final class InteractiveMTKView: MTKView {
         case "r" where renderer is GizmoInteractiveRenderer:
             (renderer as? GizmoInteractiveRenderer)?.gizmoMode = .scale
             changedMode = true
+        case "t" where renderer is TopDownCameraRenderer:
+            if let topDownRenderer = renderer as? TopDownCameraRenderer {
+                topDownRenderer.isTopDownMode.toggle()
+                onTopDownModeChanged?(topDownRenderer.isTopDownMode)
+            }
         default:
             super.keyDown(with: event)
             return
@@ -459,6 +480,7 @@ struct MetalModelView: NSViewRepresentable {
     var onGizmoDragEnded: (() -> Void)?
     var onGizmoDragStarted: (() -> Void)?
     var onGizmoModeChanged: (() -> Void)?
+    var onTopDownModeChanged: ((Bool) -> Void)?
     var onObjectPicked: ((Int) -> Void)?
     var onObjectPlaced: ((Int) -> Void)?
     var onHotbarSlotPressed: ((Int) -> Void)?
@@ -472,6 +494,7 @@ struct MetalModelView: NSViewRepresentable {
         view.onGizmoDragEnded = onGizmoDragEnded
         view.onGizmoDragStarted = onGizmoDragStarted
         view.onGizmoModeChanged = onGizmoModeChanged
+        view.onTopDownModeChanged = onTopDownModeChanged
         view.onObjectPicked = onObjectPicked
         view.onObjectPlaced = onObjectPlaced
         view.onHotbarSlotPressed = onHotbarSlotPressed
@@ -513,6 +536,7 @@ struct MetalModelView: NSViewRepresentable {
         nsView.onGizmoDragEnded = onGizmoDragEnded
         nsView.onGizmoDragStarted = onGizmoDragStarted
         nsView.onGizmoModeChanged = onGizmoModeChanged
+        nsView.onTopDownModeChanged = onTopDownModeChanged
         nsView.onObjectPicked = onObjectPicked
         nsView.onObjectPlaced = onObjectPlaced
         nsView.onHotbarSlotPressed = onHotbarSlotPressed
