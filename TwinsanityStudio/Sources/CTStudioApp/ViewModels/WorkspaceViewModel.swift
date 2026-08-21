@@ -631,12 +631,14 @@ public final class WorkspaceViewModel: ObservableObject {
     /// resource (`Startup/Default.rm2` — confirmed against the actual
     /// archive, see `AssetResolver.resolveInstanceObject`'s doc comment),
     /// loaded once and reused for every subsequent Instance resolution in
-    /// this workspace rather than re-parsed per level. `nil` until the
-    /// first attempt; `didAttemptLoadingSharedDefaultAssetIndex` guards
-    /// against retrying that parse on every single level open when it's
-    /// genuinely unavailable (a loose-file workspace with no open archive).
-    private var sharedDefaultAssetIndex: GraphicsAssetIndex?
-    private var didAttemptLoadingSharedDefaultAssetIndex = false
+    /// this workspace rather than re-parsed per level. Caching the `Task`
+    /// itself (not just its eventual result) means a second Level Viewer
+    /// opened while the first load is still in flight awaits the same load
+    /// instead of racing it -- a boolean "already attempted" flag set
+    /// before the `await` used to let a concurrent second call see the
+    /// flag already true and return `nil` prematurely, before the real
+    /// result ever landed.
+    private var sharedDefaultAssetIndexTask: Task<GraphicsAssetIndex?, Never>?
     /// Raw file bytes for standalone-opened `.RM2`/`.SM2` files, keyed by
     /// their root `ChunkNode.id` — the "Editing GUI" write path's source
     /// material for patching an edited record back in at its known offset.
@@ -1336,16 +1338,28 @@ public final class WorkspaceViewModel: ObservableObject {
                             // — opened fresh per entry rather than reused,
                             // since tasks in this group run concurrently
                             // and complete in any order.
-                            guard let reader = try? BDArchiveReader(index: index),
-                                  let data = try? reader.read(entry)
-                            else { return nil }
-                            let kind = Self.fileKind(forEntryNamed: entry.name)
-                            guard let node = try? Self.mainTreeDriver(forExtension: (entry.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: kind, fileName: entry.name) else { return nil }
-                            let models = Self.resolveModels(inFileRoot: node, sourceLabel: entry.name)
-                            let entryOrphans = AssetResolver.scanForOrphans(fileRoot: node, sourceLabel: entry.name)
-                            let entryTextures = Self.collectTextures(inFileRoot: node, sourceLabel: entry.name)
-                            let entryLevels = Self.collectLevels(inFileRoot: node, sourceLabel: entry.name)
-                            return ParsedEntryResult(name: entry.name, node: node, models: models, orphans: entryOrphans, textures: entryTextures, levels: entryLevels)
+                            //
+                            // `applyBulkScan` already counts a `nil` here
+                            // toward `failedCount` in the final status
+                            // message, but a plain `try?` chain discarded
+                            // *which* entry failed and *why* — unlike every
+                            // other per-item batch loop in this file
+                            // (`stitchChunk`, `loadChunkLinkPlacements`),
+                            // which logs both via `AppLog`.
+                            do {
+                                let reader = try BDArchiveReader(index: index)
+                                let data = try reader.read(entry)
+                                let kind = Self.fileKind(forEntryNamed: entry.name)
+                                let node = try Self.mainTreeDriver(forExtension: (entry.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: kind, fileName: entry.name)
+                                let models = Self.resolveModels(inFileRoot: node, sourceLabel: entry.name)
+                                let entryOrphans = AssetResolver.scanForOrphans(fileRoot: node, sourceLabel: entry.name)
+                                let entryTextures = Self.collectTextures(inFileRoot: node, sourceLabel: entry.name)
+                                let entryLevels = Self.collectLevels(inFileRoot: node, sourceLabel: entry.name)
+                                return ParsedEntryResult(name: entry.name, node: node, models: models, orphans: entryOrphans, textures: entryTextures, levels: entryLevels)
+                            } catch {
+                                AppLog.scanning.debug("Archive scan — \(entry.name) failed to parse: \(error)")
+                                return nil
+                            }
                         }
                     }
 
@@ -3233,15 +3247,26 @@ public final class WorkspaceViewModel: ObservableObject {
     /// each needing a full `RigidModel` -> mesh -> material -> texture
     /// resolution — real CPU work that used to run synchronously on the
     /// main actor when the user clicked "Open Level Viewer," freezing the
-    /// UI for however long that took. `fileRoot`/`scenery` are both
-    /// `Sendable` (`ChunkNode` is `@unchecked Sendable`, `SceneryAsset` is
-    /// a plain `Sendable` struct), so the actual resolution loop can run
-    /// entirely off the main actor; only the initial `findFileRoot` lookup
-    /// (touching `rootNodes`) needs to happen here first.
+    /// UI for however long that took. `scenery` is a plain `Sendable`
+    /// struct; `fileRoot` is a `ChunkNode`, and while `ChunkNode` asserts
+    /// `@unchecked Sendable`, `findFileRoot` returns the real *live* node
+    /// still reachable from `rootNodes` -- handing that straight to a
+    /// background `Task` would race any later main-actor mutation of the
+    /// same tree (`expandArchiveEntry`, `applyBulkScan`). `deepCopy()`
+    /// (see its own doc comment) takes an independent snapshot here, on
+    /// the main actor, before the resolution loop runs entirely off it.
     public func resolvedLevelPlacements(for scenery: SceneryAsset, node: ChunkNode) async -> [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)] {
         guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return [] }
+        // `fileRoot` is a *live* node still reachable from `rootNodes` --
+        // `expandArchiveEntry`/`applyBulkScan` can mutate the same node's
+        // `children` in place on the main actor while this background Task
+        // is still reading it. `deepCopy()` (see its own doc comment on
+        // `ChunkNode`) takes a fully independent snapshot synchronously,
+        // here, before handing off, so the background read can never race
+        // a later main-actor write to the live tree.
+        let fileRootSnapshot = fileRoot.deepCopy()
         return await Task.detached(priority: .userInitiated) {
-            let index = AssetResolver.buildIndex(fileRoot: fileRoot)
+            let index = AssetResolver.buildIndex(fileRoot: fileRootSnapshot)
             var results: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)] = []
             for placement in scenery.placements {
                 guard let transform = placement.worldTransform,
@@ -3472,9 +3497,13 @@ public final class WorkspaceViewModel: ObservableObject {
     /// `Default.rm2` fallback, never this level's own actor data.
     private func resolvedInstanceAssets(for instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)], node: ChunkNode, siblingNode: ChunkNode?) async -> (assets: [UUID: ResolvedModelAsset], index: GraphicsAssetIndex) {
         guard let fileRoot = findFileRoot(containing: siblingNode ?? node, in: rootNodes) else { return ([:], GraphicsAssetIndex()) }
+        // See `resolvedLevelPlacements`'s identical comment / `ChunkNode.
+        // deepCopy()`'s own doc comment -- same live-tree-vs-background-
+        // read race, same fix.
+        let fileRootSnapshot = fileRoot.deepCopy()
         let defaultIndex = await loadSharedDefaultAssetIndexIfNeeded()
         return await Task.detached(priority: .userInitiated) {
-            let index = AssetResolver.buildIndex(fileRoot: fileRoot)
+            let index = AssetResolver.buildIndex(fileRoot: fileRootSnapshot)
             var results: [UUID: ResolvedModelAsset] = [:]
             for (markerNode, instance) in instanceMarkers {
                 let selector = instance.unknownUInt32List2.first ?? 0
@@ -3493,21 +3522,25 @@ public final class WorkspaceViewModel: ObservableObject {
     /// such, not retried every call) when no open archive carries it, e.g.
     /// a workspace with only loose `.RM2` files open and no `.BH`.
     private func loadSharedDefaultAssetIndexIfNeeded() async -> GraphicsAssetIndex? {
-        if didAttemptLoadingSharedDefaultAssetIndex { return sharedDefaultAssetIndex }
-        didAttemptLoadingSharedDefaultAssetIndex = true
+        if let sharedDefaultAssetIndexTask { return await sharedDefaultAssetIndexTask.value }
 
         guard let match = archiveIndexByRootID.values.compactMap({ archiveIndex -> (ArchiveIndex, ArchiveEntry)? in
             archiveIndex.entries.first { $0.name.caseInsensitiveCompare("Startup/Default.rm2") == .orderedSame }.map { (archiveIndex, $0) }
-        }).first else { return nil }
+        }).first else {
+            sharedDefaultAssetIndexTask = Task { nil }
+            return nil
+        }
 
-        let built = await Task.detached(priority: .userInitiated) { () -> GraphicsAssetIndex? in
-            guard let data = try? BDArchiveParser.readEntryData(match.1, index: match.0),
-                  let fileRoot = try? Self.mainTreeDriver(forExtension: (match.1.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: .rm2, fileName: match.1.name)
-            else { return nil }
-            return AssetResolver.buildIndex(fileRoot: fileRoot)
-        }.value
-        sharedDefaultAssetIndex = built
-        return built
+        let task = Task<GraphicsAssetIndex?, Never> {
+            await Task.detached(priority: .userInitiated) { () -> GraphicsAssetIndex? in
+                guard let data = try? BDArchiveParser.readEntryData(match.1, index: match.0),
+                      let fileRoot = try? Self.mainTreeDriver(forExtension: (match.1.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: .rm2, fileName: match.1.name)
+                else { return nil }
+                return AssetResolver.buildIndex(fileRoot: fileRoot)
+            }.value
+        }
+        sharedDefaultAssetIndexTask = task
+        return await task.value
     }
 
     /// "Chunk-Based Architecture" (Part 2) — "seamlessly load and stitch

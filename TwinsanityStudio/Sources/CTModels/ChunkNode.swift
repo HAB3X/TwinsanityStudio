@@ -167,12 +167,19 @@ public enum ChunkPayload: Sendable {
 /// `@unchecked Sendable`: a tree is built single-threaded inside one parse
 /// call (see `RM2Parser`/`WorkspaceViewModel.scanAllArchives`'s parse
 /// task), never mutated concurrently from more than one task while being
-/// built, and is only handed across a task/actor boundary once construction
-/// finishes — at which point it behaves like an immutable value from the
-/// receiver's perspective (later in-place edits, e.g. `expandArchiveEntry`,
-/// only ever happen back on the main actor). The compiler can't verify that
-/// discipline for a reference type, so it's asserted here rather than
-/// inferred.
+/// built, and behaves like an immutable value once handed across a task/
+/// actor boundary -- *as long as the receiver got its own copy*.
+/// `rootNodes`' live trees keep getting mutated in place afterward on the
+/// main actor (`expandArchiveEntry`'s lazy-load replacement,
+/// `applyBulkScan`'s post-scan update), so any code that looks up a node
+/// still reachable from `rootNodes` and hands *that same reference* to a
+/// background `Task` is not actually safe — it's an unsynchronized
+/// concurrent read/write race on a reference type, the compiler just can't
+/// see it because of this very annotation. Use `deepCopy()` to take a real,
+/// independent snapshot before crossing into a background `Task` whenever
+/// the live tree could still be mutated on the main actor while that task
+/// runs (see `WorkspaceViewModel.resolvedLevelPlacements`/
+/// `resolvedInstanceAssets` for the pattern).
 public final class ChunkNode: Identifiable, @unchecked Sendable {
     /// Was `let id = UUID()` (always freshly minted) — see `filtered(matching:)`/
     /// `filtered(byKind:)`'s doc comments for why that was a real, user-facing
@@ -225,6 +232,40 @@ public final class ChunkNode: Identifiable, @unchecked Sendable {
     }
 
     public var isLeaf: Bool { children.isEmpty }
+
+    /// A fully independent copy of this node and every descendant — new
+    /// `ChunkNode` instances throughout, sharing no reference with `self`
+    /// or any of its children. Unlike `filtered(matching:)`/`filtered(byKind:)`,
+    /// which reuse the original `children` array by reference whenever a
+    /// node matches itself, this recreates every node in the subtree.
+    ///
+    /// Needed because this type's own `@unchecked Sendable` doc comment
+    /// above asserts a tree "behaves like an immutable value" once handed
+    /// across an actor boundary — true only as long as nothing still holds
+    /// a *live* reference to the same nodes back on the main actor. Async
+    /// resolvers that look up a file's root via `findFileRoot` and hand it
+    /// straight to a background `Task` were doing exactly that: the same
+    /// root (and its `children` array) can still be mutated in place on
+    /// the main actor (`expandArchiveEntry`'s lazy-load replacement,
+    /// `applyBulkScan`'s post-scan update) while the background task is
+    /// mid-read, an unsynchronized concurrent read/write race on a
+    /// reference type. Deep-copying the subtree once, synchronously,
+    /// before handing it to the background task closes that gap — the
+    /// copy can never be touched by a later main-actor mutation of the
+    /// live tree, because it shares no node with it.
+    public func deepCopy() -> ChunkNode {
+        ChunkNode(
+            id: id,
+            recordID: recordID,
+            sectionType: sectionType,
+            displayName: displayName,
+            byteSize: byteSize,
+            fileOffset: fileOffset,
+            children: children.map { $0.deepCopy() },
+            payload: payload,
+            isLazyLoadable: isLazyLoadable
+        )
+    }
 
     /// Depth-first search across this node and its descendants for nodes whose
     /// display name or section type contains `query` (case-insensitive).
