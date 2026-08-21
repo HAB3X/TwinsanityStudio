@@ -5,15 +5,18 @@ import AppKit
 struct CTStudioApp: App {
     @StateObject private var workspace = WorkspaceViewModel()
     /// Separate from `workspace` deliberately — see `WOCWorkspace`'s doc
-    /// comment.
-    @StateObject private var wocWorkspace = WOCWorkspace()
+    /// comment. `@State`, not `@StateObject`: `WOCWorkspace` is `@Observable`
+    /// (a plain reference type SwiftUI tracks by property access, not the
+    /// legacy `ObservableObject` protocol `@StateObject` is for), so `@State`
+    /// is the correct wrapper to own its lifetime across view updates.
+    @State private var wocWorkspace = WOCWorkspace()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup("Twinsanity Studio") {
             ContentView()
                 .environmentObject(workspace)
-                .environmentObject(wocWorkspace)
+                .environment(wocWorkspace)
                 .frame(minWidth: 1100, minHeight: 700)
         }
         .windowToolbarStyle(.unified)
@@ -71,7 +74,7 @@ struct CTStudioApp: App {
         }
         Window("WoC Level Viewer", id: WOCViewerWindowID.viewer) {
             WOCViewerWindowHost()
-                .environmentObject(wocWorkspace)
+                .environment(wocWorkspace)
                 .tint(workspace.accentColorChoice.color)
         }
 

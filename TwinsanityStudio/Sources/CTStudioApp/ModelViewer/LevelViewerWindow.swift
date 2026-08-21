@@ -265,11 +265,13 @@ struct LevelViewerWindow: View {
     /// the renderer itself is a plain class AppKit mutates directly, not an
     /// `ObservableObject`.
     @State private var armedPlacement: (objectID: UInt16, name: String)?
-    /// The one instance of `SceneryModeView`'s loaded-levels cache — a
-    /// `@StateObject` specifically so it survives switching `editorMode`
-    /// away from `.scenery` and back (see `SceneryLoadCache`'s own doc
-    /// comment for the bug this fixes).
-    @StateObject private var sceneryCache = SceneryLoadCache()
+    /// The one instance of `SceneryModeView`'s loaded-levels cache — `@State`
+    /// specifically so it survives switching `editorMode` away from
+    /// `.scenery` and back (see `SceneryLoadCache`'s own doc comment for the
+    /// bug this fixes). `SceneryLoadCache` is `@Observable`, not a legacy
+    /// `ObservableObject`, so `@State` (not `@StateObject`) is the correct
+    /// owner here.
+    @State private var sceneryCache = SceneryLoadCache()
     /// "Numbered Hotbar (1-9)": what's pinned to each of the 9 slots —
     /// `nil` for an empty slot. Session-only, like `armedPlacement`; not
     /// persisted to disk. Pinned from the Forge Palette (a small pin
@@ -2257,7 +2259,8 @@ struct SceneryModeSection: Identifiable {
 /// hands the same instance to `SceneryModeView` every time regardless of
 /// which mode tab is currently showing.
 @MainActor
-final class SceneryLoadCache: ObservableObject {
+@Observable
+final class SceneryLoadCache {
     /// The current level specifically — surfaced separately from the
     /// generic "N of 134 loaded" counter so "where's *my* level" always
     /// has a real, visible answer instead of silently blending into a
@@ -2274,18 +2277,18 @@ final class SceneryLoadCache: ObservableObject {
         case failed(String)
     }
 
-    @Published var didStartLoading = false
-    @Published var currentLevelStatus: CurrentLevelStatus = .loading
-    @Published var sections: [SceneryModeSection] = []
-    @Published var totalSourceCount = 0
-    @Published var loadedCount = 0
-    @Published var thumbnailCache: [String: NSImage] = [:]
-    @Published var failedThumbnailIDs: Set<String> = []
+    var didStartLoading = false
+    var currentLevelStatus: CurrentLevelStatus = .loading
+    var sections: [SceneryModeSection] = []
+    var totalSourceCount = 0
+    var loadedCount = 0
+    var thumbnailCache: [String: NSImage] = [:]
+    var failedThumbnailIDs: Set<String> = []
 }
 
 struct SceneryModeView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
-    @ObservedObject var cache: SceneryLoadCache
+    var cache: SceneryLoadCache
     let destinationSceneryFileRoot: ChunkNode
     let initialPosition: SIMD3<Float>
 

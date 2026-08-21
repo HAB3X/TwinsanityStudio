@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
-    @EnvironmentObject private var wocWorkspace: WOCWorkspace
+    @Environment(WOCWorkspace.self) private var wocWorkspace
     @Environment(\.openWindow) private var openWindow
     /// "Persist Window Layout" (QoL sweep): `@SceneStorage` only supports a
     /// closed set of primitive types (Bool/Int/Double/String/URL/Data),
@@ -33,7 +33,12 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        // `@Bindable` shadow, scoped to this render of `body`: `@Environment`
+        // alone doesn't give `$`-projected bindings the way `@EnvironmentObject`
+        // used to (see `.sheet(isPresented: $wocWorkspace...)` below) — this
+        // is the standard `@Observable` pattern for getting one back.
+        @Bindable var wocWorkspace = wocWorkspace
+        return VStack(spacing: 0) {
             NavigationSplitView(columnVisibility: columnVisibility) {
                 SidebarView()
                     .navigationSplitViewColumnWidth(min: 260, ideal: 320)
@@ -287,7 +292,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $wocWorkspace.isLevelsHubPresented) {
             WOCLevelsHubView()
-                .environmentObject(wocWorkspace)
+                .environment(wocWorkspace)
         }
         .sheet(isPresented: $wocWorkspace.isSoundBrowserPresented) {
             if let soundArchiveURL = wocWorkspace.soundArchiveURL {

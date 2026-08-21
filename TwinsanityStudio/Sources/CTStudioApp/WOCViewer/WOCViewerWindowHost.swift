@@ -4,7 +4,7 @@ import SwiftUI
 /// `wocWorkspace.viewerAsset` nil ↔ non-nil is the open/close signal for a
 /// real `Window` scene (see `CTStudioApp`).
 struct WOCViewerWindowHost: View {
-    @EnvironmentObject private var wocWorkspace: WOCWorkspace
+    @Environment(WOCWorkspace.self) private var wocWorkspace
     @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {

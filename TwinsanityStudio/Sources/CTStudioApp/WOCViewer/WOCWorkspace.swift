@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import Observation
 
 /// One level found under the WOC root -- a real `.GSC` file paired with
 /// the level-folder name it lives in (`LEVELS/A/AIRSHIP/AIRSHIP.GSC` →
@@ -18,8 +19,9 @@ public struct WOCLevelHubEntry: Identifiable, Hashable {
 /// this mirrors its `masterDirectoryURL` persistence pattern exactly, just
 /// scoped to its own `ObservableObject`.
 @MainActor
-public final class WOCWorkspace: ObservableObject {
-    @Published public var rootURL: URL? {
+@Observable
+public final class WOCWorkspace {
+    public var rootURL: URL? {
         didSet {
             if let rootURL {
                 UserDefaults.standard.set(rootURL.path, forKey: Self.rootDefaultsKey)
@@ -31,12 +33,12 @@ public final class WOCWorkspace: ObservableObject {
     }
     private static let rootDefaultsKey = "TwinsanityStudio.WOCRootURL"
 
-    @Published public private(set) var levels: [WOCLevelHubEntry] = []
-    @Published public private(set) var isScanning = false
-    @Published public var statusMessage: String?
-    @Published public var isLevelsHubPresented = false
-    @Published public var isSoundBrowserPresented = false
-    @Published public var isCharacterBrowserPresented = false
+    public private(set) var levels: [WOCLevelHubEntry] = []
+    public private(set) var isScanning = false
+    public var statusMessage: String?
+    public var isLevelsHubPresented = false
+    public var isSoundBrowserPresented = false
+    public var isCharacterBrowserPresented = false
 
     /// `SFX.DAT` lives at the disc's top level, a sibling of `LEVELS/` --
     /// not inside it. Checked both directly under `rootURL` (root chosen
@@ -67,14 +69,22 @@ public final class WOCWorkspace: ObservableObject {
     /// Drives `WOCViewerWindowHost` exactly the way `WorkspaceViewModel.
     /// modelViewerAsset` etc. drive their own `Window` scenes -- nil ↔
     /// non-nil is the open/close signal.
-    @Published public var viewerAsset: WOCLevelAsset?
+    public var viewerAsset: WOCLevelAsset?
 
     public init() {
+        // Was `_rootURL = Published(initialValue:)`, a property-wrapper-only
+        // trick with no `@Observable` equivalent, to set the persisted
+        // value without `didSet` firing (which would both redundantly
+        // rewrite the same value back to `UserDefaults` and call
+        // `rescanLevels()` a second time, on top of the unconditional call
+        // below). Restructured instead: let `didSet` do its normal job in
+        // the persisted-root case, and only call `rescanLevels()` directly
+        // for the no-persisted-root case (where `didSet` never fires).
         if let path = UserDefaults.standard.string(forKey: Self.rootDefaultsKey) {
-            let url = URL(fileURLWithPath: path)
-            _rootURL = Published(initialValue: url)
+            rootURL = URL(fileURLWithPath: path)
+        } else {
+            rescanLevels()
         }
-        rescanLevels()
     }
 
     public func chooseRoot() {

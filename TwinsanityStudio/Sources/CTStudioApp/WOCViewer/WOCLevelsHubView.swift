@@ -3,7 +3,7 @@ import SwiftUI
 /// Mirrors `LevelsHubView`'s shape for WoC levels, driven by
 /// `WOCWorkspace` instead of `WorkspaceViewModel`.
 struct WOCLevelsHubView: View {
-    @EnvironmentObject private var wocWorkspace: WOCWorkspace
+    @Environment(WOCWorkspace.self) private var wocWorkspace
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
     @State private var loadingEntryID: WOCLevelHubEntry.ID?
