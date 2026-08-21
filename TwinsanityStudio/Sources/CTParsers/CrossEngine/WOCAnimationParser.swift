@@ -40,7 +40,21 @@ import simd
 /// animation format has been found in any real `.ANM` file on this
 /// disc** -- if WoC stores real character/creature skeletal animation
 /// data at all, it is not in these loose files (a plausible next place
-/// to look: `CHARS.DAT`, unexamined as of this writing). `parse` still
+/// to look: `CHARS.DAT`, unexamined as of this writing -- since
+/// examined; see `WOCCharacterSkeletonParser`'s own doc comment for
+/// real, confirmed skeleton/joint data there).
+///
+/// **Cross-checked against `OpenCrashWOC-main`'s real loader
+/// (`code/src/gamelib/edanim.c`'s `edanimFileLoad`) -- confirms the same
+/// conclusion independently.** Its own in-memory struct
+/// (`anim_parameters_s`, DWARF-verified 0x2D0 bytes) is a trigger +
+/// particle-emitter + sound-emitter template with no joint/bone/skeletal
+/// field anywhere, matching this file's own simple `Entry`/`SubEntry`
+/// shape in spirit (name + flag + a small parameter set) even though the
+/// exact field list differs. Real, independent confirmation that the
+/// "richer skeletal `.ANM`" gap doesn't exist as a variant of this
+/// format -- both this file's own full-corpus byte sweep and a separate
+/// real source say so. `parse` still
 /// throws rather than silently returning garbage if byte-consumption
 /// doesn't land exactly on end-of-file, so a genuinely different format
 /// showing up in a future file remains detectable rather than silently

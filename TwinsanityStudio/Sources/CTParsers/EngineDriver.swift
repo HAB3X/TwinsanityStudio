@@ -113,17 +113,14 @@ public struct TwinsanityEngineDriver: EngineDriver {
 /// "Modular TT Engine Cross-Compatibility & Chunk Stitcher" (roadmap 5.3):
 /// the second real driver — *Crash Twinsanity: The Wrath of Cortex*'s
 /// `.CRT` (crate positions) and `.WMP` (Wumpa fruit positions) files,
-/// backed by `WrathOfCortexParser`, itself ported field-for-field from
-/// CrateModLoader's real, working `TWOC_File_CRT.cs`/`TWOC_File_WMP.cs` —
-/// a genuine, verified reference source, meeting the bar `EngineDriver`'s
-/// own doc comment sets for adding a new entry here (not a guess at
-/// offsets). Scoped honestly: `supportedPlatforms` is PS2 only — the
-/// reference tool's own `LoadGC`/`BinaryReader2` path for the GameCube
-/// release uses a different (likely byte-swapped) reader this build
-/// doesn't port, and `WrathOfCortexParser` was never checked against a
-/// real Wrath of Cortex disc image the way every Twinsanity parser in this
-/// build was (no such disc is available in this environment) — see
-/// `WOCCrateFile`'s own doc comment for the same caveat.
+/// backed by `WrathOfCortexParser`. Its `.CRT` decode is grounded in real
+/// decompiled engine source (`OpenCrashWOC-main`'s `crate.c`) and
+/// independently re-verified against real disc bytes — see
+/// `WOCCrateFile`'s own doc comment for exactly what was checked. Scoped
+/// honestly: `supportedPlatforms` is PS2 only — this source tree is a
+/// GameCube alpha port, so field order/relationships are high confidence
+/// but exact byte offsets for anything beyond `.CRT`/`.WMP` aren't
+/// assumed to carry over untested.
 ///
 /// Its own `.CRT`/`.WMP` parsing is real (`WrathOfCortexParser.
 /// parseCrateFile`/`parseWumpaFile`, called directly from the Chunk

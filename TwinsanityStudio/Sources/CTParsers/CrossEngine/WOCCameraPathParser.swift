@@ -100,6 +100,35 @@ import simd
 /// on `TOONARMY.VIS`, just with `nameIndex == nil` throughout (see
 /// ``CameraPathNode``) -- an honest partial result, not silently wrong
 /// data.
+///
+/// **Checked against `OpenCrashWOC-main`, real tension found, not
+/// adopted -- this file's own byte-level evidence is stronger.** That
+/// reference's `code/src/gamecode/visi.c`/`visidat.c` describe `.vis` as
+/// a visibility/PVS cache: a runtime fallback (`BuildVisiTable`) scans
+/// the level's own spline table for splines whose *name* contains the
+/// substring `"vis"` and records which scene instances fall inside each
+/// one's 2D footprint, used only when no `.vis` file loads successfully.
+/// This doesn't override what's confirmed above: `visiLoadData` (the
+/// actual on-disk `.vis` file parser in that reference) is an
+/// **unimplemented stub** (`//TODO`, no body) -- that source has zero
+/// real byte-level knowledge of what a `.vis` file actually contains,
+/// only of a same-purpose runtime-computed substitute used when one
+/// isn't available. This file's own decode is real, byte-exact evidence
+/// from the files themselves (14-15 real files, zero-slack accounting,
+/// named camera-path strings, points that cross-reference real level
+/// coordinates) -- categorically stronger than an inferred analogy to an
+/// unimplemented function's probable purpose. Real, complementary lead
+/// worth recording rather than acting on: that same reference shows
+/// named camera rails (`weecam_*`, matching this file's own decoded
+/// names exactly) are *also* resolved as ordinary named splines inside
+/// the level's own scene data (`NuSplineFind(world_scene[0], name)`,
+/// `code/src/gamecode/game.c`'s `InitSplineTable`) and walked with plain
+/// linear interpolation between points (`PointAlongSpline`, same file) --
+/// no separate curve/tangent math. If a level's own `SST0` spline table
+/// (already fully decoded by `WOCSplineSetParser`) turns out to contain
+/// entries with these same `weecam_*` names, that would be a real,
+/// checkable cross-reference between the two systems -- not yet checked
+/// here.
 public enum WOCCameraPathParser {
     public enum ParseError: Error, Equatable {
         case truncated

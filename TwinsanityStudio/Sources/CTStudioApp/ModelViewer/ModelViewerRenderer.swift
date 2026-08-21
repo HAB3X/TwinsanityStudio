@@ -2691,12 +2691,12 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
 
     /// "Cross-Engine Chunk Stitcher" (roadmap 5.3): plots real *Wrath of
     /// Cortex* crate/wumpa positions — a genuinely different TT-engine
-    /// game's data, see `WOCCrateFile`'s doc comment for the "ported, not
-    /// verified against real WoC bytes" caveat — as small colored wireframe
-    /// markers in this same viewport, `worldOffset` letting the caller
-    /// place them next to (not on top of) the currently loaded Twinsanity
-    /// chunk. No `sourceNode` (these don't come from an `.RM2`/`.SM2` tree
-    /// at all), so they're visible/toggleable but not click-to-inspect.
+    /// game's data, real-bytes-verified (see `WOCCrateFile`'s doc
+    /// comment) — as small colored wireframe markers in this same
+    /// viewport, `worldOffset` letting the caller place them next to (not
+    /// on top of) the currently loaded Twinsanity chunk. No `sourceNode`
+    /// (these don't come from an `.RM2`/`.SM2` tree at all), so they're
+    /// visible/toggleable but not click-to-inspect.
     func stitchCrossEngineData(crates: [SIMD3<Float>], wumpas: [SIMD3<Float>], worldOffset: SIMD3<Float>) {
         for position in crates {
             objects.append(GPULevelObject(worldPosition: position + worldOffset, displayName: "WoC Crate", submeshes: [], layer: .crossEngine))

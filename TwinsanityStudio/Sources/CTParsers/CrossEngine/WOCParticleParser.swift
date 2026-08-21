@@ -33,6 +33,46 @@ public enum WOCParticleParser {
         case notSimpleFixedRecordFormat
     }
 
+    /// **The larger, variable-length case this parser doesn't handle now
+    /// has a real, source-grounded shape, found in `OpenCrashWOC-main`'s
+    /// `code/src/gamelib/edptl.c` -- documented here as a concrete lead,
+    /// not yet implemented** (the exact byte layout doesn't obviously
+    /// reconcile with this parser's own empirically-confirmed 839-byte
+    /// "simple" record -- the source's own equivalent record,
+    /// `debinftype` in `code/src/gamelib/debris.h`, is 0x354=852 bytes,
+    /// a different width -- so this is a real open lead to verify
+    /// against `CASTLE.PTL`/`INTRO.PTL` directly before adopting, the
+    /// same discipline `WOCLightParser`'s own doc comment applies to its
+    /// unreconciled source finding, not something to implement blind).
+    /// Two real, version-gated on-disk shapes, both fully decoded in
+    /// that source:
+    ///
+    /// **Effect-type table** (`FileLoadSingleEffectType`, `edptl.c:133-244`):
+    /// a version byte gates several fields in/out of a fixed-per-version
+    /// record (`id:Bytes(16)`, several `Int16`/`Float32` emission/timing
+    /// fields, `cuton`/`cutoff` only if `version>=6`, `drawcutoff` only
+    /// if `version>=10`, 8-slot colour/alpha/width/height/rotation/jibber
+    /// arrays, `sphereslot`/`numsphere` only if `version>2`, `sounds[4]`
+    /// only if `version>10`) -- real per-version byte-length arithmetic
+    /// is in that function, not reproduced here since it hasn't been
+    /// checked against real bytes yet.
+    ///
+    /// **Particle-instance array** (`edppLoadEffects`, `edptl.c:303-376`):
+    /// version `<5` is a fixed 256-record array with no count prefix (28
+    /// bytes/record: `pos:Vector3, type:Int32, handle:Int32,
+    /// emitrotz:Int32, emitroty:Int32`); version `>=5` is the real
+    /// variable-length case -- `count:Int32` then `count` records whose
+    /// own byte width grows by version (`pos:Vector3` always; `rotz/roty/
+    /// emitrotz/emitroty` as `Int32` pre-v7 or `Int16` from v7 on;
+    /// `offset:Int32` from v8; `name:Bytes(16)` always; `trigger_type/id:
+    /// Int32, trigger_var:Float32` from v9; `refrotz/refroty:Int16,
+    /// refoff:Float32` from v12; `refbounce:Float32` from v13;
+    /// `group_id:Int16` from v15 -- 36 bytes at v5-7 up to 66 at v15).
+    /// If this does turn out to be the real shape of `CASTLE.PTL`/
+    /// `INTRO.PTL`, note it's a genuinely different, unrelated record
+    /// format from this parser's own 839-byte one, not a variable-length
+    /// extension of it -- the file's leading `tag`/`recordCount` framing
+    /// would need its own re-derivation, not reuse of `recordWidth`.
     private static let recordWidth = 839
 
     /// One particle/effect definition record. Only the fields with real,

@@ -1250,12 +1250,10 @@ struct LevelViewerWindow: View {
     /// "Cross-Engine Chunk Stitcher" (roadmap 5.3): the mandate's other
     /// half of "load chunk files from different engines... side-by-side."
     /// A real Wrath of Cortex `.CRT`/`.WMP` file, parsed by
-    /// `WrathOfCortexParser` (ported from CrateModLoader's real, working
-    /// decoder — see `WOCCrateFile`'s doc comment for the "not verified
-    /// against real WoC bytes" caveat, since no WoC disc image is
-    /// available in this environment), plotted directly into this same
-    /// Twinsanity chunk's viewport as a separate, offset, independently
-    /// toggleable layer.
+    /// `WrathOfCortexParser` (real decode, verified against real WoC disc
+    /// bytes — see `WOCCrateFile`'s doc comment), plotted directly into
+    /// this same Twinsanity chunk's viewport as a separate, offset,
+    /// independently toggleable layer.
     private var crossEngineDataPanel: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Cross-Engine Data").font(.headline)

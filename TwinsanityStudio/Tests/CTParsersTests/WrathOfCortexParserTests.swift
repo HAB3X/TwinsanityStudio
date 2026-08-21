@@ -1,55 +1,60 @@
 import XCTest
+import simd
 @testable import CTCore
 @testable import CTParsers
 @testable import CTModels
 
 final class WrathOfCortexParserTests: XCTestCase {
-    /// Matches `TWOC_File_CRT.Load` exactly: header, group count, then per
-    /// group the first crate inline with the group header, followed by
-    /// `crateCount - 1` more crates.
-    func testParsesCrateFileWithMultipleGroups() throws {
-        var w = BinaryWriter()
-        w.writeUInt32(4) // header
-        w.writeUInt16(2) // groupCount
+    private func requireMounted(_ relativePath: String) throws -> URL {
+        let path = "/Volumes/CRASH/\(relativePath)"
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip("Real WoC disc image not mounted at \(path)")
+        }
+        return URL(fileURLWithPath: path)
+    }
 
-        // Group 0: 2 crates
-        w.writeFloat32(1); w.writeFloat32(2); w.writeFloat32(3) // first crate pos
-        w.writeUInt16(100) // group id
-        w.writeUInt16(2)   // crateCount
-        w.writeUInt16(0)   // unkFlags
-        w.writeFloat32(0); w.writeFloat32(90); w.writeFloat32(0) // rotation
-        w.writeBytes([UInt8](repeating: 0, count: 10)) // first crate unkFlags
-        w.writeUInt8(6); w.writeUInt8(255); w.writeUInt8(255); w.writeUInt8(255) // types: Fruit
-        w.writeBytes([UInt8](repeating: 0, count: 14)) // first crate unkFlags2
-        // second crate in group 0
-        w.writeFloat32(4); w.writeFloat32(5); w.writeFloat32(6)
-        w.writeBytes([UInt8](repeating: 0, count: 10))
-        w.writeUInt8(9); w.writeUInt8(255); w.writeUInt8(255); w.writeUInt8(255) // types: TNT
-        w.writeBytes([UInt8](repeating: 0, count: 14))
+    /// Real-bytes verification of `ReadCrateData`'s structure
+    /// (`OpenCrashWOC-main/code/src/gamecode/crate.c`) -- see
+    /// `WOCCrateFile`'s own doc comment for what this replaced and why.
+    /// The whole file must consume exactly (no leftover bytes) and every
+    /// position must be finite -- either would mean the structure is
+    /// wrong, not just "parses without throwing".
+    func testRealCRTFileConsumesExactlyWithPlausibleData() throws {
+        let url = try requireMounted("LEVELS/A/WESTERN/WESTERN.CRT")
+        let data = try Data(contentsOf: url)
+        let file = try WrathOfCortexParser.parseCrateFile(data)
 
-        // Group 1: 1 crate (just the inline first crate, crateCount=1)
-        w.writeFloat32(7); w.writeFloat32(8); w.writeFloat32(9)
-        w.writeUInt16(101)
-        w.writeUInt16(1)
-        w.writeUInt16(0)
-        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0)
-        w.writeBytes([UInt8](repeating: 0, count: 10))
-        w.writeUInt8(0); w.writeUInt8(255); w.writeUInt8(255); w.writeUInt8(255) // types: Wireframe
-        w.writeBytes([UInt8](repeating: 0, count: 14))
+        XCTAssertEqual(file.version, 4)
+        XCTAssertEqual(file.groups.count, 86)
+        XCTAssertEqual(file.totalCrateCount, 211)
 
-        let file = try WrathOfCortexParser.parseCrateFile(w.data)
+        for group in file.groups {
+            for crate in group.crates {
+                XCTAssertTrue(crate.position.x.isFinite && crate.position.y.isFinite && crate.position.z.isFinite)
+                XCTAssertLessThan(simd_length(crate.position), 100_000)
+            }
+        }
 
-        XCTAssertEqual(file.header, 4)
-        XCTAssertEqual(file.groups.count, 2)
-        XCTAssertEqual(file.groups[0].id, 100)
-        XCTAssertEqual(file.groups[0].crates.count, 2)
-        XCTAssertEqual(file.groups[0].crates[0].position, SIMD3<Float>(1, 2, 3))
-        XCTAssertEqual(file.groups[0].crates[0].type, .fruit)
-        XCTAssertEqual(file.groups[0].crates[1].position, SIMD3<Float>(4, 5, 6))
-        XCTAssertEqual(file.groups[0].crates[1].type, .tnt)
-        XCTAssertEqual(file.groups[1].crates.count, 1)
-        XCTAssertEqual(file.groups[1].crates[0].type, .wireframe)
-        XCTAssertEqual(file.totalCrateCount, 3)
+        // A group's own origin is real source data equal to its first
+        // crate's own position (both come from the same file bytes at
+        // the same read position, per the source's own struct layout).
+        for group in file.groups where !group.crates.isEmpty {
+            XCTAssertEqual(group.origin, group.crates[0].position)
+        }
+    }
+
+    /// A second real file, to rule out a one-file coincidence -- same
+    /// exact-consumption and plausibility checks.
+    func testSecondRealCRTFileConsumesExactly() throws {
+        let url = try requireMounted("LEVELS/A/VOLCANO/VOLCANO.CRT")
+        let data = try Data(contentsOf: url)
+        let file = try WrathOfCortexParser.parseCrateFile(data)
+        XCTAssertGreaterThan(file.groups.count, 0)
+        for group in file.groups {
+            for crate in group.crates {
+                XCTAssertTrue(crate.position.x.isFinite && crate.position.y.isFinite && crate.position.z.isFinite)
+            }
+        }
     }
 
     func testParsesWumpaFile() throws {
@@ -64,18 +69,38 @@ final class WrathOfCortexParserTests: XCTestCase {
         XCTAssertEqual(file.positions[1], SIMD3<Float>(-1, -2, -3))
     }
 
+    /// A real `.WMP` file, same exact-consumption discipline as the
+    /// `.CRT` tests above.
+    func testRealWumpaFileConsumesExactly() throws {
+        let url = try requireMounted("LEVELS/A/GARDEN/GARDEN.WMP")
+        let data = try Data(contentsOf: url)
+        let file = try WrathOfCortexParser.parseWumpaFile(data)
+        XCTAssertGreaterThan(file.positions.count, 0)
+        for position in file.positions {
+            XCTAssertTrue(position.x.isFinite && position.y.isFinite && position.z.isFinite)
+        }
+    }
+
+    /// Synthetic edge-case: a raw type byte outside the confirmed
+    /// `WOCCrateType` enum should decode to `nil`/`rawType`, never a
+    /// fabricated case.
     func testUnrecognizedCrateTypeIsNilNotFabricated() throws {
         var w = BinaryWriter()
-        w.writeUInt32(4)
-        w.writeUInt16(1)
-        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0)
-        w.writeUInt16(0)
-        w.writeUInt16(1)
-        w.writeUInt16(0)
-        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0)
-        w.writeBytes([UInt8](repeating: 0, count: 10))
-        w.writeUInt8(200); w.writeUInt8(255); w.writeUInt8(255); w.writeUInt8(255) // not a real CrateType
-        w.writeBytes([UInt8](repeating: 0, count: 14))
+        w.writeInt32(4) // version
+        w.writeInt16(1) // groupCount
+
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0) // origin
+        w.writeInt16(0) // iCrate
+        w.writeInt16(1) // nCrates
+        w.writeUInt16(0) // angle
+
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0) // position
+        w.writeFloat32(0) // shadow
+        w.writeInt16(0); w.writeInt16(0); w.writeInt16(0) // delta
+        w.writeUInt8(200) // not a real CrateType
+        w.writeUInt8(255); w.writeUInt8(255); w.writeUInt8(255) // type2/3/4 (version > 2)
+        w.writeInt16(-1); w.writeInt16(-1); w.writeInt16(-1); w.writeInt16(-1); w.writeInt16(-1); w.writeInt16(-1) // neighbors
+        w.writeInt16(-1) // trigger (version > 3)
 
         let file = try WrathOfCortexParser.parseCrateFile(w.data)
         XCTAssertNil(file.groups[0].crates[0].type)

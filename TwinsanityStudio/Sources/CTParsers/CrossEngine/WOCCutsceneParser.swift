@@ -32,6 +32,75 @@ import Foundation
 /// property a sparse milestone table drives, etc. — see `CUT_Spec.md`'s
 /// own "purpose gaps" list) are exposed as raw `Data`/plain values, never
 /// a guessed named interpretation.
+///
+/// **A real, promising external reference now exists for this format's
+/// remaining ~98% unclassified bytes — documented here as the next
+/// investigation target, deliberately NOT adopted without real-bytes
+/// reconciliation first, given how different its own organizing
+/// principle is from what's confirmed above.** `OpenCrashWOC-main`'s
+/// `code/src/gamelib/gcutscn.c` (`NuGCutSceneLoad`, tagged `//PS2` —
+/// asserted behaviorally equivalent to the original PS2 code, not just a
+/// GameCube-only reimplementation) is a real file loader for this exact
+/// format, and its root struct is DWARF-verified byte-for-byte
+/// (`dump_alphaNGCport_DWARF.txt`, 9 duplicate copies, all identical):
+/// ```
+/// struct NUGCUTSCENE_s {              // 0x28 bytes
+///     int version;                     // 0x0 (must be 1)
+///     int address_offset;              // 0x4 (a single global relocation
+///                                       //      base, not a per-field
+///                                       //      self-relative offset —
+///                                       //      every raw pointer field
+///                                       //      gets `loadAddress -
+///                                       //      address_offset` added once)
+///     float nframes;                   // 0x8
+///     char* name_table;                // 0xC
+///     NUGCUTCAMSYS* cameras;           // 0x10  (nullable)
+///     NUGCUTRIGIDSYS* rigids;          // 0x14  (nullable)
+///     NUGCUTCHARSYS* chars;            // 0x18  (nullable)
+///     NUGCUTLOCATORSYS* locators;      // 0x1C  (nullable)
+///     NUGCUTBBOX* bbox;                // 0x20
+///     NUGCUTTRIGGERSYS* triggersys;    // 0x24  (nullable)
+/// };
+/// ```
+/// Five real, optional, named subsystems hang off this header (cameras,
+/// animated "rigid" props, characters, effect-attachment "locators",
+/// level-trigger cross-references), each with its own DWARF-verified
+/// struct — real 4x4 transform matrices, real name-table string offsets
+/// (confirmed 1-based against `name_table`), and — most relevantly for
+/// the unclassified-bytes problem — every animated channel on every one
+/// of those five subsystems bottoms out in one shared curve format,
+/// `nuanimdata2_s`/`nuanimcurve2_s`/`nuanimcurvedata_s` (the same struct
+/// family already cross-checked and ruled out for `CHARS.DAT`'s clip
+/// blobs — see `WOCCharacterAnimationCatalogParser`'s own doc comment —
+/// but not yet checked against `.CUT`'s own unclassified regions, a
+/// genuinely different question). Its real shape: a `mask:UInt32` per
+/// 32-frame chunk (one present/absent bit per frame), a `key_ixs:UInt16`
+/// prefix-sum array (one per chunk, a running count of real keys before
+/// that chunk), and a tightly packed `key_array` of `NUANIMKEYBIG_s`
+/// (`time,dtime,val,grad:Float32`, 16 bytes) or `NUANIMKEYINTEGER_s`
+/// (`val,time:Float32`, 8 bytes) records — a real sparse-bitmap-indexed
+/// keyframe scheme, decoded via a `BitCountTable` popcount lookup
+/// (`nuanim.c:454-544`).
+///
+/// **Why this isn't adopted as-is**: this format's own organizing
+/// principle (one fixed-offset root header with 5 typed subsystem
+/// pointers, one global relocation base) is structurally very different
+/// from what's independently confirmed above (a linear, front-to-back,
+/// shape-recognizer-scanned layout with per-structure self-relative
+/// pointers) — reconciling the two needs a real check against
+/// `BLACK.CUT`/`CORRIDOR.CUT`/`STATION.CUT`'s own already-mapped bytes
+/// (does byte 0 read `version==1`? does the address-offset relocation
+/// scheme match what pointer fields already found there imply? do any
+/// of the "unrecognized" regions have the real mask/key_ixs/key_array
+/// triple's structural signature?), not a blind swap-in. Confidence
+/// note from the source itself: high for algorithm/field-relationships
+/// (explicitly asserted PS2-equivalent), medium for exact byte offsets
+/// beyond the DWARF-verified structs (a GameCube alpha port, so 32-bit
+/// pointer fields should match, but padding/alignment specifics aren't
+/// guaranteed identical to the shipped PS2 disc this parser targets).
+/// No subtitle/dialogue-timing data was found anywhere in that
+/// reference either (grepped exhaustively) — if `.CUT` carries that, it
+/// isn't explained by this source.
 public enum WOCCutsceneParser {
     // MARK: - Confirmed shared shapes
 

@@ -62,6 +62,19 @@ import simd
 /// own name (`"HammerDown"`/`"HammerUp"` also appear on `squash_01` and
 /// `piston`) -- exposed raw here rather than guessed at.
 ///
+/// **Checked against `OpenCrashWOC-main` for this specific format --
+/// genuinely absent, not contradicted.** Searched the whole reference
+/// tree for `piston`/`lazerpole`/`gate_01a`/`actuator` and this format's
+/// own on-disk shape (a 16-byte name + 36-byte param block + sentinel +
+/// placement records) -- zero matches anywhere, including the DWARF
+/// dump. `code/src/gamelib/edobj.c` (the file this reference's own
+/// naming convention would suggest) is a real, fully-decoded loader, but
+/// for a completely different, unrelated format (animated waypoint-path
+/// objects with trigger/particle/sound sub-arrays, not static
+/// placement+actuator records). This build's own byte-level decode
+/// above already goes further than anything recoverable from that
+/// reference for this specific format.
+///
 /// Given the tail can't be safely skipped by assuming its shape,
 /// ``parseObjects(_:)`` locates each next object by scanning forward
 /// (4-byte-aligned) from the end of the current object's placements for
