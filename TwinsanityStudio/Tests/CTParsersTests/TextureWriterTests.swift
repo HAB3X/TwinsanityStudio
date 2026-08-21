@@ -98,8 +98,13 @@ final class TextureWriterTests: XCTestCase {
         XCTAssertEqual(Array(rebuilt.suffix(4)), [10, 20, 30, 127], "127, not the original 128 — see doc comment.")
     }
 
-    func testNonPSMCT32FormatThrows() {
-        let asset = TextureAsset(id: 1, width: 1, height: 1, pixelFormat: .psmt8, rgba: [0, 0, 0, 255])
+    /// `.psmt8` used to be the case this checked (before `encodePSMT8`
+    /// existed, every non-PSMCT32 format threw `.unsupportedFormat`) —
+    /// now that it has a real, verified encode (`TextureWriterPSMT8Tests`),
+    /// this checks a format that's still genuinely unimplemented instead,
+    /// same as `TextureWriterPSMT8Tests.testUnsupportedFormatStillThrows`.
+    func testUnsupportedFormatThrows() {
+        let asset = TextureAsset(id: 1, width: 1, height: 1, pixelFormat: .psmct16, rgba: [0, 0, 0, 255])
         XCTAssertThrowsError(try TextureWriter.replacingPixelData(of: asset, inOriginalRecordBytes: Data(repeating: 0, count: 228))) { error in
             XCTAssertTrue(error is TextureWriter.TextureWriteError)
         }

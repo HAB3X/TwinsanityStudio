@@ -60,10 +60,17 @@ final class TextureWriterPSMT8Tests: XCTestCase {
         let width = 16, height = 16
         // Four solid, distinct colors in a 2x2-quadrant pattern -- a
         // simple, real "sprite with flat color regions" shape, not
-        // synthetic noise.
+        // synthetic noise. Alpha values are all even: the GS hardware
+        // only stores 7 bits of alpha (`decodePSMCT32`/`decodePalette`
+        // widen it `<< 1`), so an odd 8-bit alpha is physically
+        // unrepresentable and can never round-trip exactly -- not
+        // something any encoder can fix, and not a value a real decoded
+        // texture could ever contain in the first place (every real
+        // `TextureAsset.rgba` this app produces already only has even
+        // alpha for exactly this reason).
         let colors: [[UInt8]] = [
-            [255, 0, 0, 255],
-            [0, 255, 0, 255],
+            [255, 0, 0, 254],
+            [0, 255, 0, 254],
             [0, 0, 255, 200],
             [255, 255, 0, 0]
         ]
@@ -77,11 +84,26 @@ final class TextureWriterPSMT8Tests: XCTestCase {
             }
         }
 
-        let originalLength = pixelDataLength(rrw: width, rrh: height)
+        // `rrw`/`rrh` (the real GS transfer rectangle) has to be padded up
+        // to at least one full PSMCT32 page height (32 texels) beyond the
+        // logical `width`/`height` -- not just match them -- for
+        // `clutBufferBasePointer` to land somewhere the transfer
+        // rectangle's own swizzle addressing can actually reach. A real
+        // Twinsanity texture header always has this padding (see
+        // `TextureWriter.FixedHeaderFields.rrw`'s own doc comment on why
+        // it's tracked separately from `width`/`height`); a fixture that
+        // sets `rrw`/`rrh` equal to the logical size describes a texture
+        // whose own declared CLUT position is physically unreachable, not
+        // a real encode bug -- `clutBufferBasePointer: 8` needs `rrh` past
+        // block-row 2 (y >= 16) to be inside the addressable footprint at
+        // all, and this test's fixture (`rrh: height` = 16) put it right
+        // at that boundary, one row short.
+        let rrh: Int32 = 32
+        let originalLength = pixelDataLength(rrw: width, rrh: Int(rrh))
         let record = synthesizeHeader(
             width: width, height: height, format: Self.psmt8Format,
             textureBufferWidth: 2, clutBufferBasePointer: 8,
-            rrw: Int32(width), rrh: Int32(height),
+            rrw: Int32(width), rrh: rrh,
             pixelData: [UInt8](repeating: 0, count: originalLength)
         )
 
@@ -105,14 +127,23 @@ final class TextureWriterPSMT8Tests: XCTestCase {
         let width = 8, height = 8
         var rgba = [UInt8](repeating: 0, count: width * height * 4)
         for i in 0..<(width * height) {
-            rgba[i * 4] = 128; rgba[i * 4 + 1] = 64; rgba[i * 4 + 2] = 200; rgba[i * 4 + 3] = 255
+            // Alpha 254, not 255 -- see the doc comment on
+            // `testFewColorImageRoundTripsLosslesslyThroughEncodeAndDecode`'s
+            // `colors` array for why an odd alpha can never round-trip
+            // through the GS's real 7-bit alpha storage.
+            rgba[i * 4] = 128; rgba[i * 4 + 1] = 64; rgba[i * 4 + 2] = 200; rgba[i * 4 + 3] = 254
         }
 
-        let originalLength = pixelDataLength(rrw: width, rrh: height)
+        // Same real GS-addressing constraint as the fixture note in
+        // `testFewColorImageRoundTripsLosslesslyThroughEncodeAndDecode`
+        // above -- `rrh` has to be padded past the CLUT's own
+        // block-swizzle footprint, not just match the logical `height`.
+        let rrh: Int32 = 32
+        let originalLength = pixelDataLength(rrw: width, rrh: Int(rrh))
         let record = synthesizeHeader(
             width: width, height: height, format: Self.psmt8Format,
             textureBufferWidth: 2, clutBufferBasePointer: 8,
-            rrw: Int32(width), rrh: Int32(height),
+            rrw: Int32(width), rrh: rrh,
             pixelData: [UInt8](repeating: 0, count: originalLength)
         )
 
