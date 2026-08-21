@@ -156,6 +156,11 @@ struct ContentView: View {
                         Label("Archive Repackager…", systemImage: "arrow.triangle.2.circlepath")
                     }
                     Button {
+                        workspace.isCrateInstallerPresented = true
+                    } label: {
+                        Label("Crate Installer…", systemImage: "shippingbox.and.arrow.backward")
+                    }
+                    Button {
                         workspace.isImageMakerPresented = true
                     } label: {
                         Label("Image Maker…", systemImage: "opticaldiscdrive.fill")
@@ -361,6 +366,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $workspace.isArchiveRepackagerPresented) {
             ArchiveRepackagerView()
+        }
+        .sheet(isPresented: $workspace.isCrateInstallerPresented) {
+            CrateInstallerView()
         }
         .sheet(isPresented: $workspace.isGameLauncherPresented) {
             GameLauncherView()

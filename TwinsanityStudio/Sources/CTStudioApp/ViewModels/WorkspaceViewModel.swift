@@ -596,6 +596,13 @@ public final class WorkspaceViewModel: ObservableObject {
     /// independent of any open archive: it operates on a `.BH`/`.BD` pair
     /// the user picks directly, not anything already mounted here.
     @Published public var isArchiveRepackagerPresented = false
+    /// "Crate Installer" — presents `CrateInstallerView`, the install-side
+    /// counterpart to "Export as Mod Crate…": patches texture records
+    /// declared by a `.crate`'s `TextureOverride_<id>` settings
+    /// (`CrateTextureOverrideInstaller.install`) into a real `.BH`/`.BD`
+    /// archive pair. Same "operates on files the user picks, not anything
+    /// already mounted here" independence as `ArchiveRepackagerView`.
+    @Published public var isCrateInstallerPresented = false
     @Published public var isImageMakerPresented = false
 
     /// A real, ready-to-build "Quick Launch" plan for whatever chunk is
