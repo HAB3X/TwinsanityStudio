@@ -34,7 +34,16 @@ public enum ADPCMDecoder {
         let value = Double(sample) + s0 * coefficients.0 + s1 * coefficients.1
         s1 = s0
         s0 = value
-        return Int16(truncatingIfNeeded: Int(value.rounded(.toNearestOrEven)))
+        // `truncatingIfNeeded` used to wrap out-of-range values instead of
+        // clamping them -- real PS-ADPCM predictor coefficients run up to
+        // ~1.9x, which can overshoot ±32767 on loud transients. Every other
+        // real decoder (vgmstream's `psx_decoder.c` reference `clamp16()`
+        // included) clamps that sample to 16-bit range rather than wrapping
+        // it; wrapping produces audible pops/noise a clamped decode
+        // wouldn't have, on exactly the same input.
+        let rounded = value.rounded(.toNearestOrEven)
+        let clamped = min(max(rounded, Double(Int16.min)), Double(Int16.max))
+        return Int16(clamped)
     }
 
     /// One 16-byte ADPCM "line" (2-byte header + 14 bytes of packed

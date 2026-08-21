@@ -135,6 +135,23 @@ final class ADPCMDecoderTests: XCTestCase {
         XCTAssertEqual(right.count, 28)
     }
 
+    /// A sustained loud nibble (7, the max positive 4-bit value) through
+    /// predict=4's amplifying coefficients (122/64, -60/64) overshoots
+    /// Int16 range by the second sample -- a real, reachable case on loud
+    /// game audio, not a synthetic edge case. The correct decode of the
+    /// second sample is exactly `Int16.max` (83328, clamped); the old
+    /// `truncatingIfNeeded` bug wrapped that same raw value to `17792`
+    /// instead -- a real, audible difference, not a no-op check.
+    func testLoudPredictorOvershootClampsRatherThanWraps() {
+        var line = [UInt8](repeating: 0x77, count: 16) // every nibble = 7
+        line[0] = 0x40 // predict=4, factor=0
+        line[1] = 0 // not a terminator
+        let pcm = ADPCMDecoder.toPCMMono(Data(line))
+        XCTAssertEqual(pcm.count, 28)
+        XCTAssertEqual(pcm[0], 28672, "first sample has no predictor history yet, so it's unaffected by the clamp fix -- confirms the fixture itself is set up as expected")
+        XCTAssertEqual(pcm[1], Int16.max, "raw predictor math for this sample is exactly 83328, which must clamp to Int16.max, not wrap to 17792")
+    }
+
     func testStereoRejectsInvalidSizeAndInterleaveRatherThanTrapping() {
         XCTAssertEqual(ADPCMDecoder.toPCMStereo(Data([0, 0, 0]), interleaveBytes: 16).left, [])
         XCTAssertEqual(ADPCMDecoder.toPCMStereo(Data(repeating: 0, count: 32), interleaveBytes: 0).left, [])

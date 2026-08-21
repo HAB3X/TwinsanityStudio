@@ -1,5 +1,4 @@
 import XCTest
-import Combine
 @testable import CTCore
 @testable import CTModels
 @testable import CTParsers
@@ -30,11 +29,8 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
         XCTAssertTrue(workspace.isScanning, "expected the auto-scan to have started immediately on load")
 
         let expectation = expectation(description: "background scan completes")
-        let observation = workspace.$isScanning.dropFirst().sink { scanning in
-            if !scanning { expectation.fulfill() }
-        }
+        fulfill(expectation, whenTrue: { !workspace.isScanning })
         wait(for: [expectation], timeout: 300)
-        observation.cancel()
 
         XCTAssertFalse(workspace.modelsHub.isEmpty, "Models Hub should be populated automatically after the scan, with no manual Scan Archive click")
         XCTAssertTrue(workspace.modelsHub.contains { $0.isFullyTextured }, "expected at least some models to resolve with textures")
@@ -58,11 +54,8 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
         workspace.open(url: bhURL)
 
         let expectation = expectation(description: "background scan completes")
-        let observation = workspace.$isScanning.dropFirst().sink { scanning in
-            if !scanning { expectation.fulfill() }
-        }
+        fulfill(expectation, whenTrue: { !workspace.isScanning })
         wait(for: [expectation], timeout: 300)
-        observation.cancel()
 
         // Drill down to a real RigidModel node the way the sidebar would,
         // then exercise the same openModelViewer(for:) path the "Open in
@@ -206,12 +199,27 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
 
         var observedProgress: [(completed: Int, total: Int)] = []
         let expectation = expectation(description: "background scan completes")
-        let observation = workspace.$scanProgress.sink { progress in
-            if let progress { observedProgress.append(progress) }
-            if progress == nil, !observedProgress.isEmpty { expectation.fulfill() }
+        // Same "re-arm on every change" shape as `fulfill(_:whenTrue:)`
+        // below, but this one needs to *record* every intermediate value
+        // (not just detect a final state), so it's its own recursive local
+        // function rather than going through that shared helper.
+        func trackProgress() {
+            withObservationTracking {
+                _ = workspace.scanProgress
+            } onChange: {
+                DispatchQueue.main.async {
+                    let progress = workspace.scanProgress
+                    if let progress { observedProgress.append(progress) }
+                    if progress == nil, !observedProgress.isEmpty {
+                        expectation.fulfill()
+                    } else {
+                        trackProgress()
+                    }
+                }
+            }
         }
+        trackProgress()
         wait(for: [expectation], timeout: 300)
-        observation.cancel()
 
         XCTAssertNil(workspace.scanProgress, "progress must be cleared once the scan finishes")
         // Every real total reported must be the same fixed candidate count
@@ -239,11 +247,8 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
         workspace.cancelScan()
 
         let expectation = expectation(description: "scan stops after cancellation")
-        let observation = workspace.$isScanning.dropFirst().sink { scanning in
-            if !scanning { expectation.fulfill() }
-        }
+        fulfill(expectation, whenTrue: { !workspace.isScanning })
         wait(for: [expectation], timeout: 300)
-        observation.cancel()
 
         XCTAssertTrue(workspace.statusMessage.contains("cancelled"), "status should honestly say the scan was cancelled, not claim it completed: \(workspace.statusMessage)")
     }
@@ -291,14 +296,38 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
         workspace.open(url: tempDir)
 
         let expectation = expectation(description: "folder load completes")
-        let observation = workspace.$isLoading.dropFirst().sink { loading in
-            if !loading { expectation.fulfill() }
-        }
+        fulfill(expectation, whenTrue: { !workspace.isLoading })
         wait(for: [expectation], timeout: 60)
-        observation.cancel()
 
         XCTAssertEqual(workspace.rootNodes.count, entries.count, "expected exactly the valid loose files to load, corrupted.rm2 excluded")
         XCTAssertNotNil(workspace.lastError, "the corrupted file's parse failure should have been reported, not silently swallowed")
         XCTAssertTrue(workspace.lastError?.contains("corrupted.rm2") ?? false, "lastError should name the file that failed: \(workspace.lastError ?? "nil")")
+    }
+}
+
+/// Bridges `@Observable`'s access-based change tracking to XCTest's
+/// synchronous `wait(for:timeout:)`. These tests used to subscribe
+/// directly to `WorkspaceViewModel`'s Combine `$property` publishers,
+/// which stopped existing once it migrated off `ObservableObject`/
+/// `@Published` to `@Observable` -- `@Observable` types have no Combine
+/// publishers at all, only one-shot access-based tracking via
+/// `withObservationTracking`, which has to be re-armed after every fire.
+/// `probe` both reads whichever property a given call cares about (so
+/// `withObservationTracking` knows what to watch) and reports whether the
+/// wait is over; it's called again on every change until it returns `true`.
+/// Not `private` -- `LevelInsertionIntegrationTests.swift` (same test
+/// target) reuses this exact helper rather than duplicating it.
+@MainActor
+func fulfill(_ expectation: XCTestExpectation, whenTrue probe: @escaping () -> Bool) {
+    withObservationTracking {
+        _ = probe()
+    } onChange: {
+        DispatchQueue.main.async {
+            if probe() {
+                expectation.fulfill()
+            } else {
+                fulfill(expectation, whenTrue: probe)
+            }
+        }
     }
 }

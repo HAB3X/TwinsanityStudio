@@ -807,7 +807,13 @@ struct LevelViewerWindow: View {
                 .help("Build a patched disc that boots straight into this chunk, with this session's own pending edits baked in, and launch it in PCSX2.")
             }
             if !workspace.canSaveEdits(for: referenceNode) {
-                Text("Editing only saves for a standalone-opened .RM2/.SM2 file — this level's file is archive-packed, which this build doesn't have a write path for yet.")
+                // Archive-packed and disc-mounted files register their raw
+                // bytes the same way a standalone-opened .RM2/.SM2 does now
+                // (see `expandArchiveEntry`) -- `canSaveEdits` returning
+                // false here means this file's own raw bytes just haven't
+                // been loaded into this session yet, not that its source
+                // (archive/disc/loose file) is unsupported.
+                Text("This level's file hasn't finished loading its own raw bytes yet — reselect it in the sidebar, then try again.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

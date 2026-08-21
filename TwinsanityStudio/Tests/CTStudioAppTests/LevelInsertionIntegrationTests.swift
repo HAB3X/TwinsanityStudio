@@ -1,5 +1,4 @@
 import XCTest
-import Combine
 @testable import CTCore
 @testable import CTModels
 @testable import CTParsers
@@ -74,11 +73,8 @@ final class LevelInsertionIntegrationTests: XCTestCase {
         // paint across — wait for that real async load to finish instead
         // of assuming it already has by the time `open(url:)` returns.
         let loadExpectation = expectation(description: "single-file load completes")
-        let observation = workspace.$isLoading.dropFirst().sink { loading in
-            if !loading { loadExpectation.fulfill() }
-        }
+        fulfill(loadExpectation, whenTrue: { !workspace.isLoading })
         wait(for: [loadExpectation], timeout: 10)
-        observation.cancel()
 
         XCTAssertEqual(workspace.rootNodes.count, 1, "the file should have finished loading asynchronously")
 
@@ -145,11 +141,8 @@ final class LevelInsertionIntegrationTests: XCTestCase {
         workspace.open(url: tempURL)
 
         let loadExpectation = expectation(description: "single-file load completes")
-        let observation = workspace.$isLoading.dropFirst().sink { loading in
-            if !loading { loadExpectation.fulfill() }
-        }
+        fulfill(loadExpectation, whenTrue: { !workspace.isLoading })
         wait(for: [loadExpectation], timeout: 10)
-        observation.cancel()
 
         let fileRoot = try XCTUnwrap(workspace.rootNodes.first)
         let positionLeaves = try XCTUnwrap(findFirst(fileRoot, sectionType: .position)?.children)
@@ -202,11 +195,8 @@ final class LevelInsertionIntegrationTests: XCTestCase {
         workspace.open(url: tempURL)
 
         let loadExpectation = expectation(description: "single-file load completes")
-        let observation = workspace.$isLoading.dropFirst().sink { loading in
-            if !loading { loadExpectation.fulfill() }
-        }
+        fulfill(loadExpectation, whenTrue: { !workspace.isLoading })
         wait(for: [loadExpectation], timeout: 10)
-        observation.cancel()
 
         let fileRoot = try XCTUnwrap(workspace.rootNodes.first)
         let pathLeaf = try XCTUnwrap(findFirst(fileRoot, sectionType: .path)?.children.first)
@@ -248,11 +238,8 @@ final class LevelInsertionIntegrationTests: XCTestCase {
         workspace.open(url: tempURL)
 
         let loadExpectation = expectation(description: "single-file load completes")
-        let observation = workspace.$isLoading.dropFirst().sink { loading in
-            if !loading { loadExpectation.fulfill() }
-        }
+        fulfill(loadExpectation, whenTrue: { !workspace.isLoading })
         wait(for: [loadExpectation], timeout: 10)
-        observation.cancel()
 
         let fileRoot = try XCTUnwrap(workspace.rootNodes.first)
         let objectLeaves = try XCTUnwrap(findFirst(fileRoot, sectionType: .object)?.children)
@@ -300,11 +287,8 @@ final class LevelInsertionIntegrationTests: XCTestCase {
         let workspace = WorkspaceViewModel()
         workspace.open(url: tempURL)
         let loadExpectation = expectation(description: "single-file load completes")
-        let observation = workspace.$isLoading.dropFirst().sink { loading in
-            if !loading { loadExpectation.fulfill() }
-        }
+        fulfill(loadExpectation, whenTrue: { !workspace.isLoading })
         wait(for: [loadExpectation], timeout: 10)
-        observation.cancel()
 
         let fileRoot = try XCTUnwrap(workspace.rootNodes.first)
         let waypointLeaf = try XCTUnwrap(findFirst(fileRoot, sectionType: .aiPosition)?.children.first)
@@ -361,11 +345,8 @@ final class LevelInsertionIntegrationTests: XCTestCase {
         let workspace = WorkspaceViewModel()
         workspace.open(url: tempURL)
         let loadExpectation = expectation(description: "single-file load completes")
-        let observation = workspace.$isLoading.dropFirst().sink { loading in
-            if !loading { loadExpectation.fulfill() }
-        }
+        fulfill(loadExpectation, whenTrue: { !workspace.isLoading })
         wait(for: [loadExpectation], timeout: 10)
-        observation.cancel()
 
         let fileRoot = try XCTUnwrap(workspace.rootNodes.first)
         let positionLeaves = try XCTUnwrap(findFirst(fileRoot, sectionType: .position)?.children)
@@ -416,11 +397,8 @@ final class LevelInsertionIntegrationTests: XCTestCase {
         workspace.open(url: tempURL)
 
         let loadExpectation = expectation(description: "single-file load completes")
-        let observation = workspace.$isLoading.dropFirst().sink { loading in
-            if !loading { loadExpectation.fulfill() }
-        }
+        fulfill(loadExpectation, whenTrue: { !workspace.isLoading })
         wait(for: [loadExpectation], timeout: 10)
-        observation.cancel()
 
         let fileRoot = try XCTUnwrap(workspace.rootNodes.first)
         let instanceLeaf = try XCTUnwrap(findFirst(fileRoot, sectionType: .objectInstance)?.children.first)

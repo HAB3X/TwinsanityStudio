@@ -122,7 +122,7 @@ final class TwinsPTCParserTests: XCTestCase {
 
         var cursor = BinaryCursor(data: full)
         let firstEntry = try TwinsPTCParser.parseEntry(&cursor)
-        let textureBytes = try makeTinyTexture()
+        let textureBytes = makeTinyTexture()
         XCTAssertEqual(firstEntry.textureFileOffset, 8, "right after the 4-byte texID + 4-byte matID")
         XCTAssertEqual(firstEntry.textureRecordByteLength, textureBytes.count)
 

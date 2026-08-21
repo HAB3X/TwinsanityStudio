@@ -6,7 +6,8 @@ import simd
 /// collision mesh — ported from `Workers/CollisionImporter.cs`'s OBJ
 /// loader, connectivity-grouping algorithm, and balanced binary trigger-
 /// tree builder. Pure, file-I/O-free, and fully unit-testable; the
-/// UI-facing file-picker/save flow lives in `CollisionImportSheet`.
+/// UI-facing file-picker/save flow lives in `ColDataEditorSheet`'s "Import
+/// Collision Mesh from OBJ" section.
 ///
 /// Faithfully ported, including two real reference quirks worth calling
 /// out explicitly rather than silently "fixing":
