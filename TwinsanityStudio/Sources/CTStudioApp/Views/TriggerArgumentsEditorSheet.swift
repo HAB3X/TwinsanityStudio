@@ -9,7 +9,7 @@ import CTParsers
 /// AgentLab argument editor. Same decode -> edit -> encode -> patch ->
 /// save-as-copy loop as every other write path in this app.
 struct TriggerArgumentsEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     let trigger: TriggerVolume

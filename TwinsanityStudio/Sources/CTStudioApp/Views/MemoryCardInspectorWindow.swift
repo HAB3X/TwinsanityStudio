@@ -8,7 +8,7 @@ import CTModels
 /// save, editing its file bytes and re-threading the FAT/directory chain
 /// correctly) is real scope beyond browsing, and isn't attempted here.
 struct MemoryCardInspectorWindow: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let asset: MemoryCardAsset
 

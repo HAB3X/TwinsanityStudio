@@ -10,7 +10,7 @@ import CTExport
 /// one click from actually being visible again — the whole point of a
 /// "restorer" over a plain report.
 struct ScrappedContentScannerView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
     @State private var previewedTexture: TextureAsset?

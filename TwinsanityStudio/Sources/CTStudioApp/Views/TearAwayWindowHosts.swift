@@ -18,7 +18,7 @@ import CTModels
 /// same way would mean revisiting that dismiss-on-select behavior first;
 /// out of scope here, so they stay sheets for now.
 struct HexViewerWindowHost: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
@@ -42,7 +42,7 @@ struct HexViewerWindowHost: View {
 }
 
 struct ModCrateHubWindowHost: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {

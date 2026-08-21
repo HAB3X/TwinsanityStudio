@@ -3,7 +3,7 @@ import AppKit
 
 @main
 struct CTStudioApp: App {
-    @StateObject private var workspace = WorkspaceViewModel()
+    @State private var workspace = WorkspaceViewModel()
     /// Separate from `workspace` deliberately — see `WOCWorkspace`'s doc
     /// comment. `@State`, not `@StateObject`: `WOCWorkspace` is `@Observable`
     /// (a plain reference type SwiftUI tracks by property access, not the
@@ -15,7 +15,7 @@ struct CTStudioApp: App {
     var body: some Scene {
         WindowGroup("Twinsanity Studio") {
             ContentView()
-                .environmentObject(workspace)
+                .environment(workspace)
                 .environment(wocWorkspace)
                 .frame(minWidth: 1100, minHeight: 700)
         }
@@ -59,17 +59,17 @@ struct CTStudioApp: App {
         // sheet already did.
         Window("Model Viewer", id: GPUViewerWindowID.model) {
             ModelViewerWindowHost()
-                .environmentObject(workspace)
+                .environment(workspace)
                 .tint(workspace.accentColorChoice.color)
         }
         Window("Collision Viewer", id: GPUViewerWindowID.collision) {
             CollisionViewerWindowHost()
-                .environmentObject(workspace)
+                .environment(workspace)
                 .tint(workspace.accentColorChoice.color)
         }
         Window("Chunk Viewer", id: GPUViewerWindowID.level) {
             LevelViewerWindowHost()
-                .environmentObject(workspace)
+                .environment(workspace)
                 .tint(workspace.accentColorChoice.color)
         }
         Window("WoC Level Viewer", id: WOCViewerWindowID.viewer) {
@@ -82,12 +82,12 @@ struct CTStudioApp: App {
         // `TearAwayWindowHosts.swift`'s doc comment.
         Window("Hex Viewer", id: TearAwayWindowID.hexViewer) {
             HexViewerWindowHost()
-                .environmentObject(workspace)
+                .environment(workspace)
                 .tint(workspace.accentColorChoice.color)
         }
         Window("Mod Crate Hub", id: TearAwayWindowID.modCrateHub) {
             ModCrateHubWindowHost()
-                .environmentObject(workspace)
+                .environment(workspace)
                 .tint(workspace.accentColorChoice.color)
         }
 
@@ -96,7 +96,7 @@ struct CTStudioApp: App {
         // "Settings…" item and ⌘, automatically, no manual command needed.
         Settings {
             SettingsView()
-                .environmentObject(workspace)
+                .environment(workspace)
                 .tint(workspace.accentColorChoice.color)
         }
     }

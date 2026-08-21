@@ -14,7 +14,7 @@ import CTModels
 /// already open in this workspace, same limitation the Level Viewer's own
 /// "Load & Stitch" has for the same lookup.
 struct ChunkLinksInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let chunkLinks: ChunkLinksAsset
     @State private var loadingLinkID: Int?

@@ -12,7 +12,7 @@ import CTParsers
 /// `ChunkSectionInserter`, the same insertion path the Forge Palette's own
 /// "Add Waypoint" already trusts.
 struct AIPositionInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let marker: AIPositionMarker
 
@@ -151,7 +151,7 @@ struct AIPositionInspectorView: View {
 }
 
 struct AIPathInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let path: AIPathRecord
 

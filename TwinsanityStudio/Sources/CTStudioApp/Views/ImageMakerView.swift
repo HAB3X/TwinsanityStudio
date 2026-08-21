@@ -11,7 +11,7 @@ import CTParsers
 /// this app's own `ISO9660Reader` — not a claim that a disc built this way
 /// has been tested on real PS2 hardware or in an emulator.
 struct ImageMakerView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
 
     @State private var sourceFolder: URL?

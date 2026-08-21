@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(WOCWorkspace.self) private var wocWorkspace
     @Environment(\.openWindow) private var openWindow
     /// "Persist Window Layout" (QoL sweep): `@SceneStorage` only supports a
@@ -40,10 +40,12 @@ struct ContentView: View {
     }
 
     var body: some View {
-        // `@Bindable` shadow, scoped to this render of `body`: `@Environment`
+        // `@Bindable` shadows, scoped to this render of `body`: `@Environment`
         // alone doesn't give `$`-projected bindings the way `@EnvironmentObject`
-        // used to (see `.sheet(isPresented: $wocWorkspace...)` below) — this
-        // is the standard `@Observable` pattern for getting one back.
+        // used to (see every `.sheet(isPresented: $workspace...)`/
+        // `$wocWorkspace...` below) — this is the standard `@Observable`
+        // pattern for getting one back.
+        @Bindable var workspace = workspace
         @Bindable var wocWorkspace = wocWorkspace
         return VStack(spacing: 0) {
             NavigationSplitView(columnVisibility: columnVisibility) {
@@ -319,15 +321,15 @@ struct ContentView: View {
         }
         .sheet(isPresented: $workspace.isModelsHubPresented) {
             ModelsHubView()
-                .environmentObject(workspace)
+                .environment(workspace)
         }
         .sheet(isPresented: $workspace.isTexturesHubPresented) {
             TexturesHubView()
-                .environmentObject(workspace)
+                .environment(workspace)
         }
         .sheet(isPresented: $workspace.isLevelsHubPresented) {
             LevelsHubView()
-                .environmentObject(workspace)
+                .environment(workspace)
         }
         .sheet(isPresented: $wocWorkspace.isLevelsHubPresented) {
             WOCLevelsHubView()
@@ -348,15 +350,15 @@ struct ContentView: View {
         }
         .sheet(isPresented: $workspace.isSoundBanksHubPresented) {
             SoundBanksHubView()
-                .environmentObject(workspace)
+                .environment(workspace)
         }
         .sheet(isPresented: $workspace.isScrappedContentScannerPresented) {
             ScrappedContentScannerView()
-                .environmentObject(workspace)
+                .environment(workspace)
         }
         .sheet(isPresented: $workspace.isAssetDiffPresented) {
             AssetDiffView()
-                .environmentObject(workspace)
+                .environment(workspace)
         }
         .sheet(isPresented: $workspace.isExecutablePatcherPresented) {
             ExecutablePatcherView()
@@ -375,7 +377,7 @@ struct ContentView: View {
         }
         .sheet(item: $workspace.agentLabNode) { node in
             AgentLabGraphView(sectionNode: node)
-                .environmentObject(workspace)
+                .environment(workspace)
         }
         .sheet(isPresented: Binding(
             get: { workspace.memoryCardAsset != nil },
@@ -383,7 +385,7 @@ struct ContentView: View {
         )) {
             if let asset = workspace.memoryCardAsset {
                 MemoryCardInspectorWindow(asset: asset)
-                    .environmentObject(workspace)
+                    .environment(workspace)
             }
         }
         .onDrop(of: [.fileURL], isTargeted: $isTargetedForDrop) { providers in
@@ -401,7 +403,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $workspace.isCommandPalettePresented) {
             CommandPaletteView()
-                .environmentObject(workspace)
+                .environment(workspace)
         }
     }
 

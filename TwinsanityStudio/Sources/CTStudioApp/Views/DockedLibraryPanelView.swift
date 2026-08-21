@@ -26,7 +26,7 @@ import SwiftUI
 /// a second, always-reachable place to see/change the same
 /// `WOCWorkspace.rootURL`.
 struct DockedLibraryPanelView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(WOCWorkspace.self) private var wocWorkspace
     @Binding var panel: DockedLibraryPanel?
 
@@ -53,10 +53,10 @@ struct DockedLibraryPanelView: View {
         switch panel ?? .textures {
         case .textures:
             TexturesHubView(onClose: { panel = nil })
-                .environmentObject(workspace)
+                .environment(workspace)
         case .chunks:
             LevelsHubView(onClose: { panel = nil })
-                .environmentObject(workspace)
+                .environment(workspace)
         case .wocSettings:
             WOCSettingsPanel(onClose: { panel = nil })
         }

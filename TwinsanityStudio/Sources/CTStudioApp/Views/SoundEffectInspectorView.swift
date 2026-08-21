@@ -83,7 +83,7 @@ private extension Data {
 /// "Sound Playback": decoded `SoundEffect` audio, with a waveform preview,
 /// play/stop, and WAV export.
 struct SoundEffectInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     /// `nil` for a standalone sound-bank entry (`SoundBanksHubView`) — that
     /// path has no `ChunkNode`/enclosing chunk section at all, so "Replace
     /// with Audio…" (which needs both) is unavailable there. Non-`nil` for

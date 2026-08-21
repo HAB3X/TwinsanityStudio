@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Observation
 import simd
 import CTCore
 import CTModels
@@ -64,22 +65,23 @@ public struct EngineLogEntry: Identifiable, Sendable {
 /// selection, and drag-drop ingestion. One instance is shared by the whole
 /// app (`ContentView` owns it as a `@StateObject`).
 @MainActor
-public final class WorkspaceViewModel: ObservableObject {
-    @Published public var rootNodes: [ChunkNode] = []
-    @Published public var searchQuery: String = ""
+@Observable
+public final class WorkspaceViewModel {
+    public var rootNodes: [ChunkNode] = []
+    public var searchQuery: String = ""
     /// `nil` means "every kind" — set to jump straight to e.g. every decoded
     /// `Animation` in the workspace, regardless of which file it's buried in.
-    @Published public var typeFilter: ChunkPayload.Kind?
+    public var typeFilter: ChunkPayload.Kind?
     /// "Smart File Filtering" (Settings' Developer Mode toggle): when
     /// `false` (the default), `filteredRootNodes` prunes undecoded/raw
     /// leaves and any folder that only contains them — see `ChunkNode.
     /// prunedOfRawContent()`. Persisted so a developer who turns this on
     /// doesn't have to re-toggle it every launch.
-    @Published public var showRawFiles = false {
+    public var showRawFiles = false {
         didSet { UserDefaults.standard.set(showRawFiles, forKey: Self.showRawFilesDefaultsKey) }
     }
     private static let showRawFilesDefaultsKey = "TwinsanityStudio.ShowRawFiles"
-    @Published public var selectedNode: ChunkNode?
+    public var selectedNode: ChunkNode?
     /// "Real-Time Engine Console" (blueprint 7.5): every non-empty value
     /// this property (and `lastError` below) ever takes is also appended to
     /// `engineLog` — one `didSet` here instead of touching every one of the
@@ -90,24 +92,24 @@ public final class WorkspaceViewModel: ObservableObject {
     /// explanations" from the original blueprint wording — that needs a
     /// crash/symbolication pipeline this app has no source for; the console
     /// is a real event log, not a fabricated one.
-    @Published public var statusMessage: String = "Drop a .BH/.BD archive, .RM2/.SM2 file, or a folder to begin." {
+    public var statusMessage: String = "Drop a .BH/.BD archive, .RM2/.SM2 file, or a folder to begin." {
         didSet { if !statusMessage.isEmpty { engineLog.append(EngineLogEntry(message: statusMessage, isError: false)) } }
     }
-    @Published public var isLoading = false
-    @Published public var isScanning = false
+    public var isLoading = false
+    public var isScanning = false
     /// "Visual Loading Feedback": every save path (`saveHexEdit`,
     /// `saveLevelOverrides`, the Position/Instance/Trigger/Camera inspector
     /// "Save Edited Copy…" buttons) writes a full patched copy of the
     /// source file, which can be a genuinely large level file even for a
     /// tiny edit — real work, not a formality, so it gets the same
     /// real spinner treatment as loading. See `writeDataAsync`.
-    @Published public var isSaving = false
+    public var isSaving = false
     /// "Visual Loading Feedback" (performance mandate, Part 4): real
     /// per-file progress during `scanAllArchives()` — `nil` when no scan
     /// is running. Updated in throttled batches (not on every single file)
     /// so a scan of thousands of files doesn't pay a MainActor hop per
     /// file just to report progress.
-    @Published public var scanProgress: (completed: Int, total: Int)?
+    public var scanProgress: (completed: Int, total: Int)?
     /// "Responsive Main Thread... allowing... cancellations" (performance
     /// mandate, Part 4): a real, working cancel path — `cancelScan()`
     /// cancels this exact task, and `scanAllArchives`'s own loop checks
@@ -118,14 +120,14 @@ public final class WorkspaceViewModel: ObservableObject {
     public func cancelScan() {
         scanTask?.cancel()
     }
-    @Published public var lastError: String? {
+    public var lastError: String? {
         didSet { if let lastError { engineLog.append(EngineLogEntry(message: lastError, isError: true)) } }
     }
     /// Rolling log backing the Engine Console drawer. Unbounded growth isn't
     /// a real concern for a desktop inspection session (thousands of
     /// entries is still a trivially small array of small structs), so this
     /// doesn't truncate.
-    @Published public private(set) var engineLog: [EngineLogEntry] = []
+    public private(set) var engineLog: [EngineLogEntry] = []
 
     public func clearEngineLog() {
         engineLog.removeAll()
@@ -134,10 +136,10 @@ public final class WorkspaceViewModel: ObservableObject {
     // MARK: - Memory Card Inspector (blueprint 7.3)
 
     /// Non-nil presents the Memory Card Inspector sheet (see `ContentView`).
-    @Published public var memoryCardAsset: MemoryCardAsset?
+    public var memoryCardAsset: MemoryCardAsset?
 
     /// "Global Command/Search Bar" (⌘K) — see `ContentView`'s `.commands`.
-    @Published public var isCommandPalettePresented = false
+    public var isCommandPalettePresented = false
 
     /// A completely separate document type from the `.BD`/`.RM2` workspace
     /// tree above — a PS2 memory card image has nothing to do with
@@ -429,11 +431,11 @@ public final class WorkspaceViewModel: ObservableObject {
     }
 
     /// Non-nil presents the Model Viewer sheet (see `ContentView`).
-    @Published public var modelViewerAsset: ResolvedModelAsset?
+    public var modelViewerAsset: ResolvedModelAsset?
     /// Non-nil presents the Collision Viewer sheet (see `ContentView`).
-    @Published public var collisionViewerMesh: CollisionMesh?
+    public var collisionViewerMesh: CollisionMesh?
     /// Non-nil presents the Level Viewer sheet (see `ContentView`).
-    @Published public var levelViewerContext: LevelViewerContext?
+    public var levelViewerContext: LevelViewerContext?
     /// A live query for "wherever the 3D camera currently is" — set by
     /// `LevelViewerWindow` while it's open, cleared on close. The
     /// reference editor's `PositionEditor`/`AIPositionEditor`/
@@ -453,8 +455,8 @@ public final class WorkspaceViewModel: ObservableObject {
     /// skeleton + animations where rigged) across every scanned file —
     /// populated automatically as archives are scanned, so browsing models
     /// never requires manually parsing/resolving a specific chunk first.
-    @Published public var modelsHub: [ResolvedModelAsset] = []
-    @Published public var isModelsHubPresented = false
+    public var modelsHub: [ResolvedModelAsset] = []
+    public var isModelsHubPresented = false
     /// "Global Thumbnails": every `Instance.objectID` this session has
     /// ever successfully resolved to real geometry in *any* opened level,
     /// keyed by that `objectID` — grows every time `placeModeContent`'s
@@ -471,7 +473,7 @@ public final class WorkspaceViewModel: ObservableObject {
     /// scan-time memory/perf cost class the codebase already hit once
     /// with over-eager `ScanCache` persistence. Grows for free instead,
     /// piggybacking on resolution work the palette was doing anyway.
-    @Published public private(set) var globalObjectThumbnails: [UInt16: ResolvedModelAsset] = [:]
+    public private(set) var globalObjectThumbnails: [UInt16: ResolvedModelAsset] = [:]
 
     /// Records a real, already-resolved object so later Forge Palette
     /// views (in a different level) can show its thumbnail too. Never
@@ -485,8 +487,8 @@ public final class WorkspaceViewModel: ObservableObject {
     }
     /// "Textures Hub" (QoL sweep) — every decoded texture across every
     /// scanned file, populated alongside `modelsHub` the same way.
-    @Published public var texturesHub: [TextureHubEntry] = []
-    @Published public var isTexturesHubPresented = false
+    public var texturesHub: [TextureHubEntry] = []
+    public var isTexturesHubPresented = false
     /// "Cross-Engine Texture Variant": every real, decoded texture from a
     /// user-loaded Wrath of Cortex `.GSC` level (typically `CRATES.GSC`),
     /// offered as a candidate texture override for a Twinsanity crate's
@@ -498,7 +500,7 @@ public final class WorkspaceViewModel: ObservableObject {
     /// this build never guesses which WoC texture "is" a given crate
     /// type, since that correspondence isn't decoded data, just a real
     /// picker over real, honestly-labeled textures.
-    @Published public var wocCrateTextureLibrary: [TextureHubEntry] = []
+    public var wocCrateTextureLibrary: [TextureHubEntry] = []
 
     /// Loads every real, decoded texture from a real Wrath of Cortex
     /// `.GSC` file (RNC-decompressed if needed, same real pipeline
@@ -552,16 +554,16 @@ public final class WorkspaceViewModel: ObservableObject {
     /// level file that actually has an assembled scenery tree) across every
     /// parsed file, populated alongside `modelsHub`/`texturesHub`. See
     /// `LevelHubEntry`'s doc comment for why this one isn't cache-backed.
-    @Published public var levelsHub: [LevelHubEntry] = []
-    @Published public var isLevelsHubPresented = false
+    public var levelsHub: [LevelHubEntry] = []
+    public var isLevelsHubPresented = false
     /// "Audio Bank Extractor & Player" (roadmap 2.4) — every standalone
     /// `.MH`/`.MB` sound bank opened this session (`MUSIC`, `ENGLISH`,
     /// ...). Loaded asynchronously (`loadSoundBankAsync`) since the real
     /// `.MB` payload can be well over 200MB — never blocks the main actor
     /// like every other heavy parse in this view model.
-    @Published public var soundBanks: [SoundBankAsset] = []
-    @Published public var isSoundBanksHubPresented = false
-    @Published public var isLoadingSoundBank = false
+    public var soundBanks: [SoundBankAsset] = []
+    public var isSoundBanksHubPresented = false
+    public var isLoadingSoundBank = false
     /// Every standalone `.ptc`/`.psm` font/particle-sprite sheet opened
     /// this session — unlike `.MH`/`.MB` sound banks, these are small,
     /// single-file, self-contained formats (real embedded Texture/Material
@@ -569,41 +571,41 @@ public final class WorkspaceViewModel: ObservableObject {
     /// A standalone `.ptc` file is modeled as a one-entry `TwinsPSMAsset`
     /// rather than a third array — same real on-disk shape (a
     /// `TwinsPTCEntry`), just one of them.
-    @Published public var ptcSheets: [TwinsPSMAsset] = []
+    public var ptcSheets: [TwinsPSMAsset] = []
     /// Every standalone `.psf` font container opened this session.
-    @Published public var fontSheets: [TwinsPSFAsset] = []
-    @Published public var isPTCSheetsHubPresented = false
+    public var fontSheets: [TwinsPSFAsset] = []
+    public var isPTCSheetsHubPresented = false
     /// Every dangling reference / unreferenced record flagged by the
     /// "Scrapped Content Scanner" across every scanned file — populated
     /// alongside `modelsHub` so cut content surfaces automatically as
     /// archives are scanned, with no separate manual scan step.
-    @Published public var orphanedContent: [OrphanedAsset] = []
-    @Published public var isScrappedContentScannerPresented = false
+    public var orphanedContent: [OrphanedAsset] = []
+    public var isScrappedContentScannerPresented = false
     /// "Asset Diff & Version Comparison" (blueprint 4.3): non-nil presents
     /// the diff sheet.
-    @Published public var isAssetDiffPresented = false
+    public var isAssetDiffPresented = false
     /// "Offline Mod Package Manager (.Crate Hub)" (roadmap 3.3): presents
     /// `ModCrateInspectorView`. Unlike the other hubs, this isn't gated on
     /// any workspace scan state — it opens standalone `.crate` files
     /// directly, independent of whatever archive is currently loaded.
-    @Published public var isModCrateHubPresented = false
+    public var isModCrateHubPresented = false
     /// "Executable Patcher" — presents `ExecutablePatcherView`. Also
     /// independent of any open archive: it operates on the game's boot
     /// executable directly (`default.xbe`/PS2 binary), a file this
     /// workspace never otherwise loads.
-    @Published public var isExecutablePatcherPresented = false
+    public var isExecutablePatcherPresented = false
     /// "Archive Repackager" — presents `ArchiveRepackagerView`. Also
     /// independent of any open archive: it operates on a `.BH`/`.BD` pair
     /// the user picks directly, not anything already mounted here.
-    @Published public var isArchiveRepackagerPresented = false
+    public var isArchiveRepackagerPresented = false
     /// "Crate Installer" — presents `CrateInstallerView`, the install-side
     /// counterpart to "Export as Mod Crate…": patches texture records
     /// declared by a `.crate`'s `TextureOverride_<id>` settings
     /// (`CrateTextureOverrideInstaller.install`) into a real `.BH`/`.BD`
     /// archive pair. Same "operates on files the user picks, not anything
     /// already mounted here" independence as `ArchiveRepackagerView`.
-    @Published public var isCrateInstallerPresented = false
-    @Published public var isImageMakerPresented = false
+    public var isCrateInstallerPresented = false
+    public var isImageMakerPresented = false
 
     /// A real, ready-to-build "Quick Launch" plan for whatever chunk is
     /// currently open in the Level Viewer — `startingChunkBaseName` boots
@@ -630,8 +632,8 @@ public final class WorkspaceViewModel: ObservableObject {
     /// for a contextual "Quick Launch" from the Level Viewer, and left `nil`
     /// for the global "Play in PCSX2…" toolbar entry — same nil-means-
     /// global-scope convention `typeFilter` already uses.
-    @Published public var isGameLauncherPresented = false
-    @Published public var gameLauncherContext: GameLauncherContext?
+    public var isGameLauncherPresented = false
+    public var gameLauncherContext: GameLauncherContext?
 
     private var archiveIndexByRootID: [UUID: ArchiveIndex] = [:]
     /// "No More Placeholder Squares": the real game's shared object
@@ -661,7 +663,7 @@ public final class WorkspaceViewModel: ObservableObject {
     /// Backs the app's "Open Recent" menu (see `CTStudioApp`'s `.commands`)
     /// — persisted to `UserDefaults` as bookmark-free path strings, most
     /// recent first, deduplicated by path.
-    @Published public private(set) var recentFileURLs: [URL] = []
+    public private(set) var recentFileURLs: [URL] = []
 
     private func loadRecentFiles() {
         let paths = UserDefaults.standard.stringArray(forKey: Self.recentFilesDefaultsKey) ?? []
@@ -725,7 +727,7 @@ public final class WorkspaceViewModel: ObservableObject {
         public var displayName: String { rawValue.capitalized }
     }
 
-    @Published public var accentColorChoice: AccentColorChoice = .blue {
+    public var accentColorChoice: AccentColorChoice = .blue {
         didSet { UserDefaults.standard.set(accentColorChoice.rawValue, forKey: Self.accentColorDefaultsKey) }
     }
     private static let accentColorDefaultsKey = "TwinsanityStudio.AccentColorChoice"
@@ -733,7 +735,7 @@ public final class WorkspaceViewModel: ObservableObject {
     /// "Directory Config": the folder Settings' "Choose…" picker points at
     /// — surfaced in the sidebar's empty state as a real "Open Master
     /// Directory" action (`SidebarView`), not just stored inertly.
-    @Published public var masterDirectoryURL: URL? {
+    public var masterDirectoryURL: URL? {
         didSet {
             if let masterDirectoryURL {
                 UserDefaults.standard.set(masterDirectoryURL.path, forKey: Self.masterDirectoryDefaultsKey)
@@ -747,7 +749,7 @@ public final class WorkspaceViewModel: ObservableObject {
     /// "Direct Boot/Launch": the real, bootable disc image `GameLauncher`
     /// patches and boots — a plain `.iso` only (see `ISO9660Writer`'s own
     /// doc comment on why `.bin`/`.cue` isn't supported for write-back).
-    @Published public var discImageURL: URL? {
+    public var discImageURL: URL? {
         didSet {
             if let discImageURL {
                 UserDefaults.standard.set(discImageURL.path, forKey: Self.discImageURLDefaultsKey)
@@ -760,7 +762,7 @@ public final class WorkspaceViewModel: ObservableObject {
 
     /// The real PCSX2 app (or its bundled binary) `GameLauncher.launching`
     /// runs the built image with.
-    @Published public var pcsx2AppURL: URL? {
+    public var pcsx2AppURL: URL? {
         didSet {
             if let pcsx2AppURL {
                 UserDefaults.standard.set(pcsx2AppURL.path, forKey: Self.pcsx2AppURLDefaultsKey)
@@ -776,7 +778,7 @@ public final class WorkspaceViewModel: ObservableObject {
     /// until a folder open finds one, and never guessed from a filename or
     /// left over from a previous open on a different folder. See
     /// `detectRegion(inFolder:)`.
-    @Published public private(set) var detectedRegion: SystemCNFInfo?
+    public private(set) var detectedRegion: SystemCNFInfo?
 
     /// Looks for a real `SYSTEM.CNF` at `folder`'s root (case-insensitively
     /// — real disc images vary in casing) and parses it if present.
@@ -1658,18 +1660,20 @@ public final class WorkspaceViewModel: ObservableObject {
     /// The actual parse-and-mutate work is dispatched to the next run loop
     /// tick rather than done inline: `select` is called from `List`'s
     /// selection `Binding.set`, which SwiftUI invokes *during* its own view
-    /// update pass — mutating `@Published` state synchronously in there logs
-    /// "Publishing changes from within view updates is not allowed" and
-    /// produces genuinely undefined rendering (rows not updating, disclosure
-    /// state going stale), not just a console warning to ignore.
+    /// update pass — mutating `@Observable` state synchronously in there
+    /// produces genuinely undefined rendering (rows not updating,
+    /// disclosure state going stale), not just a console warning to
+    /// ignore. Same underlying "don't mutate observed state mid-update"
+    /// rule this codebase already had to respect back when this class was
+    /// `ObservableObject`/`@Published` (the warning text SwiftUI logs
+    /// differs, the hazard doesn't).
     public func select(_ node: ChunkNode?) {
-        // `selectedNode = node` is a `@Published` mutation, and `select` is
-        // called from `List`'s selection `Binding.set`, which SwiftUI
-        // invokes *during* its own view update pass — mutating `@Published`
-        // state synchronously in there logs "Publishing changes from
-        // within view updates is not allowed" and produces genuinely
-        // undefined behavior (not just a console warning), matching
-        // exactly what was observed clicking around the sidebar. The whole
+        // `selectedNode = node` is an `@Observable` mutation, and `select`
+        // is called from `List`'s selection `Binding.set`, which SwiftUI
+        // invokes *during* its own view update pass — mutating observed
+        // state synchronously in there produces genuinely undefined
+        // behavior (not just a console warning), matching exactly what
+        // was observed clicking around the sidebar. The whole
         // body — not just the archive-expansion half that was already
         // deferred — has to move to the next run loop tick.
         DispatchQueue.main.async { [weak self] in
@@ -2095,13 +2099,13 @@ public final class WorkspaceViewModel: ObservableObject {
     }
 
     /// Non-nil presents the Hex Viewer sheet (see `ContentView`).
-    @Published public var hexViewerNode: ChunkNode?
+    public var hexViewerNode: ChunkNode?
 
     /// "AgentLab Visual Node Graph" (Part 3, roadmap 4.2): non-nil presents
     /// the AgentLab graph sheet (see `ContentView`) for a `CustomAgent`
     /// section container node — see `AgentLabGraphView`'s doc comment for
     /// why its nodes hold raw bytes rather than decoded behavior data.
-    @Published public var agentLabNode: ChunkNode?
+    public var agentLabNode: ChunkNode?
 
     /// Saves a hex-edited byte range back the same way `PositionInspectorView`
     /// saves a structured edit — patch a copy of the owning file's bytes,
@@ -3972,7 +3976,7 @@ public final class WorkspaceViewModel: ObservableObject {
 
     /// Non-nil while a batch export (see `exportBatch`) is running — drives
     /// the Models Hub's progress indicator.
-    @Published public var batchExportProgress: (completed: Int, total: Int)?
+    public var batchExportProgress: (completed: Int, total: Int)?
 
     /// "One-Click Batch Export": runs the same per-asset `exportCompleteAsset`
     /// logic the single-asset "Export Complete Asset…"/"Export as Group…"

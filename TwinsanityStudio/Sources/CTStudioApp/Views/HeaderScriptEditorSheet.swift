@@ -15,7 +15,7 @@ import CTParsers
 /// repacks them, so round-tripping the whole `uint32` unchanged except
 /// where the user actually typed a new value is the honest option.
 struct HeaderScriptEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     let script: ScriptAsset

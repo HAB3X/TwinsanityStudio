@@ -13,7 +13,7 @@ import CTModels
 /// tens of thousands of 16-byte rows, and only the ones actually on screen
 /// get built/laid out.
 struct HexViewerWindow: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     @Environment(\.undoManager) private var undoManager
     let node: ChunkNode

@@ -11,7 +11,7 @@ import CTParsers
 /// fixed-size `patchedFileBytes(replacing:with:)`, since adding/removing a
 /// point or param changes this record's total on-disk size.
 struct PathEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     let original: PathAsset

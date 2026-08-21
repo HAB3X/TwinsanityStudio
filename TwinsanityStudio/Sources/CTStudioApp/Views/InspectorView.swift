@@ -4,7 +4,7 @@ import CTModels
 /// The center panel: dispatches to a payload-specific inspector, or a plain
 /// hex/metadata view for records this package hasn't modeled yet.
 struct InspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode?
     @State private var showComposite = false
     /// Cached, not recomputed in `body`: `resolveComposite` mints a fresh
@@ -278,7 +278,7 @@ struct InspectorView: View {
 }
 
 struct RigidModelInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let info: RigidModelInfo
 
@@ -332,7 +332,7 @@ struct MaterialInspectorView: View {
 /// the `OGIs` list is decoded (name + OGI links only, not the script
 /// bytecode tail this codebase doesn't decode anywhere else either).
 struct GameObjectInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let gameObject: GameObjectInfo
     @State private var showEditor = false

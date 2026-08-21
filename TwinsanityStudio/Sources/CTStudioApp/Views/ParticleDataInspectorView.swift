@@ -7,7 +7,7 @@ import CTModels
 /// `ParticleDataAsset`'s doc comment for the version-scoping this decode
 /// relies on (only versions 28/30 are parsed).
 struct ParticleDataInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let particleData: ParticleDataAsset
     @State private var selectedDefinitionIndex: Int?

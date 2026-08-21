@@ -6,7 +6,7 @@ import CTModels
 /// `CollisionInspectorView`, this is level-wide data, not a single
 /// composite-eligible object.
 struct SceneryInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let scenery: SceneryAsset
 

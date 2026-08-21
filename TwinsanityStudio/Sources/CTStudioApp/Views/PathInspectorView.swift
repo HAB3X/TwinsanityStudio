@@ -5,7 +5,7 @@ import CTModels
 /// (one point) and the `AIPosition`/`AIPath` waypoint system; see
 /// `PathAsset`'s doc comment.
 struct PathInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let path: PathAsset
     @State private var isEditing = false

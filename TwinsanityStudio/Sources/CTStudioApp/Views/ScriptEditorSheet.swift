@@ -22,7 +22,7 @@ import CTParsers
 /// via `WorkspaceViewModel.patchedFileBytes(replacingWholeRecord:with:)` —
 /// "AgentLab Phase B").
 struct ScriptEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     let script: ScriptAsset

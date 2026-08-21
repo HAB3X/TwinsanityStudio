@@ -3,7 +3,7 @@ import AppKit
 import CTModels
 
 struct MeshInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let mesh: MeshAsset
 

@@ -7,7 +7,7 @@ import CTModels
 /// rendering (a scenery placement's `modelID` pointing here instead of
 /// directly at a `RigidModel`).
 struct LodModelInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let lodModel: LodModelInfo
     @State private var isEditing = false

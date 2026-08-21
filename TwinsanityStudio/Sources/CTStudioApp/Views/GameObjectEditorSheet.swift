@@ -17,7 +17,7 @@ import CTParsers
 /// edits, same as `SkydomeEditorSheet`'s simpler pattern; New/Duplicate/
 /// Delete are separate, immediate structural actions.
 struct GameObjectEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
 

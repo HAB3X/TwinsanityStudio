@@ -28,7 +28,7 @@ import CTExport
 /// "replace this one record's bytes in place, save as a new file"
 /// operation `TextureInspectorView` already does for chunk-tree textures.
 struct PTCSheetsHubView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     @State private var selectedSheetID: String?
     @State private var selectedEntryID: UInt32?

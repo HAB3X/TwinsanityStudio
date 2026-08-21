@@ -25,7 +25,7 @@ import CTParsers
 /// guess at a wrong skinning result, this exposes the real decoded values
 /// for inspection/export instead.
 struct AnimationInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode?
     let animation: AnimationAsset
     @State private var currentFrame: Double = 0

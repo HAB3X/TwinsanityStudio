@@ -21,7 +21,7 @@ import simd
 /// same path Phase B/D/E established), not the trigger-only same-size
 /// patch the rest of this sheet uses.
 struct ColDataEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     let original: CollisionMesh

@@ -13,7 +13,7 @@ import simd
 /// Tree-node `undecodedBlob` stays read-only — the reference's own editor
 /// never interprets it either, only ever round-trips it byte-for-byte.
 struct ChunkLinksEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
 

@@ -3,7 +3,7 @@ import CTCore
 import CTModels
 
 struct SidebarView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     /// "Multi-Select & Batch Operations" (QoL sweep) — a separate toggled
     /// mode rather than switching `List`'s own selection to a `Set`
     /// binding: the single-selection binding below is what drives
@@ -14,7 +14,12 @@ struct SidebarView: View {
     @State private var batchSelectedIDs: Set<UUID> = []
 
     var body: some View {
-        VStack(spacing: 0) {
+        // `@Bindable` shadow for `.searchable(text: $workspace.searchQuery...)`
+        // below -- `filterBar` needs its own separate shadow for
+        // `$workspace.typeFilter`, since a local variable declared here
+        // isn't visible from that other computed property's own scope.
+        @Bindable var workspace = workspace
+        return VStack(spacing: 0) {
             if !workspace.rootNodes.isEmpty {
                 sidebarHeader
                 Divider()
@@ -92,7 +97,8 @@ struct SidebarView: View {
     /// inside files that have actually been parsed, so the scan action is
     /// surfaced right alongside it rather than buried in a menu.
     private var filterBar: some View {
-        HStack(spacing: 8) {
+        @Bindable var workspace = workspace
+        return HStack(spacing: 8) {
             Picker("", selection: $workspace.typeFilter) {
                 Text("All Kinds").tag(ChunkPayload.Kind?.none)
                 ForEach(ChunkPayload.Kind.allCases) { kind in
@@ -232,7 +238,7 @@ struct SidebarView: View {
 }
 
 private struct SidebarRow: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let rootID: UUID
     let isBatchSelectionMode: Bool

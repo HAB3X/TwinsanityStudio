@@ -20,7 +20,7 @@ import CTParsers
 /// by one — every real sound in the file, in one flat list, is itself the
 /// actual improvement being asked for.
 struct SoundEffectPickerSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     /// When true, a "(none)" row is offered that hands back `65535` — the

@@ -18,7 +18,7 @@ import CTModels
 /// resolving every level in the workspace up front, the exact "freezes the
 /// UI" problem `resolvedLevelPlacements` was written to avoid.
 struct LevelsHubView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     /// "Embedded Library Panel": see `TexturesHubView.onClose`'s doc
     /// comment — same reasoning, same default-preserving shape, for the

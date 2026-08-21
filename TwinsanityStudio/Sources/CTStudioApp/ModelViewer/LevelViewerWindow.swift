@@ -201,7 +201,7 @@ struct HotbarEntry: Equatable {
 }
 
 struct LevelViewerWindow: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.undoManager) private var undoManager
     let context: LevelViewerContext
 
@@ -996,7 +996,7 @@ struct LevelViewerWindow: View {
                     cameras: context.cameras,
                     referenceNode: referenceNode
                 )
-                .environmentObject(workspace)
+                .environment(workspace)
             }
         }
     }
@@ -2287,7 +2287,7 @@ final class SceneryLoadCache {
 }
 
 struct SceneryModeView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     var cache: SceneryLoadCache
     let destinationSceneryFileRoot: ChunkNode
     let initialPosition: SIMD3<Float>

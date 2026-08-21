@@ -9,7 +9,7 @@ import CTModels
 /// doesn't move. Deliberately narrow, same as the reference: nothing else
 /// in the file that references this ID by value gets updated.
 struct IDEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
 

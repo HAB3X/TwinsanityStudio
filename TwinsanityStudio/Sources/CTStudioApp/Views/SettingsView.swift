@@ -6,7 +6,7 @@ import SwiftUI
 /// item and ⌘, keyboard shortcut automatically, no manual command wiring
 /// needed.
 struct SettingsView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
 
     var body: some View {
         TabView {
@@ -17,17 +17,18 @@ struct SettingsView: View {
             AboutSettingsTab()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .environmentObject(workspace)
+        .environment(workspace)
         .frame(width: 460, height: 340)
     }
 }
 
 private struct GeneralSettingsTab: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @State private var isChoosingDirectory = false
 
     var body: some View {
-        Form {
+        @Bindable var workspace = workspace
+        return Form {
             Section {
                 Toggle("Show Raw / Undecoded Files", isOn: $workspace.showRawFiles)
                 Text("Off by default (Smart File Filtering): the sidebar tree hides undecoded records and any folder that only contains them. Turn this on to see everything, including files this build hasn't decoded yet.")
@@ -84,7 +85,7 @@ private struct GeneralSettingsTab: View {
 }
 
 private struct AppearanceSettingsTab: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
 
     private let columns = [GridItem(.adaptive(minimum: 44), spacing: 10)]
 

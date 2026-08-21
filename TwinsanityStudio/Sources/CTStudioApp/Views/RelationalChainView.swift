@@ -5,7 +5,7 @@ import CTModels
 /// parent composite object and every component that composite is built
 /// from, each clickable to jump the sidebar selection straight to it.
 struct RelationalChainView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     @State private var isExpanded = true
     /// Cached, not recomputed in `body` — `relationalChain(for:)` walks and

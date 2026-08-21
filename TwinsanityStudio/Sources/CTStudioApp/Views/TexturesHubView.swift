@@ -7,7 +7,7 @@ import CTExport
 /// models — browsing hundreds of textures as a flat name list (the sidebar)
 /// doesn't give any visual sense of what's actually in them.
 struct TexturesHubView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     /// "Embedded Library Panel": when this view is hosted inline in
     /// `DockedLibraryPanelView` rather than presented via `.sheet()`, there
@@ -39,7 +39,7 @@ struct TexturesHubView: View {
         .frame(minWidth: 640, minHeight: 520)
         .sheet(item: $selected) { entry in
             TextureHubDetailView(entry: entry)
-                .environmentObject(workspace)
+                .environment(workspace)
         }
         .alert("Couldn't Pack Atlas", isPresented: Binding(
             get: { atlasError != nil },
@@ -235,7 +235,7 @@ private struct TextureThumbnailCell: View {
 }
 
 private struct TextureHubDetailView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let entry: TextureHubEntry
     @State private var cachedImage: NSImage?

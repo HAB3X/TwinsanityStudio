@@ -7,7 +7,7 @@ import CTModels
 /// doesn't go through `WorkspaceViewModel.resolveComposite`/the Model
 /// Viewer sheet the way textures/meshes do.
 struct CollisionInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let mesh: CollisionMesh
     @State private var isEditing = false

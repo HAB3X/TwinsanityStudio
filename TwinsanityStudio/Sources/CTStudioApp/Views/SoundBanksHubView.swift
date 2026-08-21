@@ -23,7 +23,7 @@ import CTParsers
 /// already returns the corrected per-entry offsets `MHWriter` needs to
 /// stay in sync with that new layout.
 struct SoundBanksHubView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     @State private var selectedBankID: SoundBankAsset.ID?
     @State private var selectedEntryID: Int?

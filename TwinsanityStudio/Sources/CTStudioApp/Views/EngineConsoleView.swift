@@ -6,7 +6,7 @@ import CTModels
 /// `statusMessage`/`lastError` `didSet`s), newest first. `ContentView` docks
 /// this along the bottom of the window, toggled from the toolbar.
 struct EngineConsoleView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Binding var isExpanded: Bool
 
     private static let timeFormatter: DateFormatter = {

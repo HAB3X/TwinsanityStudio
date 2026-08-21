@@ -6,7 +6,7 @@ import CTModels
 /// `ColData` triangle's `surfaceID` (by that field's real *value*, not
 /// this record's own chunk index-table ID).
 struct CollisionSurfaceInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let surface: CollisionSurfaceInfo
     @State private var isEditing = false

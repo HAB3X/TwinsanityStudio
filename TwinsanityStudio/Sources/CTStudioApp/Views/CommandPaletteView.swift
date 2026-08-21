@@ -10,7 +10,7 @@ import CTModels
 /// elsewhere in the app would be exactly the kind of needless per-frame/
 /// per-edit cost this session's optimization pass was about removing.
 struct CommandPaletteView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var results: [PaletteResult] = []

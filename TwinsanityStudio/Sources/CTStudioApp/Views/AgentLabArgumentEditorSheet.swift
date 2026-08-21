@@ -20,7 +20,7 @@ import CTParsers
 /// one of the 14 by guessing at a round-trip this session hasn't verified
 /// against the reference `Save()` side.
 struct AgentLabArgumentEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     let command: AgentLabCommand

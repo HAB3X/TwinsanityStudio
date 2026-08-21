@@ -9,7 +9,7 @@ import CTExport
 /// sidebar on the right with asset info, animation search/playback, and the
 /// unified export action.
 struct ModelViewerWindow: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let asset: ResolvedModelAsset
 
     @State private var renderer: ModelViewerRenderer?

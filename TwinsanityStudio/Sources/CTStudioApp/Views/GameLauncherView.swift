@@ -14,7 +14,7 @@ import CTExport
 /// image the user points at (`GameLauncher.building`'s own doc comment) —
 /// nothing here builds a disc from scratch.
 struct GameLauncherView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
 
     @State private var isBuilding = false

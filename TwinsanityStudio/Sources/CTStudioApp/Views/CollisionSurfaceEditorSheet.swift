@@ -8,7 +8,7 @@ import CTParsers
 /// file; same decode -> edit -> encode -> patch -> save-as-copy loop as
 /// every other write path in this app.
 struct CollisionSurfaceEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     let original: CollisionSurfaceInfo

@@ -21,7 +21,7 @@ import CTModels
 /// presentation) needed to change, opening the matching `Window` when one
 /// of these transitions from `nil` to non-`nil`.
 struct ModelViewerWindowHost: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
@@ -49,7 +49,7 @@ struct ModelViewerWindowHost: View {
 }
 
 struct CollisionViewerWindowHost: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
@@ -73,7 +73,7 @@ struct CollisionViewerWindowHost: View {
 }
 
 struct LevelViewerWindowHost: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {

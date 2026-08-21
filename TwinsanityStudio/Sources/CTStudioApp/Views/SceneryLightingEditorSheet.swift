@@ -25,7 +25,7 @@ import CTParsers
 /// same "never invented, never dropped" rule this codebase applies to every
 /// other undocumented field.
 struct SceneryLightingEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     let original: SceneryAsset

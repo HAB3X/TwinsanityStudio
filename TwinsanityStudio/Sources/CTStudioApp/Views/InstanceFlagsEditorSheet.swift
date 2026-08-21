@@ -9,7 +9,7 @@ import CTParsers
 /// other write path in this app, patched at `flagsFileOffset` the same way
 /// `objectID` reassignment patches its own fixed-size, fixed-offset field.
 struct InstanceFlagsEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     let instance: PlacedInstance

@@ -8,7 +8,7 @@ import CTParsers
 /// declared size, and `SkydomeWriter` only produces a byte-identical-length
 /// blob when the count is unchanged.
 struct SkydomeEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     let original: SkydomeInfo

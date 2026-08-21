@@ -22,7 +22,7 @@ import CTParsers
 /// swap via `objectID` reassignment (see
 /// `WorldPlacementWriter.writeInstanceObjectID`).
 struct RecipeBookView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)]
     let resolvedInstanceAssets: [UUID: ResolvedModelAsset]

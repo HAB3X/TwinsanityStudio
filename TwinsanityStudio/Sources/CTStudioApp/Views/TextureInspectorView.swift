@@ -5,7 +5,7 @@ import CTParsers
 import CTExport
 
 struct TextureInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let texture: TextureAsset
     @State private var selectedMip: Int = -1 // -1 = base level

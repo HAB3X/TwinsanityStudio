@@ -3,7 +3,7 @@ import CTModels
 
 /// Inspector for a decoded `Skydome` record.
 struct SkydomeInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let skydome: SkydomeInfo
     @State private var isEditing = false

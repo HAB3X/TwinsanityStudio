@@ -22,7 +22,7 @@ struct ModCrateInspectorView: View {
     /// Needed for "Crate Region Gating" (`ModManifest.declaredRegion`
     /// compared against `workspace.detectedRegion`) — every other hub view
     /// takes this the same way.
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
 
     private struct LoadedCrate: Identifiable {
         let id = UUID()

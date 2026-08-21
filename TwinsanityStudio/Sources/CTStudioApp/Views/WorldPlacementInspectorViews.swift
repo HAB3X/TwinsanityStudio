@@ -16,7 +16,7 @@ import simd
 /// file stays read-only — this one specifically demonstrates decode -> edit
 /// -> encode -> patch -> save, not "editing everywhere now."
 struct PositionInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let position: PositionMarker
 
@@ -215,7 +215,7 @@ struct PositionInspectorView: View {
 /// on-disk signal narrowing that down — presenting every match rather than
 /// picking one is the honest option here.
 struct InstanceInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let instance: PlacedInstance
 
@@ -486,7 +486,7 @@ struct InstanceInspectorView: View {
 /// them as editable fields would invite editing values whose effect is
 /// genuinely unknown, not a real capability.
 struct TriggerInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let trigger: TriggerVolume
 
@@ -669,7 +669,7 @@ struct TriggerInspectorView: View {
 }
 
 struct CameraInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let camera: PlacedCamera
 

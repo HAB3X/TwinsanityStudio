@@ -15,7 +15,7 @@ import CTParsers
 /// (definitions/instances) are fixed by the record's on-disk size, same
 /// constraint as every other editor in this app.
 struct ParticleDataEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     let original: ParticleDataAsset

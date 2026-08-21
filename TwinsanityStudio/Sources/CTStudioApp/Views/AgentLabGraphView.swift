@@ -27,7 +27,7 @@ import CTParsers
 /// principle; the connector wires below remain the user's own
 /// organizational notes, not decoded engine data.
 struct AgentLabGraphView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let sectionNode: ChunkNode
 

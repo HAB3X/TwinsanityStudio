@@ -16,7 +16,7 @@ import CTModels
 /// raw bytes but no typed decoder — never a fabricated view for a payload
 /// kind this build doesn't actually understand.
 struct ViewportPanel: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode?
 
     var body: some View {
@@ -149,7 +149,7 @@ struct VolumeSceneView: NSViewRepresentable {
 /// editor. "Open Full Hex Editor…" hands off to that exact editable view
 /// for anything beyond a quick look.
 struct RawBytesPreview: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let bytes: Data
 

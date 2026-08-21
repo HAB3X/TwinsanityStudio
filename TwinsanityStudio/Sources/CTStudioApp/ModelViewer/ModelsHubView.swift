@@ -8,7 +8,7 @@ import CTModels
 /// the Model Viewer using the *already-resolved* asset — no re-parsing, no
 /// tree walking, so this is also the most reliable way to open the viewer.
 struct ModelsHubView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
     @State private var onlyRigged = false

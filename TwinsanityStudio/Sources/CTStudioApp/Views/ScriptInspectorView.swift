@@ -9,7 +9,7 @@ import CTModels
 /// copy of this file — see that view's own doc comment for exactly what's
 /// editable and why the rest (structural changes, condition fields) isn't.
 struct ScriptInspectorView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let node: ChunkNode
     let script: ScriptAsset
     @State private var isEditing = false

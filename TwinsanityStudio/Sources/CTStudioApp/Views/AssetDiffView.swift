@@ -6,7 +6,7 @@ import CTModels
 /// side. Useful for e.g. comparing a scenery object across two archive
 /// scans, or two candidates that happen to share a display name.
 struct AssetDiffView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
 
     @State private var leftID: ResolvedModelAsset.ID?

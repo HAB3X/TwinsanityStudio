@@ -9,7 +9,7 @@ import CTExport
 /// inspector — no modal, no extra click, so selecting an isolated texture
 /// no longer feels disconnected from what it actually textures.
 struct CompositePreviewView: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     let asset: ResolvedModelAsset
 
     @State private var renderer: ModelViewerRenderer?

@@ -36,7 +36,7 @@ import CTParsers
 /// — unlike every fixed-offset patch above, the saved record generally
 /// isn't the same byte length as the original.
 struct MainScriptEditorSheet: View {
-    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     let node: ChunkNode
     let script: ScriptAsset
