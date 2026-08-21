@@ -211,17 +211,18 @@ struct InspectorView: View {
         guard openPanel.runModal() == .OK, let sourceURL = openPanel.url,
               let newData = try? Data(contentsOf: sourceURL)
         else { return }
-        guard let newImage = workspace.replacingDiscImage(afterReplacing: node, with: newData) else { return }
         guard let destinationURL = ExportPanel.chooseSaveLocation(
             suggestedName: "modified.iso",
             message: "Save the rebuilt disc image with \(node.displayName) replaced. The originally mounted image is not modified."
         ) else { return }
-        // A rebuilt disc image can be hundreds of MB to several GB — same
-        // "write large data off the main actor" discipline as every other
-        // save path in this app (`writeDataAsync` itself, plus the
-        // `isSaving` toggle it drives, which the toolbar's global spinner
-        // already reads).
+        // Both the re-read + rebuild (`replacingDiscImage`) and the final
+        // write can each touch a disc image hundreds of MB to several GB —
+        // same "keep large data work off the main actor" discipline as
+        // every other save path in this app (`writeDataAsync` itself, plus
+        // the `isSaving` toggle it drives, which the toolbar's global
+        // spinner already reads).
         Task {
+            guard let newImage = await workspace.replacingDiscImage(afterReplacing: node, with: newData) else { return }
             do {
                 try await workspace.writeDataAsync(newImage, to: destinationURL)
                 workspace.statusMessage = "Saved rebuilt disc image to \(destinationURL.lastPathComponent) with \(node.displayName) replaced."

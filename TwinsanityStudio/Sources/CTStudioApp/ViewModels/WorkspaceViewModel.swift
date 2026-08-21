@@ -202,43 +202,65 @@ public final class WorkspaceViewModel: ObservableObject {
     /// (the volume descriptor, directory extents, and whichever file gets
     /// opened) get paged in.
     public func mountDiscImage(url: URL) {
-        do {
-            let source: any LogicalSectorSource
-            switch url.pathExtension.uppercased() {
-            case "ISO":
-                source = PlainISOSource(data: try Data(contentsOf: url, options: .mappedIfSafe))
-            case "CUE":
-                let cue = try CueSheetParser.parse(contents: try String(contentsOf: url, encoding: .ascii))
-                let binURL = url.deletingLastPathComponent().appendingPathComponent(cue.binFileName)
-                let binData = try Data(contentsOf: binURL, options: .mappedIfSafe)
-                source = BinCueLogicalSource(binData: binData, framing: cue.framing)
-            case "BIN":
-                let cueURL = url.deletingPathExtension().appendingPathExtension("cue")
-                guard FileManager.default.fileExists(atPath: cueURL.path) else {
-                    lastError = "\(url.lastPathComponent) has no matching .cue file alongside it — a raw .bin's sector framing can't be determined without one."
+        // The `.iso`/`.bin` reads below are `.mappedIfSafe` (lazily paged),
+        // but the `.cue` sheet read and the full `ISO9660Reader` directory
+        // walk are not, and used to run synchronously on MainActor -- real
+        // blocking risk on a slow/network volume or a disc with many
+        // entries. `LogicalSectorSource` is `Sendable`, so the whole read +
+        // directory-walk moves to a background Task; only the final
+        // `self`-touching bookkeeping hops back.
+        Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                let source: any LogicalSectorSource
+                switch url.pathExtension.uppercased() {
+                case "ISO":
+                    source = PlainISOSource(data: try Data(contentsOf: url, options: .mappedIfSafe))
+                case "CUE":
+                    let cue = try CueSheetParser.parse(contents: try String(contentsOf: url, encoding: .ascii))
+                    let binURL = url.deletingLastPathComponent().appendingPathComponent(cue.binFileName)
+                    let binData = try Data(contentsOf: binURL, options: .mappedIfSafe)
+                    source = BinCueLogicalSource(binData: binData, framing: cue.framing)
+                case "BIN":
+                    let cueURL = url.deletingPathExtension().appendingPathExtension("cue")
+                    guard FileManager.default.fileExists(atPath: cueURL.path) else {
+                        await MainActor.run { [weak self] in
+                            self?.lastError = "\(url.lastPathComponent) has no matching .cue file alongside it — a raw .bin's sector framing can't be determined without one."
+                        }
+                        return
+                    }
+                    let cue = try CueSheetParser.parse(contents: try String(contentsOf: cueURL, encoding: .ascii))
+                    let binData = try Data(contentsOf: url, options: .mappedIfSafe)
+                    source = BinCueLogicalSource(binData: binData, framing: cue.framing)
+                default:
+                    await MainActor.run { [weak self] in
+                        self?.lastError = "\(url.lastPathComponent) isn't a recognized disc image — choose a .iso, .bin, or .cue file."
+                    }
                     return
                 }
-                let cue = try CueSheetParser.parse(contents: try String(contentsOf: cueURL, encoding: .ascii))
-                let binData = try Data(contentsOf: url, options: .mappedIfSafe)
-                source = BinCueLogicalSource(binData: binData, framing: cue.framing)
-            default:
-                lastError = "\(url.lastPathComponent) isn't a recognized disc image — choose a .iso, .bin, or .cue file."
-                return
+                let root = try ISO9660Reader.readRootDirectory(from: source)
+                let node = Self.buildDiscNode(from: root, isRoot: true)
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.registerDiscEntries(root, node: node, source: source)
+                    if url.pathExtension.uppercased() == "ISO" {
+                        self.mountedDiscImageURLByRootID[node.id] = url
+                    }
+                    self.rootNodes.append(node)
+                    self.statusMessage = "Mounted \(url.lastPathComponent) — \(self.discEntryByNodeID.count) recognized file(s) available to open."
+                }
+            } catch let error as CueSheetParser.ParseError {
+                await MainActor.run { [weak self] in
+                    self?.lastError = "Couldn't read \(url.lastPathComponent)'s cue sheet: \(error)"
+                }
+            } catch is ISO9660Error {
+                await MainActor.run { [weak self] in
+                    self?.lastError = "\(url.lastPathComponent) doesn't look like a real ISO-9660 disc image (no valid volume descriptor found)."
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.lastError = "Couldn't mount \(url.lastPathComponent): \(error)"
+                }
             }
-            let root = try ISO9660Reader.readRootDirectory(from: source)
-            let node = Self.buildDiscNode(from: root, isRoot: true)
-            registerDiscEntries(root, node: node, source: source)
-            if url.pathExtension.uppercased() == "ISO" {
-                mountedDiscImageURLByRootID[node.id] = url
-            }
-            rootNodes.append(node)
-            statusMessage = "Mounted \(url.lastPathComponent) — \(discEntryByNodeID.count) recognized file(s) available to open."
-        } catch let error as CueSheetParser.ParseError {
-            lastError = "Couldn't read \(url.lastPathComponent)'s cue sheet: \(error)"
-        } catch is ISO9660Error {
-            lastError = "\(url.lastPathComponent) doesn't look like a real ISO-9660 disc image (no valid volume descriptor found)."
-        } catch {
-            lastError = "Couldn't mount \(url.lastPathComponent): \(error)"
         }
     }
 
@@ -303,7 +325,7 @@ public final class WorkspaceViewModel: ObservableObject {
     /// ready to save — the original file on disk is never modified.
     /// `nil` (with `lastError` set) if `node` isn't a replaceable disc
     /// entry (see `canReplaceDiscFile`) or the rebuild itself fails.
-    public func replacingDiscImage(afterReplacing node: ChunkNode, with newData: Data) -> Data? {
+    public func replacingDiscImage(afterReplacing node: ChunkNode, with newData: Data) async -> Data? {
         guard let holder = discEntryByNodeID[node.id], let entry = holder.entry as? ISO9660Entry else {
             lastError = "This isn't a recognized disc-mounted file."
             return nil
@@ -313,8 +335,16 @@ public final class WorkspaceViewModel: ObservableObject {
             return nil
         }
         do {
-            let originalImage = try Data(contentsOf: imageURL)
-            return try ISO9660Writer.replacingFile(entry, with: newData, in: originalImage)
+            // The original image can be hundreds of MB to several GB (see
+            // this function's own doc comment) -- both the re-read and
+            // `ISO9660Writer`'s in-memory byte relocation used to run
+            // synchronously right here on MainActor before this became
+            // `async`; now they run in a detached Task like every other
+            // heavy path in this class.
+            return try await Task.detached(priority: .userInitiated) {
+                let originalImage = try Data(contentsOf: imageURL)
+                return try ISO9660Writer.replacingFile(entry, with: newData, in: originalImage)
+            }.value
         } catch {
             lastError = "Couldn't rebuild \(imageURL.lastPathComponent): \(error.localizedDescription)"
             return nil
@@ -479,29 +509,43 @@ public final class WorkspaceViewModel: ObservableObject {
     /// that happen to share a texture — doesn't create visible
     /// duplicates in the picker.
     public func loadWOCCrateTextureLibrary(from url: URL) {
-        do {
-            let raw = try Data(contentsOf: url)
-            let bytes = [UInt8](raw)
-            let containerBytes = RNCDecompressor.isRNCStream(bytes) ? Data(try RNCDecompressor.decompress(bytes, verifyCRC: true)) : raw
-            let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-            let gscURL = tempDir.appendingPathComponent(url.deletingPathExtension().lastPathComponent).appendingPathExtension("GSC")
-            try containerBytes.write(to: gscURL)
-            let asset = try WOCLevelLoader.load(gscURL: gscURL, name: url.deletingPathExtension().lastPathComponent)
+        // `WOCLevelLoader.load`'s own doc comment: "Synchronous and
+        // potentially slow (RNC decompression of a multi-megabyte file) --
+        // callers should run this off the main actor." Every other caller
+        // already does; this one used to run the read, decompress, and
+        // parse directly on MainActor. Signature/call site are unchanged
+        // (still a plain, non-async `func`) -- only the work inside moves
+        // to a background Task, same shape as `openAsMonkeyBall` above.
+        Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                let raw = try Data(contentsOf: url)
+                let bytes = [UInt8](raw)
+                let containerBytes = RNCDecompressor.isRNCStream(bytes) ? Data(try RNCDecompressor.decompress(bytes, verifyCRC: true)) : raw
+                let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                let gscURL = tempDir.appendingPathComponent(url.deletingPathExtension().lastPathComponent).appendingPathExtension("GSC")
+                try containerBytes.write(to: gscURL)
+                let asset = try WOCLevelLoader.load(gscURL: gscURL, name: url.deletingPathExtension().lastPathComponent)
 
-            var existingHashes = Set(wocCrateTextureLibrary.map { Data($0.texture.rgba).hashValue })
-            var added = 0
-            for decoded in asset.textures where !decoded.rgba.isEmpty {
-                let hash = Data(decoded.rgba).hashValue
-                guard !existingHashes.contains(hash) else { continue }
-                existingHashes.insert(hash)
-                let texture = TextureAsset(id: UInt32(decoded.id), width: decoded.width, height: decoded.height, pixelFormat: .rawRGBA, rgba: decoded.rgba)
-                wocCrateTextureLibrary.append(TextureHubEntry(sourceLabel: "\(url.lastPathComponent) — texture #\(decoded.id)", texture: texture))
-                added += 1
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    var existingHashes = Set(self.wocCrateTextureLibrary.map { Data($0.texture.rgba).hashValue })
+                    var added = 0
+                    for decoded in asset.textures where !decoded.rgba.isEmpty {
+                        let hash = Data(decoded.rgba).hashValue
+                        guard !existingHashes.contains(hash) else { continue }
+                        existingHashes.insert(hash)
+                        let texture = TextureAsset(id: UInt32(decoded.id), width: decoded.width, height: decoded.height, pixelFormat: .rawRGBA, rgba: decoded.rgba)
+                        self.wocCrateTextureLibrary.append(TextureHubEntry(sourceLabel: "\(url.lastPathComponent) — texture #\(decoded.id)", texture: texture))
+                        added += 1
+                    }
+                    self.statusMessage = "Loaded \(added) new real WoC texture(s) from \(url.lastPathComponent) (\(self.wocCrateTextureLibrary.count) total in the library)."
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.lastError = "Couldn't load WoC textures from \(url.lastPathComponent): \(error.localizedDescription)"
+                }
             }
-            statusMessage = "Loaded \(added) new real WoC texture(s) from \(url.lastPathComponent) (\(wocCrateTextureLibrary.count) total in the library)."
-        } catch {
-            lastError = "Couldn't load WoC textures from \(url.lastPathComponent): \(error.localizedDescription)"
         }
     }
     /// "Visual Levels Hub" — every decoded `SceneryData` record (one per
@@ -1058,6 +1102,36 @@ public final class WorkspaceViewModel: ObservableObject {
         }
     }
 
+    /// `ScanCache.load`'s `PropertyListDecoder().decode` on a previously
+    /// scanned archive's cached Models/Textures Hub metadata used to run
+    /// synchronously right here on MainActor, right after opening an
+    /// archive index — a real blocking risk on a large, already-scanned
+    /// archive (the payload is "the large flat float/byte arrays a decoded
+    /// mesh/texture is mostly made of", per `ScanCachePayload`'s own doc
+    /// comment) on the single most common reopen path there is. Moved to a
+    /// background `Task`; `scanAllArchives()` only fires from inside the
+    /// same completion now, since whether a cache hit occurred is no
+    /// longer known synchronously.
+    private func applyScanCacheOrScan(bdURL: URL, fileDisplayName: String, entryCount: Int) {
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let cached = ScanCache.load(for: bdURL)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if let cached {
+                    self.modelsHub.append(contentsOf: cached.modelsHub)
+                    self.orphanedContent.append(contentsOf: cached.orphanedContent)
+                    self.texturesHub.append(contentsOf: cached.texturesHub)
+                    self.statusMessage = "Loaded \(fileDisplayName) from cache — \(cached.modelsHub.count) model(s), \(cached.texturesHub.count) texture(s) available instantly. Individual files still parse on selection; Scan Archive refreshes the cache."
+                } else {
+                    self.statusMessage = "Loaded \(fileDisplayName) — \(entryCount) entries. Scanning for models…"
+                    // Auto-scan immediately — manual "Scan Archive" clicks
+                    // shouldn't be a prerequisite for browsing/filtering to work.
+                    self.scanAllArchives()
+                }
+            }
+        }
+    }
+
     private func load(_ file: DetectedFile) {
         // "Visual Loading Feedback": a single directly-opened .RM2/.SM2 can
         // be a full level's worth of chunk data, same as one entry out of
@@ -1092,17 +1166,7 @@ public final class WorkspaceViewModel: ObservableObject {
                 archiveIndexByRootID[node.id] = index
                 rootNodes.append(node)
 
-                if let cached = ScanCache.load(for: index.bdURL) {
-                    modelsHub.append(contentsOf: cached.modelsHub)
-                    orphanedContent.append(contentsOf: cached.orphanedContent)
-                    texturesHub.append(contentsOf: cached.texturesHub)
-                    statusMessage = "Loaded \(file.url.lastPathComponent) from cache — \(cached.modelsHub.count) model(s), \(cached.texturesHub.count) texture(s) available instantly. Individual files still parse on selection; Scan Archive refreshes the cache."
-                } else {
-                    statusMessage = "Loaded \(file.url.lastPathComponent) — \(index.entries.count) entries. Scanning for models…"
-                    // Auto-scan immediately — manual "Scan Archive" clicks
-                    // shouldn't be a prerequisite for browsing/filtering to work.
-                    scanAllArchives()
-                }
+                applyScanCacheOrScan(bdURL: index.bdURL, fileDisplayName: file.url.lastPathComponent, entryCount: index.entries.count)
                 addRecentFile(file.url)
 
             case .levelResource, .sceneryResource:
