@@ -1609,6 +1609,21 @@ public final class WorkspaceViewModel: ObservableObject {
         }.map { (node: $0.node, path: $0.value) }
     }
 
+    /// Every real `GameObject` record in the same file — added for "Spawn
+    /// Points" (roadmap item 4a): `InstanceInspectorView` cross-references
+    /// a `PlacedInstance.objectID` against these to check whether it
+    /// resolves to `GameObjectInfo.ObjectTypeID.character`, the closest
+    /// real, citable signal this project has for "this Instance is a
+    /// playable-character placement" (see that view's own doc comment for
+    /// the full citation chain). Same `recordsInSameFile` shape as
+    /// `aiPositionRecords`/`aiPathRecords` above — a live walk, not cached.
+    public func gameObjectRecords(inSameFileAs levelNode: ChunkNode) -> [(node: ChunkNode, gameObject: GameObjectInfo)] {
+        recordsInSameFile(as: levelNode) { payload in
+            if case .gameObject(let gameObject) = payload { return gameObject }
+            return nil
+        }.map { (node: $0.node, gameObject: $0.value) }
+    }
+
     /// Shared tree walk behind `instanceRecords`/`triggerRecords`/
     /// `cameraRecords`/`soundEffectRecords`: every node in the same file as
     /// `levelNode` whose payload `extract` recognizes, paired with that

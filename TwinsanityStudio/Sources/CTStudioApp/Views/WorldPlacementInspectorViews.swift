@@ -191,10 +191,40 @@ struct PositionInspectorView: View {
 /// size. Two separate "Save" buttons reflect that split: the fast prefix
 /// patch for the common case (just moving something), and "Save Full
 /// Record…" when a list actually changed.
+/// "Spawn Points" (roadmap item 4a): there is no dedicated on-disk spawn
+/// record anywhere in this project's reference material — CrateModLoader's
+/// own direct-boot code (`TS_ChangeStartingChunk`/`TS_SwapStartCreditsSpawn`,
+/// see `ExecutablePatcher`) only ever patches *which level/chunk* loads at
+/// boot, never a literal player XYZ; it boots straight into whatever the
+/// chosen level's own data already places. The real, citable signal this
+/// project has for "where does the player start in this level" is
+/// `PlacedInstance.objectID` resolving (via `GameObjectRecords`) to a
+/// `GameObjectInfo` whose `resolvedObjectType == .character` — Object Type
+/// raw value `0`, ported from the reference tool's own `ObjectEditor.cs`
+/// (`comboBoxObjectType`'s first entry) *and* independently corroborated by
+/// `twinsanity-reversed`'s own `GameObjectBitfieldStructure.txt`, which
+/// labels that exact same raw value "Type 0 max props: // Playable
+/// character". `isSpawnPointCandidate` below is exactly that check — no new
+/// data model needed, since `PlacedInstance.position` (already parsed,
+/// already writable via this same view's "Save Edited Copy…") *is* the
+/// spawn position once this Instance is confirmed to be that one.
+///
+/// Deliberately a "candidate", not a guaranteed single answer: a level can
+/// have more than one `character`-typed Instance (cutscene stand-ins, extra
+/// playable characters in co-op levels), and this project has no further
+/// on-disk signal narrowing that down — presenting every match rather than
+/// picking one is the honest option here.
 struct InstanceInspectorView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     let node: ChunkNode
     let instance: PlacedInstance
+
+    /// See this view's own doc comment for the full citation chain.
+    private var isSpawnPointCandidate: Bool {
+        workspace.gameObjectRecords(inSameFileAs: node)
+            .first(where: { $0.gameObject.id == UInt32(instance.objectID) })?
+            .gameObject.resolvedObjectType == .character
+    }
 
     @State private var x: String = ""
     @State private var y: String = ""
@@ -234,6 +264,14 @@ struct InstanceInspectorView: View {
                     )))
                 }
                 Section("Identity") {
+                    if isSpawnPointCandidate {
+                        Label("Spawn Point Candidate (Playable Character)", systemImage: "figure.walk.circle.fill")
+                            .font(.caption.bold())
+                            .foregroundStyle(Color.accentColor)
+                        Text("This Instance's Object ID resolves to GameObject Type 0 (\"Playable character\", per the reference tool's own ObjectEditor.cs and independently corroborated by twinsanity-reversed's GameObjectBitfieldStructure.txt) — the best real signal this project has for where the player starts. A level can have more than one; this isn't a guaranteed single answer.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                     LabeledContent("Object ID") { TextField("", text: $objectIDText).textFieldStyle(.roundedBorder) }
                     LabeledContent("Script ID") { TextField("-1 = none", text: $scriptIDText).textFieldStyle(.roundedBorder) }
                     LabeledContent("Ref List") { TextField("-1 = none", text: $refListText).textFieldStyle(.roundedBorder) }
