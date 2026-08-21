@@ -101,8 +101,28 @@ final class DiscImageSidebarMergeTests: XCTestCase {
         nodes.first { $0.displayName == name }
     }
 
+    /// `mountDiscImage` moved its read + directory-walk onto a background
+    /// `Task.detached` (see that function's own doc comment) so it never
+    /// blocks the main thread on a slow/large disc image -- real, correct
+    /// behavior, but it means `rootNodes` is no longer populated by the
+    /// time `mountDiscImage` itself returns. Every test below used to
+    /// assert synchronously right after calling it; this polls until the
+    /// background work actually lands (or fails loudly on a real timeout)
+    /// instead of racing it.
     @MainActor
-    func testMountDiscImageAddsRealTreeToRootNodesNotASeparateSheet() throws {
+    private func waitForRootNodes(_ workspace: WorkspaceViewModel, timeout: TimeInterval = 5) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while workspace.rootNodes.isEmpty {
+            guard Date() < deadline else {
+                XCTFail("Timed out waiting for mountDiscImage's background Task to populate rootNodes")
+                return
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
+    @MainActor
+    func testMountDiscImageAddsRealTreeToRootNodesNotASeparateSheet() async throws {
         let isoURL = try buildSyntheticISOFile()
         defer { try? FileManager.default.removeItem(at: isoURL) }
 
@@ -110,6 +130,7 @@ final class DiscImageSidebarMergeTests: XCTestCase {
         XCTAssertEqual(workspace.rootNodes.count, 0)
 
         workspace.mountDiscImage(url: isoURL)
+        try await waitForRootNodes(workspace)
 
         XCTAssertNil(workspace.lastError, "mounting a real, valid synthetic ISO should not report an error")
         XCTAssertEqual(workspace.rootNodes.count, 1, "the mounted disc should be a real top-level sidebar entry, not a separate sheet")
@@ -139,13 +160,14 @@ final class DiscImageSidebarMergeTests: XCTestCase {
     /// it. This pins `filteredRootNodes` specifically, not just
     /// `rootNodes`, so a regression here fails loudly again.
     @MainActor
-    func testMountedDiscFilesSurviveDefaultRawContentFiltering() throws {
+    func testMountedDiscFilesSurviveDefaultRawContentFiltering() async throws {
         let isoURL = try buildSyntheticISOFile()
         defer { try? FileManager.default.removeItem(at: isoURL) }
 
         let workspace = WorkspaceViewModel()
         XCTAssertFalse(workspace.showRawFiles, "this test only means anything under the default filtering state")
         workspace.mountDiscImage(url: isoURL)
+        try await waitForRootNodes(workspace)
 
         XCTAssertEqual(workspace.filteredRootNodes.count, 1, "the mounted disc must still be visible under default 'Smart File Filtering', not just present in the unfiltered rootNodes")
         let discRoot = try XCTUnwrap(workspace.filteredRootNodes.first)
@@ -163,12 +185,13 @@ final class DiscImageSidebarMergeTests: XCTestCase {
     /// crash or a stuck `isLoading`, rather than asserting on parse
     /// success this fixture was never meant to produce.
     @MainActor
-    func testSelectingDiscFileLeafExtractsWithoutCrashing() throws {
+    func testSelectingDiscFileLeafExtractsWithoutCrashing() async throws {
         let isoURL = try buildSyntheticISOFile()
         defer { try? FileManager.default.removeItem(at: isoURL) }
 
         let workspace = WorkspaceViewModel()
         workspace.mountDiscImage(url: isoURL)
+        try await waitForRootNodes(workspace)
         let discRoot = try XCTUnwrap(workspace.rootNodes.first)
         let crtNode = try XCTUnwrap(findByName("CRATE.CRT", in: discRoot.children))
 
@@ -176,7 +199,7 @@ final class DiscImageSidebarMergeTests: XCTestCase {
 
         let expectation = expectation(description: "select's deferred dispatch runs")
         DispatchQueue.main.async { expectation.fulfill() }
-        wait(for: [expectation], timeout: 5)
+        await fulfillment(of: [expectation], timeout: 5)
 
         XCTAssertEqual(workspace.selectedNode?.id, crtNode.id, "the disc node itself should still become selectedNode")
     }
@@ -259,7 +282,7 @@ final class DiscImageSidebarMergeTests: XCTestCase {
     /// confirms the sibling `.BD` really is reachable afterward — not just
     /// that the index parsed.
     @MainActor
-    func testSelectingDiscMountedArchiveIndexAlsoExtractsItsRealDataSibling() throws {
+    func testSelectingDiscMountedArchiveIndexAlsoExtractsItsRealDataSibling() async throws {
         let entryContent = Array("REAL-ENTRY-BYTES".utf8)
         let (bhBytes, bdBytes) = buildArchivePairBytes(entryName: "ENTRY1", entryContent: entryContent)
         let isoURL = try buildSyntheticISOWithArchivePair(bhBytes: bhBytes, bdBytes: bdBytes)
@@ -267,6 +290,7 @@ final class DiscImageSidebarMergeTests: XCTestCase {
 
         let workspace = WorkspaceViewModel()
         workspace.mountDiscImage(url: isoURL)
+        try await waitForRootNodes(workspace)
         let discRoot = try XCTUnwrap(workspace.rootNodes.first)
         let bhNode = try XCTUnwrap(findByName("TEST.BH", in: discRoot.children))
 
@@ -274,7 +298,7 @@ final class DiscImageSidebarMergeTests: XCTestCase {
 
         let expectation = expectation(description: "select's deferred archive-open work runs")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { expectation.fulfill() }
-        wait(for: [expectation], timeout: 5)
+        await fulfillment(of: [expectation], timeout: 5)
 
         XCTAssertNil(workspace.lastError, "the sibling .BD must be reachable now, not just the .BH index — got: \(workspace.lastError ?? "")")
 
