@@ -41,6 +41,7 @@ struct InspectorView: View {
                 HSplitView {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
+                        ExperimentalFieldsWarningView()
                         HStack {
                             header(for: node)
                             Spacer()

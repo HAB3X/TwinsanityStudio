@@ -211,6 +211,7 @@ struct ModelViewerWindow: View {
                 componentVisibilitySection
                 Divider()
                 if asset.skeleton != nil {
+                    ExperimentalFieldsWarningView()
                     skeletonSection
                     Divider()
                 }

@@ -1186,6 +1186,7 @@ struct LevelViewerWindow: View {
     private func selectedObjectInspector(node: ChunkNode) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Selected Object").font(.headline)
+            ExperimentalFieldsWarningView()
             selectedObjectIdentityHeader(node: node)
             switch node.payload {
             case .instance(let instance):
