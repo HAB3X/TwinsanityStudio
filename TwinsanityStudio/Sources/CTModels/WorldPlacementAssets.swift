@@ -189,6 +189,13 @@ public struct TriggerVolume: Sendable, Identifiable {
     public var position: SIMD4<Float>
     public var size: SIMD4<Float>
     public var instanceIDs: [UInt16]
+    /// The real `int32` immediately after `instanceIDs`' own duplicated
+    /// count (`Trigger.SectionHead` in the reference — same byte layout
+    /// as `PlacedInstance.someNum1`/`2`/`3`, genuinely independent, saved
+    /// data rather than derived from the list it sits next to). Default
+    /// matches the reference's own `= 10` field initializer and
+    /// `WorldPlacementWriter.writeNewTrigger`'s hardcoded default.
+    public var sectionHead: Int32
     public var arg1: UInt16
     public var arg2: UInt16
     public var arg3: UInt16
@@ -212,6 +219,7 @@ public struct TriggerVolume: Sendable, Identifiable {
         position: SIMD4<Float>,
         size: SIMD4<Float>,
         instanceIDs: [UInt16],
+        sectionHead: Int32 = 10,
         arg1: UInt16,
         arg2: UInt16,
         arg3: UInt16,
@@ -226,6 +234,7 @@ public struct TriggerVolume: Sendable, Identifiable {
         self.position = position
         self.size = size
         self.instanceIDs = instanceIDs
+        self.sectionHead = sectionHead
         self.arg1 = arg1
         self.arg2 = arg2
         self.arg3 = arg3

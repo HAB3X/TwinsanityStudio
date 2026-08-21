@@ -346,12 +346,31 @@ final class WorldPlacementParserTests: XCTestCase {
         XCTAssertEqual(trigger.position, SIMD4<Float>(5, 6, 7, 1))
         XCTAssertEqual(trigger.size, SIMD4<Float>(2, 2, 2, 1))
         XCTAssertTrue(trigger.instanceIDs.isEmpty)
+        XCTAssertEqual(trigger.sectionHead, 10)
         XCTAssertEqual(trigger.arg1, 1)
         XCTAssertEqual(trigger.arg2, 2)
         XCTAssertEqual(trigger.arg3, 3)
         XCTAssertEqual(trigger.arg4, 4)
         XCTAssertEqual(trigger.rotationAngleDegrees, 0, accuracy: 0.01)
         XCTAssertEqual(cursor.position, w.count)
+    }
+
+    /// `Trigger.SectionHead` is real, independently-loaded data (same role
+    /// as `Instance.SomeNum1/2/3`) — this proves the parser captures its
+    /// actual on-disk value rather than silently discarding it in favor of
+    /// the `= 10` default every other fixture here happens to use.
+    func testParseTriggerCapturesRealSectionHeadValue() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(50); w.writeUInt32(1); w.writeFloat32(0.3)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(5); w.writeFloat32(6); w.writeFloat32(7); w.writeFloat32(1)
+        w.writeFloat32(2); w.writeFloat32(2); w.writeFloat32(2); w.writeFloat32(1)
+        w.writeInt32(0); w.writeInt32(0); w.writeUInt32(7) // dup count, count, SectionHead = 7 (not the usual 10)
+        w.writeUInt16(0); w.writeUInt16(0); w.writeUInt16(0); w.writeUInt16(0)
+
+        var cursor = BinaryCursor(data: w.data)
+        let trigger = try WorldPlacementParser.parseTrigger(&cursor, recordID: 9)
+        XCTAssertEqual(trigger.sectionHead, 7)
     }
 
     /// "Make Trigger/Camera inspectors writable": `writeTriggerOrCameraPrefix`'s
@@ -508,6 +527,7 @@ final class WorldPlacementParserTests: XCTestCase {
         let camera = try WorldPlacementParser.parseCamera(&cursor, recordID: 4, isDemo: false)
 
         XCTAssertEqual(camera.camHeader, 0xCAFE)
+        XCTAssertEqual(camera.sectionHead, 10)
         XCTAssertEqual(camera.unkShort, 7)
         XCTAssertEqual(camera.unkByte, 9)
         XCTAssertEqual(camera.cameraType1, .none)
@@ -515,6 +535,30 @@ final class WorldPlacementParserTests: XCTestCase {
         XCTAssertNil(camera.subtype1)
         XCTAssertNil(camera.subtype2)
         XCTAssertEqual(cursor.position, w.count)
+    }
+
+    /// Same real-value capture as `testParseTriggerCapturesRealSectionHeadValue`,
+    /// for `Camera.SectionHead` — `Camera` shares `Trigger`'s identical
+    /// header shape, so this is the same field at the same relative offset.
+    func testParseCameraCapturesRealSectionHeadValue() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(0); w.writeUInt32(1); w.writeFloat32(0.3)
+        for _ in 0..<3 { w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1) }
+        w.writeInt32(0); w.writeInt32(0); w.writeUInt32(42) // SectionHead = 42
+        w.writeUInt32(0); w.writeUInt16(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeFloat32(0); w.writeFloat32(0)
+        w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0); w.writeUInt32(0)
+        w.writeInt32(0); w.writeInt32(0)
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0)
+        w.writeUInt32(0); w.writeInt32(0); w.writeUInt32(0); w.writeFloat32(0)
+        w.writeUInt32(3); w.writeUInt32(3)
+        w.writeUInt8(0)
+
+        var cursor = BinaryCursor(data: w.data)
+        let camera = try WorldPlacementParser.parseCamera(&cursor, recordID: 4, isDemo: false)
+        XCTAssertEqual(camera.sectionHead, 42)
     }
 
     /// "Parity Phase F": `PlacedCamera.fixedFieldsFileOffset` +

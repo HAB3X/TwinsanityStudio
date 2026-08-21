@@ -94,11 +94,12 @@ public enum WorldPlacementParser {
         let position = try cursor.readVector4()
         let size = try cursor.readVector4()
 
-        // `Trigger.SectionHead` (the same real, independent third field
-        // `Instance.SomeNum1/2/3` is — see that property's own doc
-        // comment) isn't captured here: nothing writes a Trigger's
-        // `instanceIDs` list back yet, so there's no round-trip to protect.
-        let (instanceIDs, _) = try readCountedUInt16List(&cursor)
+        // `Trigger.SectionHead` — the same real, independent third field
+        // `Instance.SomeNum1/2/3` is (see that property's own doc comment) —
+        // captured into `TriggerVolume.sectionHead` so a full round-trip
+        // (once one exists) has real saved data to write back rather than
+        // a rediscovered default.
+        let (instanceIDs, sectionHead) = try readCountedUInt16List(&cursor)
 
         let argsFileOffset = cursor.position
         let arg1 = try cursor.readUInt16()
@@ -115,6 +116,7 @@ public enum WorldPlacementParser {
             position: position,
             size: size,
             instanceIDs: instanceIDs,
+            sectionHead: sectionHead,
             arg1: arg1,
             arg2: arg2,
             arg3: arg3,
@@ -134,9 +136,9 @@ public enum WorldPlacementParser {
         let rotationQuaternion = try cursor.readVector4()
         let position = try cursor.readVector4()
         let size = try cursor.readVector4()
-        // Same "not captured, nothing writes it back yet" reasoning as
-        // `parseTrigger`'s own `instanceIDs` above.
-        let (instanceIDs, _) = try readCountedUInt16List(&cursor)
+        // Same `SectionHead` capture as `parseTrigger`'s own `instanceIDs`
+        // above — `Camera` shares `Trigger`'s identical header shape.
+        let (instanceIDs, sectionHead) = try readCountedUInt16List(&cursor)
 
         let fixedFieldsFileOffset = cursor.position
         let camHeader = try cursor.readUInt32()
@@ -176,6 +178,7 @@ public enum WorldPlacementParser {
             position: position,
             size: size,
             instanceIDs: instanceIDs,
+            sectionHead: sectionHead,
             camHeader: camHeader,
             unkShort: unkShort,
             unkFloat1: unkFloat1,

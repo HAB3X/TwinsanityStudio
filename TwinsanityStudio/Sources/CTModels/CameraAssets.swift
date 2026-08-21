@@ -307,6 +307,14 @@ public struct PlacedCamera: Sendable, Identifiable {
     public var position: SIMD4<Float>
     public var size: SIMD4<Float>
     public var instanceIDs: [UInt16]
+    /// The real `int32` immediately after `instanceIDs`' own duplicated
+    /// count (`Camera.SectionHead` in the reference — same byte layout
+    /// and role as `TriggerVolume.sectionHead`, since `Camera` shares
+    /// `Trigger`'s identical `Header`/`Enabled`/`Coords`/`Instances`
+    /// header shape). Default matches the reference's own `= 10` field
+    /// initializer and `WorldPlacementWriter.writeNewCamera`'s hardcoded
+    /// default.
+    public var sectionHead: Int32
 
     public var camHeader: UInt32
     /// `nil` when parsed from a `.cameraDemo` record — the Demo layout
@@ -361,6 +369,7 @@ public struct PlacedCamera: Sendable, Identifiable {
         position: SIMD4<Float>,
         size: SIMD4<Float>,
         instanceIDs: [UInt16],
+        sectionHead: Int32 = 10,
         camHeader: UInt32,
         unkShort: UInt16?,
         unkFloat1: Float,
@@ -397,6 +406,7 @@ public struct PlacedCamera: Sendable, Identifiable {
         self.position = position
         self.size = size
         self.instanceIDs = instanceIDs
+        self.sectionHead = sectionHead
         self.camHeader = camHeader
         self.unkShort = unkShort
         self.unkFloat1 = unkFloat1
