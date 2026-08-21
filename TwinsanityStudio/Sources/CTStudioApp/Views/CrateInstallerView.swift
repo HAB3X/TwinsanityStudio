@@ -38,6 +38,18 @@ struct CrateInstallerView: View {
     @State private var errorMessage: String?
     @State private var isInstalling = false
 
+    /// "Recent Crates" -- same shape as `WorkspaceViewModel`'s own Recent
+    /// Files list (path strings in `UserDefaults`, most recent first,
+    /// deduplicated), scoped locally to this view rather than threaded
+    /// through `WorkspaceViewModel` since `CrateInstallerView` is already
+    /// independent of it, same as `ArchiveRepackagerView`/
+    /// `ModCrateInspectorView`. Speeds up the export -> test -> re-export
+    /// loop this tool exists for: re-opening the same crate after a fresh
+    /// export shouldn't need a file panel every time.
+    @State private var recentCrateURLs: [URL] = []
+    private static let recentCratesDefaultsKey = "TwinsanityStudio.RecentCrateURLs"
+    private static let maxRecentCrates = 8
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -51,6 +63,7 @@ struct CrateInstallerView: View {
             footer
         }
         .frame(minWidth: 720, minHeight: 480)
+        .onAppear { loadRecentCrates() }
     }
 
     private var header: some View {
@@ -91,6 +104,22 @@ struct CrateInstallerView: View {
                 Text("Choose a .crate file exported from the Cross-Engine Texture Variant preview.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                if !recentCrateURLs.isEmpty {
+                    Text("Recent").font(.caption).foregroundStyle(.secondary).padding(.top, 6)
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(recentCrateURLs, id: \.path) { url in
+                            Button {
+                                openCrate(at: url)
+                            } label: {
+                                Text(url.lastPathComponent)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.tint)
+                        }
+                    }
+                }
             }
         }
         .padding()
@@ -156,6 +185,10 @@ struct CrateInstallerView: View {
         panel.allowedContentTypes = [UTType(filenameExtension: "crate") ?? .zip, .zip]
         panel.message = "Choose a .crate mod package to install."
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        openCrate(at: url)
+    }
+
+    private func openCrate(at url: URL) {
         do {
             let loadedManifest = try CrateArchiveManager.readManifest(from: url)
             crateURL = url
@@ -163,9 +196,22 @@ struct CrateInstallerView: View {
             declaredTextureIDs = CrateTextureOverrideInstaller.declaredTextureOverrideIDs(in: loadedManifest)
             errorMessage = nil
             statusMessage = ""
+            addRecentCrate(url)
         } catch {
             errorMessage = "Couldn't read \(url.lastPathComponent): \(error)"
         }
+    }
+
+    private func loadRecentCrates() {
+        let paths = UserDefaults.standard.stringArray(forKey: Self.recentCratesDefaultsKey) ?? []
+        recentCrateURLs = paths.map { URL(fileURLWithPath: $0) }.filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    private func addRecentCrate(_ url: URL) {
+        var urls = recentCrateURLs.filter { $0.path != url.path }
+        urls.insert(url, at: 0)
+        recentCrateURLs = Array(urls.prefix(Self.maxRecentCrates))
+        UserDefaults.standard.set(recentCrateURLs.map(\.path), forKey: Self.recentCratesDefaultsKey)
     }
 
     private func presentOpenArchivePanel() {
