@@ -147,9 +147,13 @@ public enum ISO9660Writer {
 /// every entry's name/parent-chain/LBA against the same directories'
 /// own, separately-verified directory records — not just that the two
 /// tables agree with each other, but that they agree with the actual disc
-/// layout. Whether a disc built this way actually **boots** on real PS2
-/// hardware or in an emulator has not been tested — that's the one thing
-/// this project has never had access to verify, for any writer.
+/// layout. A disc built this way has been verified to actually **boot** in
+/// a real PCSX2 build (`ImageMakerBootVerificationTests` — real staged
+/// retail files, real PCSX2 process, asserting on PCSX2's own log for a
+/// correctly-resolved boot path, the real retail boot ELF's CRC, IOP
+/// module registration, and accumulated play time). Real PS2 hardware is
+/// still unverified — that's the one thing this project has never had
+/// access to.
 public enum ISO9660ImageBuilder {
     private static let sectorSize = 2048
 
