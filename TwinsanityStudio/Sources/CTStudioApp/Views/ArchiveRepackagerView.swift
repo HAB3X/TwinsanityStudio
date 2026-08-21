@@ -24,7 +24,9 @@ struct ArchiveRepackagerView: View {
     @State private var statusMessage = ""
     @State private var errorMessage: String?
     @State private var isRepackaging = false
+    @State private var isExtracting = false
     @State private var searchText = ""
+    @State private var selectedNames: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -59,6 +61,11 @@ struct ArchiveRepackagerView: View {
                     TextField("Search entries…", text: $searchText)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 220)
+                    Spacer()
+                    Button("Extract Selected…") { extractSelected() }
+                        .disabled(selectedNames.isEmpty || isExtracting)
+                    Button(isExtracting ? "Extracting…" : "Extract All…") { extractAll() }
+                        .disabled(isExtracting)
                 }
             }
         }
@@ -67,7 +74,7 @@ struct ArchiveRepackagerView: View {
 
     private func entryList(index: ArchiveIndex) -> some View {
         let filtered = searchText.isEmpty ? index.entries : index.entries.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
-        return List(filtered) { entry in
+        return List(filtered, selection: $selectedNames) { entry in
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(entry.name).font(.callout.monospaced())
@@ -88,6 +95,7 @@ struct ArchiveRepackagerView: View {
                 }
             }
             .padding(.vertical, 2)
+            .tag(entry.name)
         }
     }
 
@@ -126,6 +134,60 @@ struct ArchiveRepackagerView: View {
             statusMessage = "Loaded \(index?.entries.count ?? 0) entries from \(url.lastPathComponent)."
         } catch {
             errorMessage = "Couldn't read \(url.lastPathComponent): \(error)"
+        }
+    }
+
+    private func extractAll() {
+        guard let index else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a folder to extract every entry of \(index.bhURL.deletingPathExtension().lastPathComponent) into — subfolder structure embedded in entry names is recreated."
+        panel.prompt = "Extract"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        isExtracting = true
+        errorMessage = nil
+        Task {
+            do {
+                let count = index.entries.count
+                try await Task.detached(priority: .userInitiated) {
+                    try BDArchiveParser.extractAll(index: index, to: destination)
+                }.value
+                statusMessage = "Extracted \(count) entries to \(destination.lastPathComponent)."
+                isExtracting = false
+            } catch {
+                errorMessage = "Extract All failed: \(error)"
+                isExtracting = false
+            }
+        }
+    }
+
+    private func extractSelected() {
+        guard let index, !selectedNames.isEmpty else { return }
+        let names = selectedNames
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a folder to extract \(names.count) selected entr\(names.count == 1 ? "y" : "ies") into."
+        panel.prompt = "Extract"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        isExtracting = true
+        errorMessage = nil
+        Task {
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try BDArchiveParser.extractSelected(index: index, entryNames: names, to: destination)
+                }.value
+                statusMessage = "Extracted \(names.count) selected entr\(names.count == 1 ? "y" : "ies") to \(destination.lastPathComponent)."
+                isExtracting = false
+            } catch {
+                errorMessage = "Extract Selected failed: \(error)"
+                isExtracting = false
+            }
         }
     }
 

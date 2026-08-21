@@ -121,6 +121,7 @@ struct SoundEffectInspectorView: View {
 
             Form {
                 LabeledContent("Sample Rate", value: "\(sound.sampleRateHz) Hz")
+                LabeledContent("Channels", value: sound.rightChannelSamples != nil ? "Stereo" : "Mono")
                 LabeledContent("Samples", value: "\(sound.pcmSamples.count)")
                 LabeledContent("Duration", value: String(format: "%.2fs", sound.durationSeconds))
             }
@@ -234,8 +235,8 @@ struct SoundEffectInspectorView: View {
             workspace.lastError = "This sound decoded to zero samples — nothing to play."
             return
         }
-        let wav = WAVEncoder.encode(pcm: sound.pcmSamples, sampleRateHz: sound.sampleRateHz)
-        print("DIAG: Audio selected \"\(displayName)\" — \(sound.pcmSamples.count) samples @ \(sound.sampleRateHz) Hz, \(wav.count) byte WAV container")
+        let wav = wavData()
+        print("DIAG: Audio selected \"\(displayName)\" — \(sound.pcmSamples.count) samples @ \(sound.sampleRateHz) Hz\(sound.rightChannelSamples != nil ? " (stereo)" : ""), \(wav.count) byte WAV container")
         let newPlayer: AVAudioPlayer
         do {
             // `try?` here used to swallow the real reason construction
@@ -285,9 +286,20 @@ struct SoundEffectInspectorView: View {
         loopMonitorTimer = nil
     }
 
+    /// `WAVEncoder.encodeStereo` when `rightChannelSamples` is present
+    /// (a decoded `.stereo` sound-bank entry), the plain mono `.encode`
+    /// otherwise — every per-level `SoundEffect` record is mono-only, so
+    /// this only ever branches for bank entries.
+    private func wavData() -> Data {
+        if let right = sound.rightChannelSamples {
+            return WAVEncoder.encodeStereo(left: sound.pcmSamples, right: right, sampleRateHz: sound.sampleRateHz)
+        }
+        return WAVEncoder.encode(pcm: sound.pcmSamples, sampleRateHz: sound.sampleRateHz)
+    }
+
     private func exportWAV() {
         guard let directory = ExportPanel.chooseFolder(message: "Choose a folder to export this sound as a .wav file into.") else { return }
-        let wav = WAVEncoder.encode(pcm: sound.pcmSamples, sampleRateHz: sound.sampleRateHz)
+        let wav = wavData()
         let name = displayName.replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "#", with: "")
         let url = directory.appendingPathComponent(name).appendingPathExtension("wav")
         do {

@@ -6,10 +6,11 @@ import CTModels
 /// inverse of `LodModelParser.parse`, ported from `Twinsanity/Items/
 /// Graphics/LodModel.cs`'s `Save` (mirrors `Editors/LodEditor.cs` in the
 /// reference tool). Variable-length: the emitted byte count is always
-/// `21 + 4 * lodModelIDs.count`, which `WorkspaceViewModel.patchedFileBytes
-/// (replacing:with:)` accepts because the replacement range is the
-/// decoded chunk's own byte range and the writer always fits inside it
-/// (the parser reserved exactly that many `lodModelIDs`).
+/// `21 + 4 * lodModelIDs.count`, which can legitimately differ from the
+/// decoded record's original size once `LodModelEditorSheet` lets
+/// `lodModelIDs` grow/shrink — use `WorkspaceViewModel.patchedFileBytes
+/// (replacingWholeRecord:with:)` for that, not the fixed-size
+/// `patchedFileBytes(replacing:with:)`.
 ///
 /// `modelsAmount` (a byte on disk, never a UInt32) is always derived from
 /// `lodModelIDs.count` here, mirroring the reference reader's own

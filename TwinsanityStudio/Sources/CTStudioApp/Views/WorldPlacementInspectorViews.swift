@@ -41,6 +41,14 @@ struct PositionInspectorView: View {
             .onChange(of: node.id) { _, _ in loadFields() }
 
             HStack {
+                Button("Copy Viewer Pos") { copyViewerPosition() }
+                    .disabled(workspace.currentViewerCameraPositionProvider?() == nil)
+                    .help("Fills X/Y/Z from the currently open Level Viewer's camera — same as the reference editor's own \"Copy Viewer Pos.\"")
+                Spacer()
+            }
+            .padding(.horizontal)
+
+            HStack {
                 Button("Save Edited Copy…") { save() }
                     .disabled(editedPoint == nil || !workspace.canSaveEdits(for: node))
                 Button("Export as Mod Crate…") { isCrateSheetPresented = true }
@@ -48,6 +56,23 @@ struct PositionInspectorView: View {
                 Spacer()
             }
             .padding(.horizontal)
+
+            Divider().padding(.vertical, 4)
+
+            HStack {
+                Button("Add Position…") { addPosition() }
+                    .disabled(!workspace.canSaveEdits(for: node) || workspace.positionCollectionNode(inSameFileAs: node) == nil)
+                Button("Duplicate…") { duplicatePosition() }
+                    .disabled(!workspace.canSaveEdits(for: node))
+                Button("Delete…", role: .destructive) { deletePosition() }
+                    .disabled(!workspace.canSaveEdits(for: node))
+                Spacer()
+            }
+            .padding(.horizontal)
+            Text("Add/Duplicate/Delete are real structural edits (a new or removed record, not just a field patch) — each immediately prompts for where to save the edited copy, same as every other write path in this app.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
 
             if !workspace.canSaveEdits(for: node) {
                 Text("Editing only saves for a standalone-opened .RM2/.SM2 file — this record's file is archive-packed, which this build doesn't have a write path for yet.")
@@ -99,7 +124,50 @@ struct PositionInspectorView: View {
         let edited = PositionMarker(id: position.id, point: point)
         let encoded = WorldPlacementWriter.writePosition(edited)
         guard let patchedBytes = workspace.patchedFileBytes(replacing: node, with: encoded) else { return }
-        guard let url = ExportPanel.chooseSaveLocation(suggestedName: "\(node.displayName)_edited.rm2", message: "Save the edited copy of this file. The original file on disk is not modified.") else { return }
+        saveAsCopy(patchedBytes, suffix: "edited")
+    }
+
+    /// Fills X/Y/Z (never W — that's a homogeneous-coordinate marker flag
+    /// on this record type, not part of "where the camera is") from
+    /// whichever Level Viewer is currently open, same "ask right now"
+    /// semantics as the reference editor's own button — see
+    /// `WorkspaceViewModel.currentViewerCameraPositionProvider`'s doc
+    /// comment.
+    private func copyViewerPosition() {
+        guard let eye = workspace.currentViewerCameraPositionProvider?() else { return }
+        x = String(eye.x)
+        y = String(eye.y)
+        z = String(eye.z)
+    }
+
+    /// A fresh record at the origin (`0,0,0,1`) — same default the
+    /// reference editor's own "Add" uses (`new Pos(0, 0, 0, 1)`), not a
+    /// copy of whatever's currently selected (that's "Duplicate"'s job).
+    private func addPosition() {
+        guard let patchedBytes = workspace.patchedFileBytes(insertingPosition: SIMD4<Float>(0, 0, 0, 1), inSameFileAs: node) else { return }
+        saveAsCopy(patchedBytes, suffix: "position_added")
+    }
+
+    /// Inserts a copy of *this* record (its currently-edited field values,
+    /// not necessarily what's still on disk) as a brand-new record with
+    /// its own fresh ID, offset `+1` on Y — same offset the reference
+    /// editor's own "Duplicate" applies, so the copy doesn't land exactly
+    /// on top of the original. The original record is untouched either
+    /// way.
+    private func duplicatePosition() {
+        guard let point = editedPoint else { return }
+        let offsetPoint = SIMD4<Float>(point.x, point.y + 1, point.z, point.w)
+        guard let patchedBytes = workspace.patchedFileBytes(insertingPosition: offsetPoint, inSameFileAs: node) else { return }
+        saveAsCopy(patchedBytes, suffix: "position_duplicated")
+    }
+
+    private func deletePosition() {
+        guard let patchedBytes = workspace.patchedFileBytes(removingPosition: node) else { return }
+        saveAsCopy(patchedBytes, suffix: "position_deleted")
+    }
+
+    private func saveAsCopy(_ patchedBytes: Data, suffix: String) {
+        guard let url = ExportPanel.chooseSaveLocation(suggestedName: "\(node.displayName)_\(suffix).rm2", message: "Save the edited copy of this file. The original file on disk is not modified.") else { return }
         Task {
             do {
                 try await workspace.writeDataAsync(patchedBytes, to: url)
@@ -111,13 +179,18 @@ struct PositionInspectorView: View {
     }
 }
 
-/// "Direct .RM2 Write-Back": position/rotation are editable and save
-/// through the same decode -> edit -> encode -> patch -> save-as-copy loop
-/// `PositionInspectorView` established — see `WorldPlacementWriter.
-/// writeInstanceTransform`'s doc comment for why only this leading
-/// transform prefix (not the whole variable-length `Instance` record) is
-/// writable. Everything else on the record (identity/child-reference
-/// fields) stays read-only, same as before.
+/// "Direct .RM2 Write-Back": position/rotation save through the fast,
+/// fixed-size transform-prefix patch `PositionInspectorView` established
+/// (`WorldPlacementWriter.writeInstanceTransform`) whenever only those
+/// change size-unchanged. Everything else on the record — the three child
+/// ID lists, `objectID`/`refList`/`scriptID`, and the three undocumented
+/// trailing lists — is *also* now writable, through
+/// `WorldPlacementWriter.writeInstance` (a full, arbitrary-field encoder)
+/// and `WorkspaceViewModel.patchedFileBytes(replacingWholeRecord:with:)`,
+/// since editing a list's length changes this record's total on-disk
+/// size. Two separate "Save" buttons reflect that split: the fast prefix
+/// patch for the common case (just moving something), and "Save Full
+/// Record…" when a list actually changed.
 struct InstanceInspectorView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     let node: ChunkNode
@@ -131,6 +204,17 @@ struct InstanceInspectorView: View {
     @State private var rotY: String = ""
     @State private var rotZ: String = ""
     @State private var isEditingFlags = false
+    @State private var objectIDText = ""
+    @State private var refListText = ""
+    @State private var scriptIDText = ""
+    @State private var childInstanceIDsText = ""
+    @State private var childPositionIDsText = ""
+    @State private var childPathIDsText = ""
+    @State private var unknownUInt32ListText = ""
+    @State private var unknownFloatListText = ""
+    @State private var unknownUInt32List2Text = ""
+    @State private var fullRecordError: String?
+    @State private var isSavingFullRecord = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -150,9 +234,9 @@ struct InstanceInspectorView: View {
                     )))
                 }
                 Section("Identity") {
-                    LabeledContent("Object ID", value: "\(instance.objectID)")
-                    LabeledContent("Script ID", value: instance.scriptID == -1 ? "None" : "\(instance.scriptID)")
-                    LabeledContent("Ref List", value: instance.refList == -1 ? "None" : "\(instance.refList)")
+                    LabeledContent("Object ID") { TextField("", text: $objectIDText).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Script ID") { TextField("-1 = none", text: $scriptIDText).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Ref List") { TextField("-1 = none", text: $refListText).textFieldStyle(.roundedBorder) }
                     LabeledContent("Flags") {
                         HStack {
                             Text("0x\(String(instance.flags, radix: 16))")
@@ -161,20 +245,19 @@ struct InstanceInspectorView: View {
                         }
                     }
                 }
-                if !instance.childInstanceIDs.isEmpty {
-                    Section("Child Instances (\(instance.childInstanceIDs.count))") {
-                        idList(instance.childInstanceIDs)
-                    }
+                Section("Child Instances") {
+                    idListField($childInstanceIDsText)
                 }
-                if !instance.childPositionIDs.isEmpty {
-                    Section("Referenced Positions (\(instance.childPositionIDs.count))") {
-                        idList(instance.childPositionIDs)
-                    }
+                Section("Referenced Positions") {
+                    idListField($childPositionIDsText)
                 }
-                if !instance.childPathIDs.isEmpty {
-                    Section("Referenced Paths (\(instance.childPathIDs.count))") {
-                        idList(instance.childPathIDs)
-                    }
+                Section("Referenced Paths") {
+                    idListField($childPathIDsText)
+                }
+                Section("Undocumented Lists (real data, no confirmed meaning)") {
+                    LabeledContent("UInt32 List") { TextField("comma-separated", text: $unknownUInt32ListText).textFieldStyle(.roundedBorder) }
+                    LabeledContent("Float List") { TextField("comma-separated", text: $unknownFloatListText).textFieldStyle(.roundedBorder) }
+                    LabeledContent("UInt32 List 2") { TextField("comma-separated", text: $unknownUInt32List2Text).textFieldStyle(.roundedBorder) }
                 }
             }
             .formStyle(.grouped)
@@ -194,7 +277,26 @@ struct InstanceInspectorView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal)
             } else {
-                Text("Saves an edited copy under a new name — the file you opened is never modified in place. Only position/rotation are writable; everything else on this record round-trips unchanged.")
+                Text("\"Save Edited Copy…\" is the fast, fixed-size patch for position/rotation only. Editing any list above changes this record's total size — use \"Save Full Record…\" below for those.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+            }
+
+            Divider().padding(.vertical, 4)
+            HStack {
+                Button(isSavingFullRecord ? "Saving…" : "Save Full Record…") { saveFullRecord() }
+                    .disabled(isSavingFullRecord || editedFullRecord == nil || !workspace.canSaveEdits(for: node))
+                Spacer()
+            }
+            .padding(.horizontal)
+            if let fullRecordError {
+                Text(fullRecordError)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal)
+            } else {
+                Text("Re-encodes and saves the *whole* record — every field above, including list lengths — as an edited copy.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal)
@@ -205,10 +307,9 @@ struct InstanceInspectorView: View {
         }
     }
 
-    private func idList(_ ids: [UInt16]) -> some View {
-        Text(ids.map { "#\($0)" }.joined(separator: ", "))
-            .font(.system(.body, design: .monospaced))
-            .foregroundStyle(.secondary)
+    private func idListField(_ text: Binding<String>) -> some View {
+        TextField("comma-separated IDs", text: text)
+            .textFieldStyle(.roundedBorder)
     }
 
     private func loadFields() {
@@ -219,6 +320,94 @@ struct InstanceInspectorView: View {
         rotX = String(format: "%.2f", instance.rotationDegrees.x)
         rotY = String(format: "%.2f", instance.rotationDegrees.y)
         rotZ = String(format: "%.2f", instance.rotationDegrees.z)
+        objectIDText = "\(instance.objectID)"
+        refListText = "\(instance.refList)"
+        scriptIDText = "\(instance.scriptID)"
+        childInstanceIDsText = instance.childInstanceIDs.map { "\($0)" }.joined(separator: ", ")
+        childPositionIDsText = instance.childPositionIDs.map { "\($0)" }.joined(separator: ", ")
+        childPathIDsText = instance.childPathIDs.map { "\($0)" }.joined(separator: ", ")
+        unknownUInt32ListText = instance.unknownUInt32List.map { "\($0)" }.joined(separator: ", ")
+        unknownFloatListText = instance.unknownFloatList.map { "\($0)" }.joined(separator: ", ")
+        unknownUInt32List2Text = instance.unknownUInt32List2.map { "\($0)" }.joined(separator: ", ")
+        fullRecordError = nil
+    }
+
+    /// Parses a comma/whitespace-separated list of `UInt16` IDs — empty
+    /// input decodes to an empty list, not a parse failure (a record with
+    /// no child references is entirely normal).
+    private static func parseUInt16List(_ text: String) -> [UInt16]? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return [] }
+        let parts = trimmed.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        let parsed = parts.map { UInt16($0) }
+        return parsed.allSatisfy { $0 != nil } ? parsed.compactMap { $0 } : nil
+    }
+
+    private static func parseUInt32List(_ text: String) -> [UInt32]? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return [] }
+        let parts = trimmed.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        let parsed = parts.map { UInt32($0) }
+        return parsed.allSatisfy { $0 != nil } ? parsed.compactMap { $0 } : nil
+    }
+
+    private static func parseFloatList(_ text: String) -> [Float]? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return [] }
+        let parts = trimmed.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        let parsed = parts.map { Float($0) }
+        return parsed.allSatisfy { $0 != nil } ? parsed.compactMap { $0 } : nil
+    }
+
+    /// Every field the "Save Full Record…" button writes — built fresh
+    /// from `instance` plus every staged text field, `nil` if anything
+    /// fails to parse. `someNum1`/`2`/`3` are always carried through
+    /// unedited from `instance` — no UI exposes them (the reference tool
+    /// itself has none either; see `PlacedInstance.someNum1`'s own doc
+    /// comment), just preserved so this save never corrupts them.
+    private var editedFullRecord: PlacedInstance? {
+        guard let objectID = UInt16(objectIDText.trimmingCharacters(in: .whitespaces)),
+              let refList = Int16(refListText.trimmingCharacters(in: .whitespaces)),
+              let scriptID = Int16(scriptIDText.trimmingCharacters(in: .whitespaces)),
+              let childInstanceIDs = Self.parseUInt16List(childInstanceIDsText),
+              let childPositionIDs = Self.parseUInt16List(childPositionIDsText),
+              let childPathIDs = Self.parseUInt16List(childPathIDsText),
+              let unknownUInt32List = Self.parseUInt32List(unknownUInt32ListText),
+              let unknownFloatList = Self.parseFloatList(unknownFloatListText),
+              let unknownUInt32List2 = Self.parseUInt32List(unknownUInt32List2Text)
+        else { return nil }
+        return PlacedInstance(
+            id: instance.id, position: instance.position, rotationRaw: instance.rotationRaw, comRotationRaw: instance.comRotationRaw,
+            childInstanceIDs: childInstanceIDs, childPositionIDs: childPositionIDs, childPathIDs: childPathIDs,
+            someNum1: instance.someNum1, someNum2: instance.someNum2, someNum3: instance.someNum3,
+            objectID: objectID, refList: refList, scriptID: scriptID, flags: instance.flags,
+            unknownUInt32List: unknownUInt32List, unknownFloatList: unknownFloatList, unknownUInt32List2: unknownUInt32List2
+        )
+    }
+
+    private func saveFullRecord() {
+        guard let edited = editedFullRecord else {
+            fullRecordError = "One or more fields don't parse — IDs must be whole numbers, lists comma-separated."
+            return
+        }
+        fullRecordError = nil
+        let encoded = WorldPlacementWriter.writeInstance(edited)
+        guard let patchedBytes = workspace.patchedFileBytes(replacingWholeRecord: node, with: encoded) else { return }
+        guard let url = ExportPanel.chooseSaveLocation(
+            suggestedName: "\(node.displayName)_edited.rm2",
+            message: "Save the edited copy of this file, with this Instance's full record changed. The original file on disk is not modified."
+        ) else { return }
+        isSavingFullRecord = true
+        Task {
+            do {
+                try await workspace.writeDataAsync(patchedBytes, to: url)
+                workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent) with this Instance's full record changed."
+                isSavingFullRecord = false
+            } catch {
+                workspace.lastError = "Save failed: \(error)"
+                isSavingFullRecord = false
+            }
+        }
     }
 
     private var editedTransform: (position: SIMD4<Float>, rotationRaw: SIMD3<UInt16>)? {
@@ -464,6 +653,14 @@ struct CameraInspectorView: View {
     /// dictionary keeps `loadFields`/`editedFixedFields` from repeating
     /// that shape 18 times over.
     @State private var fixedFieldTexts: [String: String] = [:]
+    /// `Coords1`/`Coords2` — real fields already written by
+    /// `WorldPlacementWriter.writeCameraFixedFields` (it's always taken
+    /// `camera.unkCoords1`/`unkCoords2` verbatim from whatever `PlacedCamera`
+    /// it's handed), so making these editable needed no new writer support
+    /// — only threading edited values through `editedFixedFields` instead
+    /// of always passing the original, unedited camera through.
+    @State private var coords1Texts: (x: String, y: String, z: String, w: String) = ("", "", "", "")
+    @State private var coords2Texts: (x: String, y: String, z: String, w: String) = ("", "", "", "")
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -522,11 +719,11 @@ struct CameraInspectorView: View {
                     fixedField("unkInt8", label: "Unk Int 8")
                     fixedField("unkUInt9", label: "Unk UInt 9")
                     fixedField("unkFloat8", label: "Unk Float 8")
-                    Text("These are the record's own fixed-size scalar fields, real and now writable — same \"never trusted from any prior stored value, but never invented either\" naming the reference tool itself uses for its `unk`-prefixed fields. `Coords 1`/`Coords 2` and everything from the camera type onward (subtype payloads) stay read-only: changing which `CameraKind` a slot uses would reshape the trailing variable-length payload, real, separate structural work.")
+                    Text("These are the record's own fixed-size scalar fields, real and now writable — same \"never trusted from any prior stored value, but never invented either\" naming the reference tool itself uses for its `unk`-prefixed fields. Everything from the camera type onward (subtype payloads) stays read-only: changing which `CameraKind` a slot uses would reshape the trailing variable-length payload, real, separate structural work.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                    LabeledContent("Coords 1 (read-only)", value: vectorString(camera.unkCoords1))
-                    LabeledContent("Coords 2 (read-only)", value: vectorString(camera.unkCoords2))
+                    coordsField("Coords 1", $coords1Texts)
+                    coordsField("Coords 2", $coords2Texts)
                 }
             }
             .formStyle(.grouped)
@@ -565,6 +762,17 @@ struct CameraInspectorView: View {
         }
     }
 
+    private func coordsField(_ label: String, _ texts: Binding<(x: String, y: String, z: String, w: String)>) -> some View {
+        LabeledContent(label) {
+            HStack {
+                TextField("x", text: texts.x).textFieldStyle(.roundedBorder)
+                TextField("y", text: texts.y).textFieldStyle(.roundedBorder)
+                TextField("z", text: texts.z).textFieldStyle(.roundedBorder)
+                TextField("w", text: texts.w).textFieldStyle(.roundedBorder)
+            }
+        }
+    }
+
     private func loadFields() {
         x = String(camera.position.x); y = String(camera.position.y); z = String(camera.position.z); w = String(camera.position.w)
         sx = String(camera.size.x); sy = String(camera.size.y); sz = String(camera.size.z)
@@ -591,6 +799,8 @@ struct CameraInspectorView: View {
             "unkUInt9": "\(camera.unkUInt9)",
             "unkFloat8": "\(camera.unkFloat8)"
         ]
+        coords1Texts = ("\(camera.unkCoords1.x)", "\(camera.unkCoords1.y)", "\(camera.unkCoords1.z)", "\(camera.unkCoords1.w)")
+        coords2Texts = ("\(camera.unkCoords2.x)", "\(camera.unkCoords2.y)", "\(camera.unkCoords2.z)", "\(camera.unkCoords2.w)")
     }
 
     private var editedPrefix: Data? {
@@ -627,9 +837,13 @@ struct CameraInspectorView: View {
               let unkUInt7 = UInt32(fixedFieldTexts["unkUInt7"] ?? ""),
               let unkInt8 = Int32(fixedFieldTexts["unkInt8"] ?? ""),
               let unkUInt9 = UInt32(fixedFieldTexts["unkUInt9"] ?? ""),
-              let unkFloat8 = Float(fixedFieldTexts["unkFloat8"] ?? "")
+              let unkFloat8 = Float(fixedFieldTexts["unkFloat8"] ?? ""),
+              let c1x = Float(coords1Texts.x), let c1y = Float(coords1Texts.y), let c1z = Float(coords1Texts.z), let c1w = Float(coords1Texts.w),
+              let c2x = Float(coords2Texts.x), let c2y = Float(coords2Texts.y), let c2z = Float(coords2Texts.z), let c2w = Float(coords2Texts.w)
         else { return nil }
         var edited = camera
+        edited.unkCoords1 = SIMD4(c1x, c1y, c1z, c1w)
+        edited.unkCoords2 = SIMD4(c2x, c2y, c2z, c2w)
         edited.camHeader = camHeader
         edited.unkFloat1 = unkFloat1
         edited.unkFloat2 = unkFloat2

@@ -75,4 +75,51 @@ public enum ADPCMDecoder {
         }
         return pcm
     }
+
+    /// Decodes dual-channel interleaved ADPCM into separate left/right
+    /// 16-bit PCM channels — ported field-for-field from the reference
+    /// tool's real, working `Twinsanity.ADPCM.ToPCMStereo` (distinct from,
+    /// and more complete than, the stale `MHWorker.cs`/`ADPCM_Demux` call
+    /// site that doesn't actually compile against the current `ADPCM`
+    /// class — `MHViewer.cs`, the tool's real current sound-bank viewer,
+    /// calls this exact function for every `Type == 1` stereo entry).
+    ///
+    /// Layout: `data` alternates in `interleaveBytes`-sized blocks between
+    /// a run of left-channel lines and a run of right-channel lines
+    /// (`[L block][R block][L block][R block]...`), each block holding
+    /// `interleaveBytes / 16` consecutive 16-byte ADPCM lines. Returns
+    /// `(left: [], right: [])` if `data`/`interleaveBytes` aren't valid
+    /// multiples of 32/16 respectively, rather than trapping — a bad
+    /// bank/entry shouldn't crash the whole browser.
+    ///
+    /// Termination is intentionally **not** the same bitwise check
+    /// `toPCMMono` uses: the reference's own `ToPCMStereo` tests each
+    /// line's flag byte for exact equality to `1`, not `flags & 1 != 0` —
+    /// a real, faithfully-preserved discrepancy between the two reference
+    /// functions (mono treats any odd flag value as loop-end; stereo only
+    /// treats exactly `1`), not a bug introduced by this port.
+    public static func toPCMStereo(_ data: Data, interleaveBytes: Int) -> (left: [Int16], right: [Int16]) {
+        let bytes = Array(data)
+        guard bytes.count % 32 == 0, interleaveBytes > 0, interleaveBytes % 16 == 0 else { return ([], []) }
+        let lineCount = bytes.count / 32
+        let interleaveLines = interleaveBytes / 16
+        var s0L = 0.0, s1L = 0.0
+        var s0R = 0.0, s1R = 0.0
+        var left: [Int16] = []
+        var right: [Int16] = []
+        var interleaveAdv = 0
+        for i in 0..<lineCount {
+            if i % interleaveLines == 0 { interleaveAdv += 1 }
+            let lStart = (i + interleaveLines * (interleaveAdv - 1)) * 16
+            let rStart = (i + interleaveLines * interleaveAdv) * 16
+            guard lStart >= 0, rStart >= 0, lStart + 16 <= bytes.count, rStart + 16 <= bytes.count else { break }
+            let lineL = bytes[lStart..<(lStart + 16)]
+            let lineR = bytes[rStart..<(rStart + 16)]
+            if lineL[lineL.startIndex + 1] == 7 || lineR[lineR.startIndex + 1] == 7 { break }
+            left.append(contentsOf: lineToPCM(lineL, s0: &s0L, s1: &s1L))
+            right.append(contentsOf: lineToPCM(lineR, s0: &s0R, s1: &s1R))
+            if lineL[lineL.startIndex + 1] == 1 || lineR[lineR.startIndex + 1] == 1 { break }
+        }
+        return (left, right)
+    }
 }

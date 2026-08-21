@@ -17,6 +17,7 @@ struct ExecutablePatcherView: View {
     @State private var revision: GameExecutableRevision?
     @State private var startingChunkPath = ""
     @State private var creditsChunkPath = ""
+    @State private var gameArchivePath = ""
     @State private var statusMessage = ""
     @State private var errorMessage: String?
 
@@ -61,6 +62,8 @@ struct ExecutablePatcherView: View {
             revisionPicker
             if let revision {
                 Divider()
+                gameArchiveSection(revision: revision)
+                Divider()
                 startingChunkSection(revision: revision)
                 Divider()
                 creditsChunkSection(revision: revision)
@@ -94,6 +97,31 @@ struct ExecutablePatcherView: View {
             }
             .labelsHidden()
             .frame(width: 320)
+        }
+    }
+
+    @ViewBuilder
+    private func gameArchiveSection(revision: GameExecutableRevision) -> some View {
+        if revision.archiveField != nil {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Game Archive").font(.headline)
+                Text("The boot archive filename (the .BD/.BH pair) the executable loads at startup — the reference editor's \"Patch Game Archive\" field.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    TextField("Archive name…", text: $gameArchivePath)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Apply") { applyGameArchive(revision: revision) }
+                        .disabled(gameArchivePath.isEmpty)
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Game Archive").font(.headline)
+                Text("No verified offset exists for \(revision.displayName) — the reference tool never shipped this field for Xbox builds.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -179,7 +207,18 @@ struct ExecutablePatcherView: View {
         guard let revision, let exeData else { return }
         startingChunkPath = ExecutablePatcher.readStartingChunkPath(revision: revision, from: exeData) ?? ""
         creditsChunkPath = ExecutablePatcher.readCreditsChunkPath(revision: revision, from: exeData) ?? ""
+        gameArchivePath = ExecutablePatcher.readGameArchivePath(revision: revision, from: exeData) ?? ""
         errorMessage = nil
+    }
+
+    private func applyGameArchive(revision: GameExecutableRevision) {
+        guard let exeData else { return }
+        do {
+            let patched = try ExecutablePatcher.writingGameArchivePath(gameArchivePath, revision: revision, into: exeData)
+            saveEditedCopy(patched, suffix: "game_archive")
+        } catch {
+            errorMessage = "\(error)"
+        }
     }
 
     private func applyStartingChunk(revision: GameExecutableRevision) {

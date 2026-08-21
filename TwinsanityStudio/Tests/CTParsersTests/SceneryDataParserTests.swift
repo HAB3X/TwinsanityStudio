@@ -101,4 +101,63 @@ final class SceneryDataParserTests: XCTestCase {
         XCTAssertEqual(placement.translation, SIMD3<Float>(10, 20, 30))
         XCTAssertEqual(cursor.position, w.count)
     }
+
+    /// Real data includes lights (`headerUnk1 & 0x20000`) — this must
+    /// decode every one of the 4 kinds' own extra fields, not just the
+    /// shared base shape.
+    func testParsesAllFourLightKindsWithTheirExtraFields() throws {
+        var w = BinaryWriter()
+        w.writeUInt32(0x20000) // headerUnk1: lights present
+        w.writeUInt32(0)
+        w.writeUInt32(0)
+        w.writeUInt32(0) // headerUnk3: no tree
+        w.writeUInt8(0)
+
+        w.writeBytes([UInt8](repeating: 0xAB, count: 0x400)) // HeaderBuffer
+        w.writeUInt32(4) // LightsNum (redundant total)
+        w.writeUInt32(1); w.writeUInt32(1); w.writeUInt32(1); w.writeUInt32(1)
+
+        func writeBaseLight(flags: UInt32, radius: Float) {
+            w.writeUInt32(flags)
+            w.writeFloat32(radius)
+            w.writeFloat32(1); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0) // color RGB + unk
+            w.writeFloat32(1); w.writeFloat32(2); w.writeFloat32(3); w.writeFloat32(1) // position
+            w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0) // vector1
+            w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0) // vector2
+        }
+        writeBaseLight(flags: 0xAAAAAAAA, radius: 5) // ambient
+        writeBaseLight(flags: 0xBBBBBBBB, radius: 6) // directional
+        w.writeFloat32(0); w.writeFloat32(1); w.writeFloat32(0); w.writeFloat32(0) // vector3
+        w.writeUInt16(42) // unkShort
+        writeBaseLight(flags: 0xCCCCCCCC, radius: 7) // point
+        w.writeUInt16(43) // unkShort
+        writeBaseLight(flags: 0xDDDDDDDD, radius: 8) // negative
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1); w.writeFloat32(0) // vector3
+        w.writeFloat32(9); w.writeFloat32(10) // unkFloat1/2
+        w.writeUInt32(11); w.writeUInt32(12) // unkUInt1/2
+        w.writeUInt16(13); w.writeUInt16(14) // unkUShort1/2
+
+        var cursor = BinaryCursor(data: w.data)
+        let scenery = try SceneryDataParser.parse(&cursor, recordID: 4)
+
+        XCTAssertEqual(cursor.position, w.count)
+        XCTAssertEqual(scenery.ambientLights.count, 1)
+        XCTAssertEqual(scenery.ambientLights[0].flagsRaw, 0xAAAAAAAA)
+        XCTAssertEqual(scenery.ambientLights[0].radius, 5)
+
+        XCTAssertEqual(scenery.directionalLights[0].vector3, SIMD4<Float>(0, 1, 0, 0))
+        XCTAssertEqual(scenery.directionalLights[0].unkShort, 42)
+
+        XCTAssertEqual(scenery.pointLights[0].unkShort, 43)
+
+        let neg = scenery.negativeLights[0]
+        XCTAssertEqual(neg.vector3, SIMD4<Float>(0, 0, 1, 0))
+        XCTAssertEqual(neg.unkFloat1, 9)
+        XCTAssertEqual(neg.unkFloat2, 10)
+        XCTAssertEqual(neg.unkUInt1, 11)
+        XCTAssertEqual(neg.unkUInt2, 12)
+        XCTAssertEqual(neg.unkUShort1, 13)
+        XCTAssertEqual(neg.unkUShort2, 14)
+        XCTAssertEqual(scenery.headerBuffer?.count, 0x400)
+    }
 }

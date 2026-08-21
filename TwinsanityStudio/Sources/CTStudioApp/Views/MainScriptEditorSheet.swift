@@ -14,12 +14,16 @@ import CTParsers
 /// "AgentLab Phase C": `ScriptCondition` (vTableIndex/parameter/notGate,
 /// packed into `unkInt1Raw`, plus interval/threshold/thresholdInverse) and
 /// `SupportType1.unkInt1Raw` (every `resolved*`/flag accessor it packs)
-/// are real, byte-exact patch targets now — see `ScriptCondition.
+/// are real, byte-exact patch targets — see `ScriptCondition.
 /// fileOffset`/`SupportType1.unkInt1RawFileOffset` and `ScriptWriter.
 /// writeCondition`/`writeSupportType1UnkInt1Raw`. `SupportType1`'s own
-/// variable-length `bytes`/`floats` lists stay read-only (editing their
-/// *count* would mean re-encoding this variable-length record, not a
-/// same-size patch); only `unkInt1Raw`'s packed fields are exposed here.
+/// variable-length `bytes`/`floats` lists are writable too, add/remove/edit
+/// included — `ScriptWriter.encodeSupportType1` already derived their
+/// on-disk counts from the arrays' own length and correctly re-applied the
+/// three int-reinterpreted float slots (`bytes[0]`/`bytes[1]`/`bytes[22]`)
+/// on every write, so exposing this only needed UI, not new writer work;
+/// same `editableMain` + `saveStructuralChange` structural-edit path as
+/// add/remove State/Body/Command below.
 ///
 /// "AgentLab Phase B": adding/removing a `ScriptState`, `ScriptStateBody`,
 /// or `ScriptCommand`, and creating/deleting a `ScriptCondition`, are now
@@ -63,6 +67,13 @@ struct MainScriptEditorSheet: View {
     @State private var type1Translates: [Int: Bool] = [:]
     @State private var type1Rotates: [Int: Bool] = [:]
     @State private var type1TracksDestination: [Int: Bool] = [:]
+    /// `SupportType1.bytes`/`.floats` staged edit text, keyed by state
+    /// index — the arrays themselves (add/remove a slot) mutate
+    /// `editableMain` immediately, same as every other structural button;
+    /// per-value edits stage here until "Apply Bytes"/"Apply Floats",
+    /// matching `applyType1`'s own stage-then-Apply shape.
+    @State private var type1ByteTexts: [Int: [String]] = [:]
+    @State private var type1FloatTexts: [Int: [String]] = [:]
     /// New-command ID text, keyed by `"stateIndex-bodyIndex"`.
     @State private var newCommandIDTexts: [String: String] = [:]
     @State private var errorMessage: String?
@@ -182,10 +193,27 @@ struct MainScriptEditorSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text("SupportType1").font(.caption2.bold())
-                Text("(\(type1.floats.count) float(s), \(type1.bytes.count) byte(s), not editable)")
+                Text("(\(type1.floats.count) float(s), \(type1.bytes.count) byte(s))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+
+            type1ListSection(
+                label: "Bytes", index: index,
+                values: type1.bytes.map { "\($0)" },
+                texts: Binding(get: { type1ByteTexts[index] ?? type1.bytes.map { "\($0)" } }, set: { type1ByteTexts[index] = $0 }),
+                onAdd: { addType1Byte(index: index) },
+                onRemoveLast: { removeLastType1Byte(index: index) },
+                onApply: { applyType1Bytes(index: index, type1: type1) }
+            )
+            type1ListSection(
+                label: "Floats", index: index,
+                values: type1.floats.map { "\($0)" },
+                texts: Binding(get: { type1FloatTexts[index] ?? type1.floats.map { "\($0)" } }, set: { type1FloatTexts[index] = $0 }),
+                onAdd: { addType1Float(index: index) },
+                onRemoveLast: { removeLastType1Float(index: index) },
+                onApply: { applyType1Floats(index: index, type1: type1) }
+            )
             HStack(spacing: 12) {
                 Picker("Space", selection: Binding(
                     get: { type1Spaces[index] ?? type1.resolvedSpace ?? .worldSpace },
@@ -230,6 +258,44 @@ struct MainScriptEditorSheet: View {
         }
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 4).fill(Color.blue.opacity(0.06)))
+    }
+
+    /// One `bytes`/`floats` list's editing row, shared between both lists
+    /// in `type1Section`: a wrapping grid of small text fields (staged in
+    /// `texts`, not applied until "Apply"), plus Add/Remove buttons that
+    /// mutate the underlying array (and save) immediately — same
+    /// immediate-vs-staged split `addCommand`/`applyCondition` already
+    /// establish elsewhere in this sheet.
+    private func type1ListSection(label: String, index: Int, values: [String], texts: Binding<[String]>, onAdd: @escaping () -> Void, onRemoveLast: @escaping () -> Void, onApply: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text("\(label):").font(.caption2)
+                Button("+") { onAdd() }.controlSize(.mini)
+                    .disabled(!workspace.canSaveEdits(for: node))
+                Button("−") { onRemoveLast() }.controlSize(.mini)
+                    .disabled(!workspace.canSaveEdits(for: node) || values.isEmpty)
+                Button("Apply \(label)") { onApply() }.controlSize(.mini)
+                    .disabled(!workspace.canSaveEdits(for: node) || values.isEmpty)
+            }
+            if !values.isEmpty {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 44))], spacing: 3) {
+                    ForEach(values.indices, id: \.self) { i in
+                        TextField("", text: Binding(
+                            get: { texts.wrappedValue.indices.contains(i) ? texts.wrappedValue[i] : values[i] },
+                            set: { newValue in
+                                var current = texts.wrappedValue
+                                while current.count <= i { current.append("0") }
+                                current[i] = newValue
+                                texts.wrappedValue = current
+                            }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption2.monospaced())
+                    }
+                }
+            }
+        }
+        .padding(.top, 2)
     }
 
     private func bodySection(stateIndex: Int, index: Int, body: ScriptStateBody) -> some View {
@@ -364,6 +430,68 @@ struct MainScriptEditorSheet: View {
 
     private func setBit(_ raw: UInt32, _ bit: UInt32, _ value: Bool) -> UInt32 {
         value ? (raw | (1 << bit)) : (raw & ~(1 << bit))
+    }
+
+    /// Add/remove/apply for `SupportType1.bytes`/`.floats` — real
+    /// structural edits (the record's size changes), so these go through
+    /// `editableMain` + `saveStructuralChange`, same as `addCommand`/
+    /// `deleteCommand`, rather than `applyType1`'s fixed-offset patch.
+    private func addType1Byte(index: Int) {
+        guard editableMain.states.indices.contains(index) else { return }
+        editableMain.states[index].type1?.bytes.append(0)
+        type1ByteTexts[index] = nil
+        saveStructuralChange(description: "a byte added to state \(index)'s SupportType1")
+    }
+
+    private func removeLastType1Byte(index: Int) {
+        guard editableMain.states.indices.contains(index),
+              let type1 = editableMain.states[index].type1, !type1.bytes.isEmpty
+        else { return }
+        editableMain.states[index].type1?.bytes.removeLast()
+        type1ByteTexts[index] = nil
+        saveStructuralChange(description: "state \(index)'s SupportType1's last byte removed")
+    }
+
+    private func applyType1Bytes(index: Int, type1: SupportType1) {
+        let texts = type1ByteTexts[index] ?? type1.bytes.map { "\($0)" }
+        let parsed = texts.map { UInt8($0.trimmingCharacters(in: .whitespaces)) }
+        guard parsed.allSatisfy({ $0 != nil }) else {
+            errorMessage = "Every byte must be a whole number from 0 to 255."
+            return
+        }
+        guard editableMain.states.indices.contains(index) else { return }
+        editableMain.states[index].type1?.bytes = parsed.compactMap { $0 }
+        type1ByteTexts[index] = nil
+        saveStructuralChange(description: "state \(index)'s SupportType1 bytes changed")
+    }
+
+    private func addType1Float(index: Int) {
+        guard editableMain.states.indices.contains(index) else { return }
+        editableMain.states[index].type1?.floats.append(0)
+        type1FloatTexts[index] = nil
+        saveStructuralChange(description: "a float added to state \(index)'s SupportType1")
+    }
+
+    private func removeLastType1Float(index: Int) {
+        guard editableMain.states.indices.contains(index),
+              let type1 = editableMain.states[index].type1, !type1.floats.isEmpty
+        else { return }
+        editableMain.states[index].type1?.floats.removeLast()
+        type1FloatTexts[index] = nil
+        saveStructuralChange(description: "state \(index)'s SupportType1's last float removed")
+    }
+
+    private func applyType1Floats(index: Int, type1: SupportType1) {
+        let texts = type1FloatTexts[index] ?? type1.floats.map { "\($0)" }
+        let parsed = texts.map { Float($0.trimmingCharacters(in: .whitespaces)) }
+        guard parsed.allSatisfy({ $0 != nil }) else {
+            errorMessage = "Every float must be a valid number."
+            return
+        }
+        guard editableMain.states.indices.contains(index) else { return }
+        editableMain.states[index].type1?.floats = parsed.compactMap { $0 }
+        type1FloatTexts[index] = nil
+        saveStructuralChange(description: "state \(index)'s SupportType1 floats changed")
     }
 
     private func applyType1(index: Int, type1: SupportType1) {

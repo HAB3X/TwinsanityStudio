@@ -31,6 +31,16 @@ public struct PlacedInstance: Sendable, Identifiable {
     public var childInstanceIDs: [UInt16]
     public var childPositionIDs: [UInt16]
     public var childPathIDs: [UInt16]
+    /// The real third `int32` immediately after each of the three ID
+    /// lists' own duplicated count (`Instance.SomeNum1`/`2`/`3` — "Some
+    /// Num / Section Head" in the reference's own field name, real,
+    /// independently loaded and saved data, *not* derived from the list
+    /// it sits next to). Defaults match the reference's own `= 10` field
+    /// initializers — the value every real newly-created `Instance`
+    /// starts with.
+    public var someNum1: Int32
+    public var someNum2: Int32
+    public var someNum3: Int32
     public var objectID: UInt16
     public var refList: Int16
     public var scriptID: Int16
@@ -79,6 +89,9 @@ public struct PlacedInstance: Sendable, Identifiable {
         childInstanceIDs: [UInt16],
         childPositionIDs: [UInt16],
         childPathIDs: [UInt16],
+        someNum1: Int32 = 10,
+        someNum2: Int32 = 10,
+        someNum3: Int32 = 10,
         objectID: UInt16,
         refList: Int16,
         scriptID: Int16,
@@ -104,6 +117,9 @@ public struct PlacedInstance: Sendable, Identifiable {
         self.childInstanceIDs = childInstanceIDs
         self.childPositionIDs = childPositionIDs
         self.childPathIDs = childPathIDs
+        self.someNum1 = someNum1
+        self.someNum2 = someNum2
+        self.someNum3 = someNum3
         self.objectID = objectID
         self.refList = refList
         self.scriptID = scriptID

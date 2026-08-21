@@ -46,4 +46,98 @@ final class ADPCMDecoderTests: XCTestCase {
         let pcm = ADPCMDecoder.toPCMMono(Data(line))
         XCTAssertEqual(pcm.first, 4096)
     }
+
+    // MARK: - toPCMStereo
+
+    private func silentLine(flag: UInt8 = 0) -> [UInt8] {
+        var line = [UInt8](repeating: 0, count: 16)
+        line[1] = flag
+        return line
+    }
+
+    func testStereoAlternatingBlocksDecodeIntoSeparateChannels() {
+        // interleave = 16 (one line per block): L0 R0 L1 R1 L2 R2 laid out
+        // back to back, each block's line distinguishable by its factor
+        // nibble (byte 0's high nibble = predict, low = factor — using
+        // factor alone here, predict 0, so the decoded value is a pure
+        // nibble shift with no predictor contribution).
+        var lLine = silentLine()
+        lLine[0] = 0 // factor 0
+        lLine[2] = 0x01 // low nibble 1 -> first L sample = 1 << 12 = 4096
+        var rLine = silentLine()
+        rLine[0] = 0
+        rLine[2] = 0x02 // low nibble 2 -> first R sample = 2 << 12 = 8192
+
+        let data = Data(lLine + rLine)
+        let (left, right) = ADPCMDecoder.toPCMStereo(data, interleaveBytes: 16)
+        XCTAssertEqual(left.count, 28)
+        XCTAssertEqual(right.count, 28)
+        XCTAssertEqual(left.first, 4096)
+        XCTAssertEqual(right.first, 8192)
+    }
+
+    func testStereoBlockInterleaveGroupsMultipleLinesPerChannel() {
+        // interleave = 32 (two lines per block): [L,L][R,R] — every line in
+        // the L block should end up in `left`, every line in the R block in
+        // `right`, in original order.
+        var l0 = silentLine(); l0[0] = 0; l0[2] = 0x01
+        var l1 = silentLine(); l1[0] = 0; l1[2] = 0x03
+        var r0 = silentLine(); r0[0] = 0; r0[2] = 0x02
+        var r1 = silentLine(); r1[0] = 0; r1[2] = 0x04
+
+        let data = Data(l0 + l1 + r0 + r1)
+        let (left, right) = ADPCMDecoder.toPCMStereo(data, interleaveBytes: 32)
+        XCTAssertEqual(left.count, 56)
+        XCTAssertEqual(right.count, 56)
+        XCTAssertEqual(left[0], 1 << 12)
+        XCTAssertEqual(left[28], 3 << 12)
+        XCTAssertEqual(right[0], 2 << 12)
+        XCTAssertEqual(right[28], 4 << 12)
+    }
+
+    func testStereoStopsOnEitherChannelsEndOfStreamFlag() {
+        let lLine = silentLine(flag: 7) // end-of-stream on L
+        let rLine = silentLine(flag: 0)
+        let data = Data(lLine + rLine)
+        let (left, right) = ADPCMDecoder.toPCMStereo(data, interleaveBytes: 16)
+        XCTAssertTrue(left.isEmpty)
+        XCTAssertTrue(right.isEmpty)
+    }
+
+    /// Real, preserved discrepancy vs. `toPCMMono`: stereo termination
+    /// checks the flag byte for exact equality to `1`, not a bitwise `& 1`
+    /// — flag value `3` (bits 0 and 1 both set) must NOT stop stereo
+    /// decoding early, even though it would trip `toPCMMono`'s bitwise
+    /// check.
+    func testStereoTerminationIsExactEqualityNotBitwise() {
+        var lLine = silentLine(flag: 3) // LoopEnd | Unknown, not exactly 1
+        var rLine = silentLine(flag: 0)
+        var lLine2 = silentLine(flag: 0)
+        var rLine2 = silentLine(flag: 0)
+        lLine[0] = 0; lLine2[0] = 0
+        let data = Data(lLine + rLine + lLine2 + rLine2)
+        let (left, right) = ADPCMDecoder.toPCMStereo(data, interleaveBytes: 16)
+        // Both line-pairs decode (flag 3 doesn't terminate stereo decode).
+        XCTAssertEqual(left.count, 56)
+        XCTAssertEqual(right.count, 56)
+    }
+
+    func testStereoTerminatesOnExactFlagValueOne() {
+        var lLine = silentLine(flag: 1)
+        var rLine = silentLine(flag: 0)
+        var lLine2 = silentLine(flag: 0)
+        var rLine2 = silentLine(flag: 0)
+        lLine[0] = 0; lLine2[0] = 0
+        let data = Data(lLine + rLine + lLine2 + rLine2)
+        let (left, right) = ADPCMDecoder.toPCMStereo(data, interleaveBytes: 16)
+        // First line-pair decodes, then stops (L's flag is exactly 1).
+        XCTAssertEqual(left.count, 28)
+        XCTAssertEqual(right.count, 28)
+    }
+
+    func testStereoRejectsInvalidSizeAndInterleaveRatherThanTrapping() {
+        XCTAssertEqual(ADPCMDecoder.toPCMStereo(Data([0, 0, 0]), interleaveBytes: 16).left, [])
+        XCTAssertEqual(ADPCMDecoder.toPCMStereo(Data(repeating: 0, count: 32), interleaveBytes: 0).left, [])
+        XCTAssertEqual(ADPCMDecoder.toPCMStereo(Data(repeating: 0, count: 32), interleaveBytes: 5).left, [])
+    }
 }

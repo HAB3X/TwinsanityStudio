@@ -119,8 +119,7 @@ struct SoundBanksHubView: View {
 
     private func icon(for entry: SoundBankEntry) -> String {
         switch entry.kind {
-        case .mono: return entry.sound != nil ? "waveform" : "waveform.slash"
-        case .stereo: return "waveform.badge.exclamationmark"
+        case .mono, .stereo: return (entry.sound?.pcmSamples.isEmpty == false) ? "waveform" : "waveform.slash"
         case .reserved: return "circle.dashed"
         case nil: return "questionmark.circle"
         }
@@ -128,8 +127,7 @@ struct SoundBanksHubView: View {
 
     private func color(for entry: SoundBankEntry) -> Color {
         switch entry.kind {
-        case .mono: return entry.sound != nil ? .accentColor : .secondary
-        case .stereo: return .orange
+        case .mono, .stereo: return (entry.sound?.pcmSamples.isEmpty == false) ? .accentColor : .secondary
         case .reserved: return .secondary
         case nil: return .secondary
         }
@@ -137,8 +135,11 @@ struct SoundBanksHubView: View {
 
     private func subtitle(for entry: SoundBankEntry) -> String {
         switch entry.kind {
-        case .mono: return entry.sound != nil ? "Mono · \(entry.sampleRateHz) Hz" : "Mono · undecoded"
-        case .stereo: return "Stereo — not decoded yet"
+        case .mono:
+            return entry.sound != nil ? "Mono · \(entry.sampleRateHz) Hz" : "Mono · undecoded"
+        case .stereo:
+            guard let sound = entry.sound, !sound.pcmSamples.isEmpty else { return "Stereo · undecoded" }
+            return "Stereo · \(entry.sampleRateHz) Hz"
         case .reserved: return "Empty"
         case nil: return "Unrecognized type \(entry.rawKind)"
         }
@@ -147,28 +148,34 @@ struct SoundBanksHubView: View {
     @ViewBuilder
     private var detail: some View {
         if let bank = selectedBank, let index = selectedEntryID, let entry = bank.entries.first(where: { $0.index == index }) {
-            if let sound = entry.sound {
+            if let sound = entry.sound, !sound.pcmSamples.isEmpty {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         SoundEffectInspectorView(node: nil, displayName: "\(bank.sourceLabel)_\(entry.name ?? "sound\(entry.index)")", sound: sound)
                         Divider()
-                        HStack {
-                            Button {
-                                presentReplaceBankEntryPanel(bank: bank, entryIndex: index)
-                            } label: {
-                                Label(isRepacking ? "Repacking…" : "Replace with Audio… (repacks bank)", systemImage: "waveform.badge.plus")
+                        if entry.kind == .mono {
+                            HStack {
+                                Button {
+                                    presentReplaceBankEntryPanel(bank: bank, entryIndex: index)
+                                } label: {
+                                    Label(isRepacking ? "Repacking…" : "Replace with Audio… (repacks bank)", systemImage: "waveform.badge.plus")
+                                }
+                                .disabled(isRepacking)
+                                Spacer()
+                                if isRepacking { ProgressView().controlSize(.small) }
                             }
-                            .disabled(isRepacking)
-                            Spacer()
-                            if isRepacking { ProgressView().controlSize(.small) }
-                        }
-                        Text("Re-encodes a replacement audio file to this entry's own \(sound.sampleRateHz) Hz mono ADPCM, then rebuilds and saves the *whole* bank (.MH + .MB) as an edited copy — this format packs every entry's audio tightly end-to-end, so one entry changing size means every entry after it needs its offset corrected. The original bank files on disk are not modified.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        if let repackError {
-                            Label(repackError, systemImage: "exclamationmark.triangle")
+                            Text("Re-encodes a replacement audio file to this entry's own \(sound.sampleRateHz) Hz mono ADPCM, then rebuilds and saves the *whole* bank (.MH + .MB) as an edited copy — this format packs every entry's audio tightly end-to-end, so one entry changing size means every entry after it needs its offset corrected. The original bank files on disk are not modified.")
                                 .font(.caption2)
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.secondary)
+                            if let repackError {
+                                Label(repackError, systemImage: "exclamationmark.triangle")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
+                        } else {
+                            Text("Playback and WAV export are real for this stereo entry, but write-back isn't offered: the reference tool's own stereo re-encoder indexes out of bounds for any real interleave value and was never a working feature to port. This entry round-trips byte-for-byte on save because it's untouched, not because it was re-encoded.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
                     }
                     .padding(20)
@@ -177,9 +184,9 @@ struct SoundBanksHubView: View {
                 ContentUnavailableView(
                     subtitle(for: entry),
                     systemImage: icon(for: entry),
-                    description: Text(entry.kind == .stereo
-                        ? "This build doesn't have the stereo ADPCM demux ported yet — this slot's real metadata (name, size, sample rate) is shown, but audio isn't decoded."
-                        : "This slot has no audio data.")
+                    description: Text(entry.kind == .reserved
+                        ? "This slot has no audio data."
+                        : "This slot's real metadata (name, size, sample rate) was read, but its ADPCM bytes decoded to zero samples — likely a placeholder or corrupt slot, not a parser gap.")
                 )
             }
         } else {
@@ -195,7 +202,15 @@ struct SoundBanksHubView: View {
     /// mutated — same "saves an edited copy, never modifies what's open"
     /// discipline as every other write path in this app.
     private func presentReplaceBankEntryPanel(bank: SoundBankAsset, entryIndex: Int) {
-        guard let originalSound = bank.entries.first(where: { $0.index == entryIndex })?.sound else { return }
+        // `.stereo` entries only ever round-trip verbatim through
+        // `rawData` (see `SoundBankEntry.rawData`'s doc comment) —
+        // `MBWriter` ignores `.sound` entirely for that kind, so this
+        // would silently no-op rather than actually replace anything.
+        // The UI already only shows this button for `.mono` entries; this
+        // guard just keeps the model-layer contract honest independent of
+        // that.
+        guard let entry = bank.entries.first(where: { $0.index == entryIndex }), entry.kind == .mono,
+              let originalSound = entry.sound else { return }
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false

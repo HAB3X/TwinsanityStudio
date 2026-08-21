@@ -54,9 +54,11 @@ public enum TwinsFileKind: Sendable {
     case rm2
     case rm2Demo
     case rmx
+    case rm2MB
     case sm2
     case sm2Demo
     case smx
+    case sm2MB
 }
 
 /// A single index entry from a chunk header's index table: `TwinsSubInfo` in the

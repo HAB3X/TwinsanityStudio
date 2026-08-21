@@ -57,9 +57,9 @@ final class SoundBankParserTests: XCTestCase {
         XCTAssertNil(reserved.name)
     }
 
-    /// A stereo entry is reported honestly (kind + metadata) without a
-    /// fabricated decode — this build doesn't have the stereo ADPCM demux
-    /// ported yet.
+    /// A stereo entry whose offset/size don't fit inside the `.MB` data is
+    /// reported honestly (kind + metadata) without a fabricated decode —
+    /// `rawData` (and therefore `sound`) stay `nil` rather than guessing.
     func testStereoEntryReportsMetadataWithoutFabricatingAudio() throws {
         var mh = BinaryWriter()
         mh.writeUInt32(1)
@@ -79,8 +79,13 @@ final class SoundBankParserTests: XCTestCase {
 
     /// A stereo entry's real, untouched on-disk bytes (raw interleaved
     /// ADPCM directly at `offset` — no MSVp header, per this format's own
-    /// layout) must be captured into `rawData`, so `MBWriter` can round-trip
-    /// a bank containing it without needing to actually decode the audio.
+    /// layout) must be captured into `rawData` regardless of whether the
+    /// bytes happen to be enough for a real decode, so `MBWriter` can
+    /// round-trip a bank containing it either way. This fixture's 8 bytes
+    /// aren't a multiple of 32 (one L+R line pair), so `toPCMStereo`
+    /// correctly refuses to decode them — `sound` is still non-nil (a
+    /// real decode was attempted) but reports zero samples rather than
+    /// fabricating audio from data too short to be a real line pair.
     func testStereoEntryCapturesRawBytesForRoundTrip() throws {
         var mh = BinaryWriter()
         mh.writeUInt32(1)
@@ -99,8 +104,38 @@ final class SoundBankParserTests: XCTestCase {
         let bank = try SoundBankParser.parse(mhData: mh.data, mbData: mb.data, sourceLabel: "TEST")
         let entry = try XCTUnwrap(bank.entries.first)
         XCTAssertEqual(entry.kind, .stereo)
-        XCTAssertNil(entry.sound, "stereo audio itself must still not be fabricated/decoded")
-        XCTAssertEqual(entry.rawData.map(Array.init), expectedRawBytes)
+        XCTAssertEqual(entry.sound?.pcmSamples, [], "8 bytes isn't a multiple of 32 — toPCMStereo must refuse rather than fabricate")
+        XCTAssertEqual(entry.sound?.rightChannelSamples, [])
+        XCTAssertEqual(entry.rawData.map(Array.init), expectedRawBytes, "the real bytes must still be captured for MBWriter's verbatim round-trip regardless of decode outcome")
+    }
+
+    /// A real, decodable stereo entry (32-byte-aligned, real interleave)
+    /// must actually decode into separate left/right channels — the
+    /// production path this build previously left undecoded entirely.
+    func testStereoEntryDecodesRealAudioWhenDataIsWellFormed() throws {
+        var mh = BinaryWriter()
+        mh.writeUInt32(1)
+        mh.writeUInt32(16) // interleave: one 16-byte line per block
+        mh.writeUInt32(1) // type: stereo
+        mh.writeUInt32(32) // size: one L line + one R line
+        mh.writeUInt32(0) // offset
+        mh.writeUInt32(44100)
+        mh.writeUInt32(0)
+
+        var lLine = [UInt8](repeating: 0, count: 16)
+        lLine[2] = 0x01 // first L sample = 1 << 12 = 4096
+        var rLine = [UInt8](repeating: 0, count: 16)
+        rLine[2] = 0x02 // first R sample = 2 << 12 = 8192
+
+        var mb = BinaryWriter()
+        mb.writeBytes(lLine)
+        mb.writeBytes(rLine)
+
+        let bank = try SoundBankParser.parse(mhData: mh.data, mbData: mb.data, sourceLabel: "TEST")
+        let entry = try XCTUnwrap(bank.entries.first)
+        XCTAssertEqual(entry.kind, .stereo)
+        XCTAssertEqual(entry.sound?.pcmSamples.first, 4096)
+        XCTAssertEqual(entry.sound?.rightChannelSamples?.first, 8192)
     }
 
     /// An offset that doesn't fit inside the `.MB` data (a real possibility

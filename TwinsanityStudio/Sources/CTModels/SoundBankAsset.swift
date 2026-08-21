@@ -27,21 +27,22 @@ public struct SoundBankEntry: Sendable, Identifiable {
     /// dialogue-line identifiers on this disc (e.g. "DRC085", "UKA126"),
     /// not this build's own naming.
     public var name: String?
-    /// Decoded PCM, mono only — `nil` for `.reserved` entries, and for
-    /// `.stereo` entries this build doesn't decode yet (see
-    /// `SoundBankParser`'s doc comment: the stereo ADPCM demux algorithm
-    /// isn't ported, so a stereo slot's real existence/metadata is shown
-    /// honestly without fabricating audio for it).
+    /// Decoded PCM — `nil` for `.reserved` entries. `.mono` entries carry
+    /// mono audio in `sound.pcmSamples`; `.stereo` entries carry the left
+    /// channel in `sound.pcmSamples` and the right channel in
+    /// `sound.rightChannelSamples` (see `ADPCMDecoder.toPCMStereo`).
     public var sound: SoundEffectAsset?
     /// The real, untouched on-disk bytes at `[offset, offset + size)` in
-    /// the owning `.MB` file — captured specifically for `.stereo` entries
-    /// (whose audio this build can't decode into `sound`, so it can't
-    /// re-encode one either). Lets `MBWriter` honestly round-trip a bank
-    /// that merely *contains* stereo slots, by writing this back verbatim
-    /// instead of needing a real encode path — never used to synthesize
-    /// or interpret audio, only to copy bytes this build never understood
-    /// in the first place. `nil` for `.mono`/`.reserved` entries, which
-    /// don't need it (`.mono` re-encodes for real via `sound`).
+    /// the owning `.MB` file — captured for `.stereo` entries specifically
+    /// so `MBWriter` can still round-trip a bank that merely *contains*
+    /// stereo slots by writing this back verbatim. Write-back stays
+    /// verbatim-only even though `.stereo` decode is now real: the
+    /// reference tool's own stereo re-encoder (`ADPCM.FromPCMStereo`)
+    /// indexes out of bounds for any real interleave value and was never
+    /// a working feature to port (see `SoundEffectAsset.
+    /// rightChannelSamples`'s doc comment). `nil` for `.mono`/`.reserved`
+    /// entries, which don't need it (`.mono` re-encodes for real via
+    /// `sound`).
     public var rawData: Data?
 
     public init(index: Int, rawKind: UInt32, size: UInt32, offset: UInt32, sampleRateHz: UInt32, skip: UInt32, name: String?, sound: SoundEffectAsset?, rawData: Data? = nil) {

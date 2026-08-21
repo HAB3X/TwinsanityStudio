@@ -122,6 +122,24 @@ public enum BDArchiveParser {
         }
     }
 
+    /// Extracts only the named entries to `destinationDirectory` — the
+    /// reference editor's `BDExplorer.ExtractRecursively` run against a
+    /// single selected tree node/subtree rather than the whole archive.
+    /// Names not present in `index` are silently skipped.
+    public static func extractSelected(index: ArchiveIndex, entryNames: Set<String>, to destinationDirectory: URL) throws {
+        let fm = FileManager.default
+        let bdHandle = try FileHandle(forReadingFrom: index.bdURL)
+        defer { try? bdHandle.close() }
+
+        for entry in index.entries where entryNames.contains(entry.name) {
+            let outURL = destinationDirectory.appendingPathComponent(entry.name)
+            try fm.createDirectory(at: outURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try bdHandle.seek(toOffset: UInt64(entry.offset))
+            let data = try bdHandle.read(upToCount: Int(entry.size)) ?? Data()
+            try data.write(to: outURL)
+        }
+    }
+
     private static func normalizingSeparators(_ name: String) -> String {
         name.replacingOccurrences(of: "\\", with: "/")
     }

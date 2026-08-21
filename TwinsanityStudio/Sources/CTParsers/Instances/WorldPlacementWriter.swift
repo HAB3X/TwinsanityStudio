@@ -121,6 +121,67 @@ public enum WorldPlacementWriter {
         return writer.data
     }
 
+    /// Encodes a **complete, arbitrary** `Instance` record — every field
+    /// exactly as `instance` carries it, including the three child ID
+    /// lists, their real `someNum1`/`2`/`3` values, and the three
+    /// undocumented trailing lists. The general form `writeNewInstance`
+    /// isn't: that one only ever produces a fresh, empty placement.
+    /// `PHeader` is always recomputed from the live list counts here (byte
+    /// `unknownUInt32List.count` | `unknownFloatList.count << 8` |
+    /// `unknownUInt32List2.count << 16`), matching `Instance.Save`'s own
+    /// unconditional recompute — never trusted from whatever was on disk
+    /// before, same "decoded but never trusted by the writer" discipline
+    /// `GameObjectWriter`/`SupportType1`'s own derived-header fields use.
+    /// Field order matches `Instance.cs`'s `Save` exactly (same order
+    /// `WorldPlacementParser.parseInstance`'s `Load` reads), and every
+    /// counted list clamps its `UInt8`/byte-sized derived count the same
+    /// way the reference's own implicit `(byte)` casts would overflow —
+    /// callers are expected to keep `unknownUInt32List`/`unknownFloatList`/
+    /// `unknownUInt32List2` under 256 elements each, the same practical
+    /// ceiling the reference tool itself is bound by.
+    public static func writeInstance(_ instance: PlacedInstance) -> Data {
+        var writer = BinaryWriter()
+        writer.writeFloat32(instance.position.x)
+        writer.writeFloat32(instance.position.y)
+        writer.writeFloat32(instance.position.z)
+        writer.writeFloat32(instance.position.w)
+        writer.writeUInt16(instance.rotationRaw.x)
+        writer.writeUInt16(instance.comRotationRaw.x)
+        writer.writeUInt16(instance.rotationRaw.y)
+        writer.writeUInt16(instance.comRotationRaw.y)
+        writer.writeUInt16(instance.rotationRaw.z)
+        writer.writeUInt16(instance.comRotationRaw.z)
+
+        func writeCountedList(_ values: [UInt16], someNum: Int32) {
+            writer.writeInt32(Int32(values.count))
+            writer.writeInt32(Int32(values.count))
+            writer.writeInt32(someNum)
+            for value in values { writer.writeUInt16(value) }
+        }
+        writeCountedList(instance.childInstanceIDs, someNum: instance.someNum1)
+        writeCountedList(instance.childPositionIDs, someNum: instance.someNum2)
+        writeCountedList(instance.childPathIDs, someNum: instance.someNum3)
+
+        writer.writeUInt16(instance.objectID)
+        writer.writeInt16(instance.refList)
+        writer.writeInt16(instance.scriptID)
+
+        let pHeader = UInt32(UInt8(clamping: instance.unknownUInt32List.count))
+            | (UInt32(instance.unknownFloatList.count) << 8)
+            | (UInt32(instance.unknownUInt32List2.count) << 16)
+        writer.writeUInt32(pHeader)
+        writer.writeUInt32(instance.flags)
+
+        writer.writeInt32(Int32(instance.unknownUInt32List.count))
+        for value in instance.unknownUInt32List { writer.writeUInt32(value) }
+        writer.writeInt32(Int32(instance.unknownFloatList.count))
+        for value in instance.unknownFloatList { writer.writeFloat32(value) }
+        writer.writeInt32(Int32(instance.unknownUInt32List2.count))
+        for value in instance.unknownUInt32List2 { writer.writeUInt32(value) }
+
+        return writer.data
+    }
+
     /// Encodes a complete `AIPosition` record — the exact inverse of
     /// `AINavigationParser.parseAIPosition`. Fixed-size (18 bytes: `Pos`
     /// then `Num`, matching `AIPosition.cs`'s own `GetSize() => 18`
@@ -137,6 +198,21 @@ public enum WorldPlacementWriter {
         writer.writeFloat32(position.z)
         writer.writeFloat32(position.w)
         writer.writeUInt16(rawNodeType)
+        return writer.data
+    }
+
+    /// Encodes a complete `AIPath` record — the exact inverse of
+    /// `AINavigationParser.parseAIPath`. Fixed-size (10 bytes: 5 real
+    /// `UInt16` args, matching `AIPath.cs`'s own `GetSize() => 10`
+    /// exactly), same "patch in place or insert fresh" versatility
+    /// `writeAIPosition` has. `args` must have exactly 5 elements — the
+    /// reference's own `Arg` is a fixed `ushort[5]`, never a variable-
+    /// length list, so a caller passing anything else is a programmer
+    /// error, not a real on-disk possibility to guess at.
+    public static func writeAIPath(_ args: [UInt16]) -> Data {
+        precondition(args.count == 5, "AIPath.Arg is always exactly 5 elements")
+        var writer = BinaryWriter()
+        for value in args { writer.writeUInt16(value) }
         return writer.data
     }
 

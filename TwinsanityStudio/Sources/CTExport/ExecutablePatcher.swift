@@ -89,11 +89,33 @@ public enum GameExecutableRevision: String, Sendable, CaseIterable, Identifiable
         case .xboxPAL: return 0x265140
         }
     }
+
+    /// `(byte offset, field length)` of the null-padded "Game Archive"
+    /// path string — the reference editor's `EXEPatcher.ExecutablePatchInfo.ArchiveOff`/
+    /// `ArchiveSize`, exposed there as the "Patch Game Archive" checkbox.
+    /// PS2-only: the reference tool never shipped an Xbox build of this
+    /// field, and this project has no independently-verified Xbox offset
+    /// for it, so `xboxNTSC`/`xboxPAL` return `nil` rather than guess.
+    /// Note: the PS2 NTSC-U/NTSC-U2 disambiguation probe byte used by
+    /// `detectNTSCURevision` (`0x1ECB10`) is this exact field's first byte
+    /// on the NTSC-U build — the two builds' game-archive filenames happen
+    /// to differ in their first character, which is what the probe was
+    /// really keying off of.
+    public var archiveField: (offset: Int, length: Int)? {
+        switch self {
+        case .pal: return (0x1ED410, 0x7)
+        case .ntscU: return (0x1ECB10, 0x7)
+        case .ntscU2: return (0x1ED090, 0x7)
+        case .ntscJ: return (0x1ED310, 0x7)
+        case .xboxNTSC, .xboxPAL: return nil
+        }
+    }
 }
 
 public enum ExecutablePatcherError: Error, CustomStringConvertible {
     case pathTooLong(maxLength: Int)
     case fileTooSmall(requiredOffset: Int, actualSize: Int)
+    case fieldNotSupported(fieldName: String, revision: GameExecutableRevision)
 
     public var description: String {
         switch self {
@@ -101,6 +123,8 @@ public enum ExecutablePatcherError: Error, CustomStringConvertible {
             return "Chunk path is too long — this executable build's field only fits \(maxLength) bytes."
         case .fileTooSmall(let requiredOffset, let actualSize):
             return "This file is too small to be the executable this revision expects (needs at least \(requiredOffset) bytes, got \(actualSize))."
+        case .fieldNotSupported(let fieldName, let revision):
+            return "\(fieldName) has no verified offset for \(revision.displayName) — the reference tool never shipped this field for that build."
         }
     }
 }
@@ -174,6 +198,21 @@ public enum ExecutablePatcher {
 
     public static func writingCreditsChunkPath(_ path: String, revision: GameExecutableRevision, into exeData: Data) throws -> Data {
         let field = revision.creditsChunkField
+        return try writingPath(path, offset: field.offset, length: field.length, into: exeData)
+    }
+
+    /// "Patch Game Archive" (`EXEPatcher`'s `ArchiveOff`/`ArchiveSize`) —
+    /// the boot archive filename (e.g. the `.BD`/`.BH` pair name) the
+    /// executable loads at startup. PS2-only — see `archiveField`.
+    public static func readGameArchivePath(revision: GameExecutableRevision, from exeData: Data) -> String? {
+        guard let field = revision.archiveField else { return nil }
+        return readingPath(offset: field.offset, length: field.length, from: exeData)
+    }
+
+    public static func writingGameArchivePath(_ path: String, revision: GameExecutableRevision, into exeData: Data) throws -> Data {
+        guard let field = revision.archiveField else {
+            throw ExecutablePatcherError.fieldNotSupported(fieldName: "Game Archive", revision: revision)
+        }
         return try writingPath(path, offset: field.offset, length: field.length, into: exeData)
     }
 

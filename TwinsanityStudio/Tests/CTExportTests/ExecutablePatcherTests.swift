@@ -113,6 +113,49 @@ final class ExecutablePatcherTests: XCTestCase {
         XCTAssertEqual(Set(startSpawnOffsets).count, startSpawnOffsets.count)
     }
 
+    func testGameArchivePathRoundTripsThroughWriter() throws {
+        let exe = makeFakeExe(size: 0x400000)
+        let patched = try ExecutablePatcher.writingGameArchivePath("MAIN.BD", revision: .ntscU2, into: exe)
+        XCTAssertEqual(ExecutablePatcher.readGameArchivePath(revision: .ntscU2, from: patched), "MAIN.BD")
+    }
+
+    /// The archive field's offset happens to be the same byte the NTSC-U
+    /// probe reads — writing the archive field must still leave that
+    /// probe-relevant byte correctly reflecting whatever was written.
+    func testGameArchiveFieldOverlapsNTSCUProbeByteCorrectly() throws {
+        let exe = makeFakeExe(size: 0x400000)
+        let patched = try ExecutablePatcher.writingGameArchivePath("CRASH.B", revision: .ntscU, into: exe)
+        XCTAssertEqual(patched[0x1ECB10], UInt8(ascii: "C"))
+    }
+
+    func testGameArchiveFieldNotSupportedOnXbox() {
+        XCTAssertNil(GameExecutableRevision.xboxNTSC.archiveField)
+        XCTAssertNil(GameExecutableRevision.xboxPAL.archiveField)
+        let exe = makeFakeExe(size: 0x400000)
+        XCTAssertNil(ExecutablePatcher.readGameArchivePath(revision: .xboxNTSC, from: exe))
+        XCTAssertThrowsError(try ExecutablePatcher.writingGameArchivePath("MAIN.BD", revision: .xboxNTSC, into: exe)) { error in
+            guard case ExecutablePatcherError.fieldNotSupported(let fieldName, let revision) = error else {
+                return XCTFail("Expected .fieldNotSupported, got \(error)")
+            }
+            XCTAssertEqual(fieldName, "Game Archive")
+            XCTAssertEqual(revision, .xboxNTSC)
+        }
+    }
+
+    /// Archive and starting-chunk fields must never alias for any revision
+    /// — a copy/paste error here would corrupt one field while patching
+    /// the other.
+    func testArchiveAndStartingChunkFieldsAreDistinct() {
+        for revision in GameExecutableRevision.allCases {
+            guard let archive = revision.archiveField else { continue }
+            let level = revision.startingChunkField
+            let archiveRange = archive.offset..<(archive.offset + archive.length)
+            let levelRange = level.offset..<(level.offset + level.length)
+            XCTAssertTrue(archiveRange.upperBound <= levelRange.lowerBound || levelRange.upperBound <= archiveRange.lowerBound,
+                           "\(revision) archive field overlaps starting-chunk field")
+        }
+    }
+
     func testPlatformMapping() {
         XCTAssertEqual(GameExecutableRevision.pal.platform, .ps2)
         XCTAssertEqual(GameExecutableRevision.ntscU.platform, .ps2)

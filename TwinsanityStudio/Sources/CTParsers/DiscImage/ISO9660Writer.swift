@@ -115,3 +115,393 @@ public enum ISO9660Writer {
         for (i, byte) in le.reversed().enumerated() { image[offset + 4 + i] = byte }
     }
 }
+
+// MARK: - Building a brand-new image from a directory tree
+
+/// Builds a complete, standards-compliant ISO-9660 (ECMA-119) image from a
+/// directory tree — "Image Maker," the one piece of the reference tool
+/// this project's own reverse-engineering couldn't reach: `ImageMaker.cs`
+/// is a thin UI shell over `Externals/PS2ImageMaker/PS2ImageMaker.cs`,
+/// which is itself only a P/Invoke shim around a native `PS2ImageMaker.dll`
+/// whose source isn't in the reference repository at all — there is
+/// nothing to port the real sector-writing algorithm from. Rather than
+/// fabricate a PS2-specific boot-sector format with no source to verify it
+/// against (the one thing this project's own culture refuses to do — see
+/// every "confirmed vs. hypothesis" doc comment elsewhere in this
+/// package), this instead implements the real, public ECMA-119 standard
+/// PS2 discs are built on: Primary Volume Descriptor, Path Tables (L and
+/// M), and a real recursive directory tree — the part of "building a
+/// bootable-shaped disc" this project *can* verify, byte-for-byte, against
+/// a public spec and its own `ISO9660Reader`.
+///
+/// **What "verified" means here, honestly**: every directory record this
+/// writes round-trips exactly through this package's own `ISO9660Reader`
+/// (same discipline as every other writer in this codebase) — proven by
+/// `ISO9660WriterBuildImageTests`. The Path Tables are written to the real
+/// ECMA-119 byte layout but aren't independently exercised by any reader
+/// in this codebase (`ISO9660Reader` never reads them — real CD-ROM
+/// drivers/BIOS implementations generally walk directory records directly
+/// and treat the path table as an optional lookup optimization, not a
+/// requirement), so their content is unverified beyond visual inspection
+/// against the spec. Whether a disc built this way actually **boots** on
+/// real PS2 hardware or in an emulator has not been tested — that's the
+/// one thing this project has never had access to verify, for any writer.
+public enum ISO9660ImageBuilder {
+    private static let sectorSize = 2048
+
+    private final class DirNode {
+        let name: String
+        var files: [(name: String, url: URL, size: Int)] = []
+        var subdirectories: [DirNode] = []
+        weak var parent: DirNode?
+        var lba: UInt32 = 0
+        var extentSize: UInt32 = 0
+        var pathTableIndex: UInt16 = 1
+        init(name: String, parent: DirNode?) {
+            self.name = name
+            self.parent = parent
+        }
+    }
+
+    /// Builds a complete image containing every regular file under
+    /// `sourceDirectory`, preserving its subfolder structure. `volumeLabel`
+    /// fills the Primary Volume Descriptor's Volume Identifier (space-
+    /// padded/truncated to 32 d-characters, the real ECMA-119 field width).
+    public static func buildingImage(from sourceDirectory: URL, volumeLabel: String) throws -> Data {
+        let root = try scanDirectory(sourceDirectory, name: "", parent: nil)
+        let allDirs = breadthFirst(root)
+        for (index, dir) in allDirs.enumerated() { dir.pathTableIndex = UInt16(index + 1) }
+
+        // Pass 1: every directory's own extent size — depends only on its
+        // children's names (record lengths), never on any LBA, so this is
+        // safe to compute before any LBA is assigned.
+        for dir in allDirs { dir.extentSize = UInt32(directoryExtentByteSize(dir)) }
+
+        // Pass 2: lay out the volume — system area, PVD, terminator, both
+        // path tables (each padded to a whole number of sectors), every
+        // directory extent (parent before children, matching
+        // `allDirs`' breadth-first order), then every file's data,
+        // sequentially. Nothing here depends on file *contents*, only
+        // sizes, so file bytes are read lazily in the final byte-emission
+        // pass below, not held in memory all at once.
+        var nextLBA: UInt32 = 18 // sectors 0-15 system area, 16 PVD, 17 terminator
+        let pathTableEntries = allDirs.map { PathTableEntry(name: $0 === root ? "\0" : $0.name, parentIndex: ($0.parent.map { $0.pathTableIndex } ?? 1)) }
+        let pathTableByteSize = pathTableEntries.reduce(0) { $0 + pathTableRecordSize(nameLength: $1.name == "\0" ? 1 : $1.name.utf8.count) }
+        let pathTableSectorCount = sectorCount(for: pathTableByteSize)
+        let pathTableLBA_L = nextLBA
+        nextLBA += UInt32(pathTableSectorCount)
+        let pathTableLBA_M = nextLBA
+        nextLBA += UInt32(pathTableSectorCount)
+
+        for dir in allDirs {
+            dir.lba = nextLBA
+            nextLBA += UInt32(sectorCount(for: Int(dir.extentSize)))
+        }
+        var fileLayout: [(dir: DirNode, name: String, url: URL, lba: UInt32, size: Int)] = []
+        var fileLBAs: [ObjectIdentifier: [String: UInt32]] = [:]
+        for dir in allDirs {
+            for file in dir.files {
+                fileLayout.append((dir, file.name, file.url, nextLBA, file.size))
+                fileLBAs[ObjectIdentifier(dir), default: [:]][file.name] = nextLBA
+                nextLBA += UInt32(sectorCount(for: file.size))
+            }
+        }
+        let totalSectors = nextLBA
+
+        // Pass 3: emit every byte, now that every LBA is known.
+        var image = Data(repeating: 0, count: Int(totalSectors) * sectorSize)
+        writePrimaryVolumeDescriptor(
+            into: &image, volumeLabel: volumeLabel, totalSectors: totalSectors,
+            rootLBA: root.lba, rootSize: root.extentSize,
+            pathTableSize: UInt32(pathTableByteSize), pathTableLBA_L: pathTableLBA_L, pathTableLBA_M: pathTableLBA_M
+        )
+        writeVolumeDescriptorSetTerminator(into: &image)
+        writePathTable(entries: pathTableEntries, dirs: allDirs, bigEndian: false, at: Int(pathTableLBA_L) * sectorSize, into: &image)
+        writePathTable(entries: pathTableEntries, dirs: allDirs, bigEndian: true, at: Int(pathTableLBA_M) * sectorSize, into: &image)
+        for dir in allDirs {
+            writeDirectoryExtent(dir, fileLBAs: fileLBAs, into: &image)
+        }
+        for entry in fileLayout {
+            let data = (try? Data(contentsOf: entry.url)) ?? Data()
+            let start = Int(entry.lba) * sectorSize
+            image.replaceSubrange((image.startIndex + start)..<(image.startIndex + start + data.count), with: data)
+        }
+        return image
+    }
+
+    // MARK: - Directory scan
+
+    private static func scanDirectory(_ url: URL, name: String, parent: DirNode?) throws -> DirNode {
+        let node = DirNode(name: name, parent: parent)
+        let fm = FileManager.default
+        let contents = try fm.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey])
+            .sorted { $0.lastPathComponent.uppercased() < $1.lastPathComponent.uppercased() }
+        for childURL in contents {
+            let isDir = (try? childURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            if isDir {
+                node.subdirectories.append(try scanDirectory(childURL, name: childURL.lastPathComponent.uppercased(), parent: node))
+            } else {
+                let size = (try? childURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                node.files.append((childURL.lastPathComponent.uppercased(), childURL, size))
+            }
+        }
+        return node
+    }
+
+    /// Breadth-first, root first — the real ECMA-119 9.4 path-table
+    /// ordering requirement ("for each level... in ascending order," each
+    /// parent's own record preceding every one of its children's).
+    private static func breadthFirst(_ root: DirNode) -> [DirNode] {
+        var result: [DirNode] = []
+        var queue = [root]
+        while !queue.isEmpty {
+            let dir = queue.removeFirst()
+            result.append(dir)
+            queue.append(contentsOf: dir.subdirectories)
+        }
+        return result
+    }
+
+    private static func sectorCount(for byteCount: Int) -> Int {
+        max(1, (byteCount + sectorSize - 1) / sectorSize)
+    }
+
+    // MARK: - Directory records
+
+    /// One directory's own extent size in bytes: "." + ".." + every child
+    /// (subdirectory or file) as its own directory record, each padded to
+    /// even length, with records never allowed to span a sector boundary
+    /// (ECMA-119 6.8.1.2) — the running byte offset jumps to the next
+    /// sector boundary whenever a record wouldn't otherwise fit, same as
+    /// `ISO9660Reader.readDirectory`'s own zero-padding-skip logic on the
+    /// read side.
+    /// ECMA-119 6.8.2.1: every record in a directory (subdirectories and
+    /// files together, not directories-then-files) shall be sorted
+    /// ascending by File Identifier — merged and sorted here rather than
+    /// emitted as two separate blocks.
+    private static func sortedChildNames(_ dir: DirNode) -> [(name: String, isDirectory: Bool)] {
+        let dirNames = dir.subdirectories.map { (name: $0.name, isDirectory: true) }
+        let fileNames = dir.files.map { (name: $0.name + ";1", isDirectory: false) }
+        return (dirNames + fileNames).sorted { $0.name < $1.name }
+    }
+
+    private static func directoryExtentByteSize(_ dir: DirNode) -> Int {
+        var offset = 0
+        func place(_ recordSize: Int) {
+            if offset % sectorSize != 0, (offset % sectorSize) + recordSize > sectorSize {
+                offset = ((offset / sectorSize) + 1) * sectorSize
+            }
+            offset += recordSize
+        }
+        place(directoryRecordSize(nameLength: 1)) // "."
+        place(directoryRecordSize(nameLength: 1)) // ".."
+        for child in sortedChildNames(dir) { place(directoryRecordSize(nameLength: child.name.utf8.count)) }
+        return sectorCount(for: offset) * sectorSize
+    }
+
+    private static func directoryRecordSize(nameLength: Int) -> Int {
+        let base = 33 + nameLength
+        return base + (base % 2 == 0 ? 0 : 1) // pad to even total length
+    }
+
+    private static func writeDirectoryExtent(_ dir: DirNode, fileLBAs: [ObjectIdentifier: [String: UInt32]], into image: inout Data) {
+        let base = Int(dir.lba) * sectorSize
+        var offset = 0
+        func place(_ record: Data) {
+            if offset % sectorSize != 0, (offset % sectorSize) + record.count > sectorSize {
+                offset = ((offset / sectorSize) + 1) * sectorSize
+            }
+            image.replaceSubrange((image.startIndex + base + offset)..<(image.startIndex + base + offset + record.count), with: record)
+            offset += record.count
+        }
+        let parentLBA = dir.parent?.lba ?? dir.lba
+        let parentSize = dir.parent?.extentSize ?? dir.extentSize
+        place(directoryRecord(identifierByte: 0x00, lba: dir.lba, size: dir.extentSize, isDirectory: true)) // "."
+        place(directoryRecord(identifierByte: 0x01, lba: parentLBA, size: parentSize, isDirectory: true)) // ".."
+        let subsByName = Dictionary(uniqueKeysWithValues: dir.subdirectories.map { ($0.name, $0) })
+        let filesByName = Dictionary(uniqueKeysWithValues: dir.files.map { ($0.name, $0) })
+        for child in sortedChildNames(dir) {
+            if child.isDirectory, let sub = subsByName[child.name] {
+                place(directoryRecord(name: sub.name, lba: sub.lba, size: sub.extentSize, isDirectory: true))
+            } else if !child.isDirectory {
+                let baseName = String(child.name.dropLast(2)) // strip the ";1" version suffix back off
+                if let file = filesByName[baseName] {
+                    let lba = fileLBAs[ObjectIdentifier(dir)]?[file.name] ?? 0
+                    place(directoryRecord(name: child.name, lba: lba, size: UInt32(file.size), isDirectory: false))
+                }
+            }
+        }
+    }
+
+    private static func directoryRecord(identifierByte: UInt8, lba: UInt32, size: UInt32, isDirectory: Bool) -> Data {
+        directoryRecord(nameBytes: [identifierByte], lba: lba, size: size, isDirectory: isDirectory)
+    }
+
+    private static func directoryRecord(name: String, lba: UInt32, size: UInt32, isDirectory: Bool) -> Data {
+        directoryRecord(nameBytes: Array(name.utf8), lba: lba, size: size, isDirectory: isDirectory)
+    }
+
+    private static func directoryRecord(nameBytes: [UInt8], lba: UInt32, size: UInt32, isDirectory: Bool) -> Data {
+        var record = Data(count: directoryRecordSize(nameLength: nameBytes.count))
+        record[record.startIndex] = UInt8(record.count)
+        record[record.startIndex + 1] = 0 // extended attribute record length
+        writeBothEndianUInt32Data(lba, at: 2, in: &record)
+        writeBothEndianUInt32Data(size, at: 10, in: &record)
+        writeRecordingDateTime(at: 18, in: &record)
+        record[record.startIndex + 25] = isDirectory ? 0x02 : 0x00
+        record[record.startIndex + 26] = 0 // file unit size
+        record[record.startIndex + 27] = 0 // interleave gap size
+        writeBothEndianUInt16Data(1, at: 28, in: &record) // volume sequence number
+        record[record.startIndex + 32] = UInt8(nameBytes.count)
+        for (i, byte) in nameBytes.enumerated() { record[record.startIndex + 33 + i] = byte }
+        return record
+    }
+
+    // MARK: - Path tables
+
+    private struct PathTableEntry { let name: String; let parentIndex: UInt16 }
+
+    private static func pathTableRecordSize(nameLength: Int) -> Int {
+        8 + nameLength + (nameLength % 2 == 0 ? 0 : 1)
+    }
+
+    private static func writePathTable(entries: [PathTableEntry], dirs: [DirNode], bigEndian: Bool, at byteOffset: Int, into image: inout Data) {
+        var offset = byteOffset
+        for (entry, dir) in zip(entries, dirs) {
+            let nameBytes: [UInt8] = entry.name == "\0" ? [0] : Array(entry.name.utf8)
+            let recordSize = pathTableRecordSize(nameLength: nameBytes.count)
+            var record = Data(count: recordSize)
+            record[record.startIndex] = UInt8(nameBytes.count)
+            record[record.startIndex + 1] = 0 // extended attribute record length
+            if bigEndian {
+                writeUInt32BE(dir.lba, at: 2, in: &record)
+                writeUInt16BE(entry.parentIndex, at: 6, in: &record)
+            } else {
+                writeUInt32LE(dir.lba, at: 2, in: &record)
+                writeUInt16LE(entry.parentIndex, at: 6, in: &record)
+            }
+            for (i, byte) in nameBytes.enumerated() { record[record.startIndex + 8 + i] = byte }
+            image.replaceSubrange((image.startIndex + offset)..<(image.startIndex + offset + record.count), with: record)
+            offset += recordSize
+        }
+    }
+
+    // MARK: - Primary Volume Descriptor
+
+    private static func writePrimaryVolumeDescriptor(into image: inout Data, volumeLabel: String, totalSectors: UInt32, rootLBA: UInt32, rootSize: UInt32, pathTableSize: UInt32, pathTableLBA_L: UInt32, pathTableLBA_M: UInt32) {
+        let base = 16 * sectorSize
+        var pvd = Data(count: sectorSize)
+        pvd[pvd.startIndex] = 1 // type: Primary Volume Descriptor
+        for (i, byte) in Array("CD001".utf8).enumerated() { pvd[pvd.startIndex + 1 + i] = byte }
+        pvd[pvd.startIndex + 6] = 1 // version
+        writeDChars("", length: 32, at: 8, in: &pvd) // system identifier
+        writeDChars(volumeLabel, length: 32, at: 40, in: &pvd)
+        writeBothEndianUInt32Data(totalSectors, at: 80, in: &pvd)
+        writeBothEndianUInt16Data(1, at: 120, in: &pvd) // volume set size
+        writeBothEndianUInt16Data(1, at: 124, in: &pvd) // volume sequence number
+        writeBothEndianUInt16Data(UInt16(sectorSize), at: 128, in: &pvd)
+        writeBothEndianUInt32Data(pathTableSize, at: 132, in: &pvd)
+        writeUInt32LE(pathTableLBA_L, at: 140, in: &pvd)
+        writeUInt32LE(0, at: 144, in: &pvd) // optional 2nd Type-L path table — unused
+        writeUInt32BE(pathTableLBA_M, at: 148, in: &pvd)
+        writeUInt32BE(0, at: 152, in: &pvd) // optional 2nd Type-M path table — unused
+        let rootRecord = directoryRecord(identifierByte: 0x00, lba: rootLBA, size: rootSize, isDirectory: true)
+        pvd.replaceSubrange((pvd.startIndex + 156)..<(pvd.startIndex + 156 + rootRecord.count), with: rootRecord)
+        writeDChars("", length: 128, at: 190, in: &pvd) // volume set identifier
+        writeDChars("", length: 128, at: 318, in: &pvd) // publisher identifier
+        writeDChars("", length: 128, at: 446, in: &pvd) // data preparer identifier
+        writeDChars("", length: 128, at: 574, in: &pvd) // application identifier
+        writeVolumeTimestamp(at: 813, in: &pvd) // creation
+        writeVolumeTimestamp(at: 830, in: &pvd) // modification
+        writeUnspecifiedVolumeTimestamp(at: 847, in: &pvd) // expiration — not specified
+        writeVolumeTimestamp(at: 864, in: &pvd) // effective
+        pvd[pvd.startIndex + 881] = 1 // file structure version
+        image.replaceSubrange((image.startIndex + base)..<(image.startIndex + base + sectorSize), with: pvd)
+    }
+
+    private static func writeVolumeDescriptorSetTerminator(into image: inout Data) {
+        let base = 17 * sectorSize
+        var terminator = Data(count: sectorSize)
+        terminator[terminator.startIndex] = 255
+        for (i, byte) in Array("CD001".utf8).enumerated() { terminator[terminator.startIndex + 1 + i] = byte }
+        terminator[terminator.startIndex + 6] = 1
+        image.replaceSubrange((image.startIndex + base)..<(image.startIndex + base + sectorSize), with: terminator)
+    }
+
+    // MARK: - Field encoding helpers
+
+    private static func writeDChars(_ string: String, length: Int, at offset: Int, in data: inout Data) {
+        var bytes = Array(string.uppercased().utf8.prefix(length))
+        while bytes.count < length { bytes.append(0x20) } // space-padded, ECMA-119 7.4.1
+        for (i, byte) in bytes.enumerated() { data[data.startIndex + offset + i] = byte }
+    }
+
+    /// ECMA-119 8.4.26.1: 16 ASCII digit characters (`YYYYMMDDHHMMSSCC`)
+    /// plus a signed GMT-offset byte, all zero digits for "not specified."
+    private static func writeUnspecifiedVolumeTimestamp(at offset: Int, in data: inout Data) {
+        for i in 0..<16 { data[data.startIndex + offset + i] = UInt8(ascii: "0") }
+        data[data.startIndex + offset + 16] = 0
+    }
+
+    private static func writeVolumeTimestamp(at offset: Int, in data: inout Data) {
+        let calendar = Calendar(identifier: .gregorian)
+        var utcCalendar = calendar
+        utcCalendar.timeZone = TimeZone(identifier: "UTC")!
+        let now = Date()
+        let components = utcCalendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: now)
+        let text = String(format: "%04d%02d%02d%02d%02d%02d00", components.year ?? 1970, components.month ?? 1, components.day ?? 1, components.hour ?? 0, components.minute ?? 0, components.second ?? 0)
+        for (i, byte) in Array(text.utf8).enumerated() { data[data.startIndex + offset + i] = byte }
+        data[data.startIndex + offset + 16] = 0 // GMT offset: 0 = UTC
+    }
+
+    private static func writeRecordingDateTime(at offset: Int, in record: inout Data) {
+        // ECMA-119 9.1.5: 7 raw bytes (year-1900, month, day, hour, minute,
+        // second, GMT offset in 15-min intervals) — a *different* encoding
+        // from the PVD's 17-ASCII-digit timestamps above.
+        let calendar = Calendar(identifier: .gregorian)
+        var utcCalendar = calendar
+        utcCalendar.timeZone = TimeZone(identifier: "UTC")!
+        let components = utcCalendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: Date())
+        record[record.startIndex + offset] = UInt8(clamping: (components.year ?? 1970) - 1900)
+        record[record.startIndex + offset + 1] = UInt8(clamping: components.month ?? 1)
+        record[record.startIndex + offset + 2] = UInt8(clamping: components.day ?? 1)
+        record[record.startIndex + offset + 3] = UInt8(clamping: components.hour ?? 0)
+        record[record.startIndex + offset + 4] = UInt8(clamping: components.minute ?? 0)
+        record[record.startIndex + offset + 5] = UInt8(clamping: components.second ?? 0)
+        record[record.startIndex + offset + 6] = 0
+    }
+
+    private static func writeUInt32LE(_ value: UInt32, at offset: Int, in data: inout Data) {
+        data[data.startIndex + offset] = UInt8(value & 0xFF)
+        data[data.startIndex + offset + 1] = UInt8((value >> 8) & 0xFF)
+        data[data.startIndex + offset + 2] = UInt8((value >> 16) & 0xFF)
+        data[data.startIndex + offset + 3] = UInt8((value >> 24) & 0xFF)
+    }
+
+    private static func writeUInt32BE(_ value: UInt32, at offset: Int, in data: inout Data) {
+        data[data.startIndex + offset] = UInt8((value >> 24) & 0xFF)
+        data[data.startIndex + offset + 1] = UInt8((value >> 16) & 0xFF)
+        data[data.startIndex + offset + 2] = UInt8((value >> 8) & 0xFF)
+        data[data.startIndex + offset + 3] = UInt8(value & 0xFF)
+    }
+
+    private static func writeUInt16LE(_ value: UInt16, at offset: Int, in data: inout Data) {
+        data[data.startIndex + offset] = UInt8(value & 0xFF)
+        data[data.startIndex + offset + 1] = UInt8((value >> 8) & 0xFF)
+    }
+
+    private static func writeUInt16BE(_ value: UInt16, at offset: Int, in data: inout Data) {
+        data[data.startIndex + offset] = UInt8((value >> 8) & 0xFF)
+        data[data.startIndex + offset + 1] = UInt8(value & 0xFF)
+    }
+
+    private static func writeBothEndianUInt32Data(_ value: UInt32, at offset: Int, in data: inout Data) {
+        writeUInt32LE(value, at: offset, in: &data)
+        writeUInt32BE(value, at: offset + 4, in: &data)
+    }
+
+    private static func writeBothEndianUInt16Data(_ value: UInt16, at offset: Int, in data: inout Data) {
+        writeUInt16LE(value, at: offset, in: &data)
+        writeUInt16BE(value, at: offset + 2, in: &data)
+    }
+}

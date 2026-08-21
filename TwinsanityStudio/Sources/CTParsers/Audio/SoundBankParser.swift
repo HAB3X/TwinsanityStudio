@@ -35,12 +35,14 @@ import CTModels
 ///   <ADPCM data, `size` bytes>
 /// ```
 public enum SoundBankParser {
-    /// Stereo entries are real (62/143 in the real `MUSIC` bank) but this
-    /// build doesn't decode them yet — the reference tool's stereo demux
-    /// (`ADPCM.ToPCMStereo`, splitting an interleaved byte stream by a
-    /// per-bank `interleave` block size) isn't ported, so a stereo slot's
-    /// metadata is reported honestly with `sound == nil` rather than
-    /// fabricating audio for it.
+    /// Stereo entries are real (62/143 in the real `MUSIC` bank) and now
+    /// decoded via `ADPCMDecoder.toPCMStereo`, splitting the interleaved
+    /// byte stream by this bank's own `interleave` block size — the
+    /// reference tool's real `ADPCM.ToPCMStereo` (see that function's own
+    /// doc comment for why it's ported from there and not from the
+    /// `MHWorker.cs`/`ADPCM_Demux` call site, which is stale/non-compiling
+    /// code). Write-back stays verbatim-only (`rawData`) — see
+    /// `SoundEffectAsset.rightChannelSamples`'s doc comment.
     public static func parse(mhData: Data, mbData: Data, sourceLabel: String) throws -> SoundBankAsset {
         var cursor = BinaryCursor(data: mhData)
         let count = try cursor.readUInt32()
@@ -69,11 +71,16 @@ public enum SoundBankParser {
             case .stereo:
                 // No MSVp header for stereo — raw interleaved ADPCM sits
                 // directly at `offset` (see this type's own layout doc
-                // comment). Captured verbatim (never demuxed/decoded) so
-                // `MBWriter` can round-trip a bank that merely *contains*
-                // untouched stereo slots — see `SoundBankEntry.rawData`.
+                // comment). `rawData` is always captured verbatim
+                // regardless of decode success, so `MBWriter` can still
+                // round-trip a bank that merely *contains* stereo slots —
+                // see `SoundBankEntry.rawData`.
                 let rawData = Self.rawBytes(in: mbData, offset: offset, size: size)
-                entries.append(SoundBankEntry(index: index, rawKind: rawKind, size: size, offset: offset, sampleRateHz: mhSampleRate, skip: skip, name: "Stereo", sound: nil, rawData: rawData))
+                let sound = rawData.map { data -> SoundEffectAsset in
+                    let (left, right) = ADPCMDecoder.toPCMStereo(data, interleaveBytes: Int(interleave))
+                    return SoundEffectAsset(id: offset, sampleRateHz: UInt16(clamping: mhSampleRate), pcmSamples: left, rightChannelSamples: right)
+                }
+                entries.append(SoundBankEntry(index: index, rawKind: rawKind, size: size, offset: offset, sampleRateHz: mhSampleRate, skip: skip, name: "Stereo", sound: sound, rawData: rawData))
             }
         }
 

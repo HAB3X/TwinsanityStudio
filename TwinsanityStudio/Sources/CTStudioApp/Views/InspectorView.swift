@@ -31,6 +31,9 @@ struct InspectorView: View {
     /// every unrelated `@Published` change anywhere in `workspace`, not
     /// just when the selected node or the toggle actually changes.
     @State private var hexQuickViewBytes = Data()
+    /// "IDEditor" (generic, any record type) — see `IDEditorSheet`'s own
+    /// doc comment.
+    @State private var isChangingID = false
 
     var body: some View {
         Group {
@@ -54,6 +57,13 @@ struct InspectorView: View {
                             }
                             .toggleStyle(.button)
                             .help("Show this record's raw bytes in a docked, read-only split pane, synchronized to whatever's selected. For editing, use \"Open Full Hex Editor…\" inside it.")
+                            Button {
+                                isChangingID = true
+                            } label: {
+                                Label("Change ID…", systemImage: "number")
+                            }
+                            .disabled(!workspace.canSaveEdits(for: node))
+                            .help("Reassign this record's ID within its containing section — ports the reference editor's own generic ID Editor.")
                         }
                         if Self.isCompositeEligible(node.payload) {
                             Toggle(isOn: $showComposite) {
@@ -78,7 +88,7 @@ struct InspectorView: View {
                             case .skeleton(let skeleton):
                                 SkeletonInspectorView(node: node, skeleton: skeleton)
                             case .animation(let animation):
-                                AnimationInspectorView(animation: animation)
+                                AnimationInspectorView(node: node, animation: animation)
                             case .position(let position):
                                 PositionInspectorView(node: node, position: position)
                             case .instance(let instance):
@@ -100,9 +110,9 @@ struct InspectorView: View {
                             case .chunkLinks(let chunkLinks):
                                 ChunkLinksInspectorView(node: node, chunkLinks: chunkLinks)
                             case .aiPosition(let marker):
-                                AIPositionInspectorView(marker: marker)
+                                AIPositionInspectorView(node: node, marker: marker)
                             case .aiPath(let path):
-                                AIPathInspectorView(path: path)
+                                AIPathInspectorView(node: node, path: path)
                             case .lodModel(let lodModel):
                                 LodModelInspectorView(node: node, lodModel: lodModel)
                             case .collisionSurface(let surface):
@@ -138,6 +148,9 @@ struct InspectorView: View {
                     HexQuickView(bytes: hexQuickViewBytes) { workspace.hexViewerNode = node }
                         .frame(minWidth: 260, idealWidth: 320)
                 }
+                }
+                .sheet(isPresented: $isChangingID) {
+                    IDEditorSheet(node: node)
                 }
             } else {
                 ContentUnavailableView(

@@ -73,18 +73,28 @@ public struct AnimationTrack: Sendable, Codable {
     public var staticTransforms: [AnimStaticTransform]
     public var frames: [AnimFrame]
     public var componentsPerFrame: Int
+    /// Bits 7–10 of this track's own packer word (`AnimationDataPacker`/
+    /// `FacialAnimationDataPacker`) — 4 real bits the reference's own
+    /// `Animation.Save` deliberately never clears/reassigns (its three
+    /// `AnimationDataPacker &= ~(...)` masks cover bits 0–6, 11–21, and
+    /// 22–31, leaving exactly these 4 bits carried through from whatever
+    /// was loaded). No confirmed meaning — kept purely so a write-back
+    /// round-trips byte-exact instead of silently zeroing 4 real bits of
+    /// every animation this build ever saves.
+    public var reservedPackerBits: UInt32
 
-    public init(jointSettings: [AnimJointSettings], staticTransforms: [AnimStaticTransform], frames: [AnimFrame], componentsPerFrame: Int) {
+    public init(jointSettings: [AnimJointSettings], staticTransforms: [AnimStaticTransform], frames: [AnimFrame], componentsPerFrame: Int, reservedPackerBits: UInt32 = 0) {
         self.jointSettings = jointSettings
         self.staticTransforms = staticTransforms
         self.frames = frames
         self.componentsPerFrame = componentsPerFrame
+        self.reservedPackerBits = reservedPackerBits
     }
 
     public var totalFrames: Int { frames.count }
 
     private enum CodingKeys: String, CodingKey {
-        case jointSettings, staticTransforms, frameValues, componentsPerFrame
+        case jointSettings, staticTransforms, frameValues, componentsPerFrame, reservedPackerBits
     }
 
     /// Custom `Codable`, same reasoning and pattern as `MeshSubmesh`'s (see
@@ -107,6 +117,7 @@ public struct AnimationTrack: Sendable, Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         componentsPerFrame = try container.decode(Int.self, forKey: .componentsPerFrame)
+        reservedPackerBits = try container.decode(UInt32.self, forKey: .reservedPackerBits)
 
         let jointSettingsRaw = try container.decode(Data.self, forKey: .jointSettings).withUnsafeBytes { Array($0.bindMemory(to: UInt16.self)) }
         var decodedJointSettings: [AnimJointSettings] = []
@@ -140,6 +151,7 @@ public struct AnimationTrack: Sendable, Codable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(componentsPerFrame, forKey: .componentsPerFrame)
+        try container.encode(reservedPackerBits, forKey: .reservedPackerBits)
 
         var jointSettingsFlat: [UInt16] = []
         jointSettingsFlat.reserveCapacity(jointSettings.count * 4)
@@ -159,11 +171,17 @@ public struct AnimationTrack: Sendable, Codable {
 /// A fully decoded `Animation` record: body + facial tracks.
 public struct AnimationAsset: Sendable, Identifiable, Codable {
     public let id: UInt32
+    /// The record's real leading 4-byte field (`Animation.Bitfield`) — no
+    /// confirmed meaning anywhere in the reference tool either (written
+    /// back verbatim there, never interpreted), kept here purely so
+    /// `AnimationWriter` can round-trip it instead of zeroing it.
+    public var bitfield: UInt32
     public var body: AnimationTrack
     public var facial: AnimationTrack
 
-    public init(id: UInt32, body: AnimationTrack, facial: AnimationTrack) {
+    public init(id: UInt32, bitfield: UInt32 = 0, body: AnimationTrack, facial: AnimationTrack) {
         self.id = id
+        self.bitfield = bitfield
         self.body = body
         self.facial = facial
     }

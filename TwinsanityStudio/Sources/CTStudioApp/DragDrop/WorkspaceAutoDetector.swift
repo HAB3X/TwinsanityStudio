@@ -14,6 +14,11 @@ public enum DetectedFileKind: String, Sendable {
     /// nested inside it. Requires a sibling `.MB` in the same directory to
     /// actually load (see `WorkspaceViewModel`'s sound-bank load path).
     case soundBank
+    /// A standalone `.ptc`/`.psm`/`.psf` font/particle-sprite texture-atlas
+    /// container (`Twinsanity/Items/TwinsPTC.cs`/`TwinsPSM.cs`/`TwinsPSF.cs`)
+    /// — like `.soundBank`, entirely separate from the `.RM2`/`.SM2` chunk
+    /// tree, and (unlike `.soundBank`) fully self-contained in one file.
+    case ptcSheet
     case folder
     case unknown
 }
@@ -35,7 +40,7 @@ public struct DetectedFile: Sendable, Identifiable {
 /// which platform it targets, so the workspace can populate itself without
 /// the user picking a file type or endianness from a menu.
 public enum WorkspaceAutoDetector {
-    private static let knownExtensions: Set<String> = ["BH", "BD", "RM2", "SM2", "RMX", "SMX", "MH", "ISO", "BIN", "CUE"]
+    private static let knownExtensions: Set<String> = ["BH", "BD", "RM2", "SM2", "RMX", "SMX", "MH", "ISO", "BIN", "CUE", "PTC", "PSM", "PSF"]
 
     /// Detects a single file. Folders should be expanded with
     /// `scanFolder(_:)` first and each result passed through this.
@@ -49,6 +54,7 @@ public enum WorkspaceAutoDetector {
         case "SM2": return DetectedFile(url: url, kind: .sceneryResource, platform: .ps2)
         case "SMX": return DetectedFile(url: url, kind: .sceneryResource, platform: .xbox)
         case "MH": return DetectedFile(url: url, kind: .soundBank, platform: .ps2)
+        case "PTC", "PSM", "PSF": return DetectedFile(url: url, kind: .ptcSheet, platform: .ps2)
         case "ISO", "BIN", "CUE": return DetectedFile(url: url, kind: .unknown, platform: .ps2)
         default: return DetectedFile(url: url, kind: .unknown, platform: .unknown)
         }

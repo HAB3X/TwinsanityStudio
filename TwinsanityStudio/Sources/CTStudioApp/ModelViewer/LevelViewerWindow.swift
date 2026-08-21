@@ -13,6 +13,16 @@ import AVFoundation
 public struct LevelViewerContext: Identifiable {
     public let id = UUID()
     public var scenery: SceneryAsset
+    /// The real `.sm2`/`.smx` record `scenery` was decoded from — every
+    /// entry point into the Level Viewer is opened *from* this exact node
+    /// (`openLevelViewer(for:node:)`'s own `node` parameter), so it's
+    /// always the scenery file, never `referenceNodeForFileOps`'s actor
+    /// (`.rm2`) file. Needed for anything that has to resolve the
+    /// scenery file's own root — "Add Scenery From Other Level…" passing
+    /// the actor file's root here by mistake was a real bug (fixed by
+    /// adding this field instead of trying to derive it from a node in
+    /// the wrong file).
+    public var sceneryNode: ChunkNode
     public var placements: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)]
     /// "Direct .RM2 Write-Back": every `Instance` record (crate, enemy,
     /// platform, …) from the same file, paired with the `ChunkNode` its
@@ -69,6 +79,7 @@ public struct LevelViewerContext: Identifiable {
 
     public init(
         scenery: SceneryAsset,
+        sceneryNode: ChunkNode,
         placements: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)],
         instanceMarkers: [(node: ChunkNode, instance: PlacedInstance)] = [],
         resolvedInstanceAssets: [UUID: ResolvedModelAsset] = [:],
@@ -83,6 +94,7 @@ public struct LevelViewerContext: Identifiable {
         collisionMeshes: [(node: ChunkNode, mesh: CollisionMesh)] = []
     ) {
         self.scenery = scenery
+        self.sceneryNode = sceneryNode
         self.placements = placements
         self.instanceMarkers = instanceMarkers
         self.resolvedInstanceAssets = resolvedInstanceAssets
@@ -138,14 +150,16 @@ enum LevelViewMode: CaseIterable {
 /// inspector, the Objects list) stay pinned below the rail regardless of
 /// mode — every mode still needs "what am I looking at right now."
 enum LevelEditorMode: String, CaseIterable, Identifiable {
-    case select, place, terrain, ai, audio, advanced
+    case select, place, forgePalette, scenery, terrain, ai, audio, advanced
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
         case .select: return "Select"
-        case .place: return "Place"
+        case .place: return "Add"
+        case .forgePalette: return "Forge"
+        case .scenery: return "Scenery"
         case .terrain: return "Terrain"
         case .ai: return "AI"
         case .audio: return "Audio"
@@ -156,7 +170,9 @@ enum LevelEditorMode: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .select: return "cursorarrow"
-        case .place: return "hammer.fill"
+        case .place: return "plus.app.fill"
+        case .forgePalette: return "hammer.fill"
+        case .scenery: return "tree.fill"
         case .terrain: return "square.grid.3x3.fill"
         case .ai: return "point.3.connected.trianglepath.dotted"
         case .audio: return "speaker.wave.2.fill"
@@ -167,7 +183,9 @@ enum LevelEditorMode: String, CaseIterable, Identifiable {
     var helpText: String {
         switch self {
         case .select: return "Level stats and save"
-        case .place: return "Forge Palette — place new Instances, Triggers, and Cameras"
+        case .place: return "Add a new Trigger or Camera"
+        case .forgePalette: return "Forge Palette — place new Instances of any object in the game"
+        case .scenery: return "Every real scenery model, this level first — click one to place a new copy"
         case .terrain: return "Scene layer visibility and view mode"
         case .ai: return "AI waypoints and paths"
         case .audio: return "Chunk audio and scripted-trigger events"
@@ -247,6 +265,11 @@ struct LevelViewerWindow: View {
     /// the renderer itself is a plain class AppKit mutates directly, not an
     /// `ObservableObject`.
     @State private var armedPlacement: (objectID: UInt16, name: String)?
+    /// The one instance of `SceneryModeView`'s loaded-levels cache — a
+    /// `@StateObject` specifically so it survives switching `editorMode`
+    /// away from `.scenery` and back (see `SceneryLoadCache`'s own doc
+    /// comment for the bug this fixes).
+    @StateObject private var sceneryCache = SceneryLoadCache()
     /// "Numbered Hotbar (1-9)": what's pinned to each of the 9 slots —
     /// `nil` for an empty slot. Session-only, like `armedPlacement`; not
     /// persisted to disk. Pinned from the Forge Palette (a small pin
@@ -326,6 +349,7 @@ struct LevelViewerWindow: View {
             renderer?.magnetSnapEnabled = magnetSnapEnabled
             renderer?.rotationSnapDegrees = Float(rotationSnapDegrees)
             renderer?.layerVisibility = layerVisibility
+            workspace.currentViewerCameraPositionProvider = { [weak renderer] in renderer?.cameraEyeWorldPosition }
         }
         // "Robust Undo/Redo" (QoL sweep), scoped to object moves — the one
         // piece of mutable state this session actually introduced and
@@ -336,7 +360,10 @@ struct LevelViewerWindow: View {
         // selection/position fields in sync after ⌘Z/⌘⇧Z.
         .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidUndoChange)) { _ in syncFromRenderer() }
         .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidRedoChange)) { _ in syncFromRenderer() }
-        .onDisappear { stopScenePreviewTimer() }
+        .onDisappear {
+            stopScenePreviewTimer()
+            workspace.currentViewerCameraPositionProvider = nil
+        }
     }
 
     private func syncFromRenderer() {
@@ -358,11 +385,11 @@ struct LevelViewerWindow: View {
 
     /// Arms whatever's pinned to `slot` (1-9) for placement, identically to
     /// clicking that entry in the Forge Palette — including switching to
-    /// Place mode, so pressing a hotbar key works from any sidebar tab, not
-    /// just while the palette is already open.
+    /// the Forge Palette tab, so pressing a hotbar key works from any
+    /// sidebar tab, not just while the palette is already open.
     private func armHotbarSlot(_ slot: Int) {
         guard hotbarSlots.indices.contains(slot - 1), let entry = hotbarSlots[slot - 1] else { return }
-        editorMode = .place
+        editorMode = .forgePalette
         armedPlacement = (entry.objectID, entry.name)
         renderer?.pendingPlacementObjectID = entry.objectID
     }
@@ -690,28 +717,47 @@ struct LevelViewerWindow: View {
     /// Icon-button row switching which task-specific panel shows below —
     /// see `LevelEditorMode`'s own doc comment for the design rationale.
     private var modeRail: some View {
-        HStack(spacing: 4) {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
             ForEach(LevelEditorMode.allCases) { mode in
                 Button {
                     editorMode = mode
                 } label: {
-                    VStack(spacing: 3) {
-                        Image(systemName: mode.systemImage)
-                            .font(.system(size: 15))
-                        Text(mode.displayName).font(.caption2)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .foregroundStyle(editorMode == mode ? Color.accentColor : Color.secondary)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(editorMode == mode ? Color.accentColor.opacity(0.15) : Color.clear)
-                    )
+                    railTile(systemImage: mode.systemImage, label: mode.displayName, isActive: editorMode == mode)
                 }
                 .buttonStyle(.plain)
                 .help(mode.helpText)
             }
+            // Not a mode tab — an action button styled the same way, since
+            // it was a real, reported complaint that "Play" only lived
+            // buried inside Select mode's content (next to "Save Chunk
+            // Overrides…") instead of being reachable from this rail like
+            // everything else here.
+            if let referenceNode = referenceNodeForFileOps {
+                Button {
+                    quickLaunchThisChunk()
+                } label: {
+                    railTile(systemImage: "play.fill", label: "Play", isActive: false)
+                }
+                .buttonStyle(.plain)
+                .disabled(!workspace.canSaveEdits(for: referenceNode))
+                .help("Quick Launch — build a patched disc that boots straight into this chunk, with this session's own pending edits baked in, and launch it in PCSX2.")
+            }
         }
+    }
+
+    private func railTile(systemImage: String, label: String, isActive: Bool) -> some View {
+        VStack(spacing: 3) {
+            Image(systemName: systemImage)
+                .font(.system(size: 15))
+            Text(label).font(.caption2)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isActive ? Color.accentColor.opacity(0.15) : Color.clear)
+        )
     }
 
     @ViewBuilder
@@ -719,6 +765,8 @@ struct LevelViewerWindow: View {
         switch editorMode {
         case .select: selectModeContent
         case .place: placeModeContent
+        case .forgePalette: forgePaletteModeContent
+        case .scenery: sceneryModeContent
         case .terrain: modeAndLayersPanel
         case .ai: aiModeContent
         case .audio: audioModeContent
@@ -745,8 +793,17 @@ struct LevelViewerWindow: View {
             .foregroundStyle(.orange)
 
         if let referenceNode = referenceNodeForFileOps {
-            Button("Save Chunk Overrides…") { saveLevelOverrides() }
+            HStack {
+                Button("Save Chunk Overrides…") { saveLevelOverrides() }
+                    .disabled(!workspace.canSaveEdits(for: referenceNode))
+                Button {
+                    quickLaunchThisChunk()
+                } label: {
+                    Label("Quick Launch…", systemImage: "bolt.fill")
+                }
                 .disabled(!workspace.canSaveEdits(for: referenceNode))
+                .help("Build a patched disc that boots straight into this chunk, with this session's own pending edits baked in, and launch it in PCSX2.")
+            }
             if !workspace.canSaveEdits(for: referenceNode) {
                 Text("Editing only saves for a standalone-opened .RM2/.SM2 file — this level's file is archive-packed, which this build doesn't have a write path for yet.")
                     .font(.caption2)
@@ -755,21 +812,28 @@ struct LevelViewerWindow: View {
         }
     }
 
-    /// "Place" mode: the Forge Palette plus "Add Trigger"/"Add Camera" —
-    /// every way to bring a brand-new object into the level, in one place.
+    /// "Add" mode: just "Add Trigger"/"Add Camera" now — Instance placement
+    /// and Scenery each moved to their own top-level rail tab (see
+    /// `LevelEditorMode`'s own doc comment), the same real tab mechanism
+    /// `Select`/`Terrain`/etc. already use, not a floating modal window.
     @ViewBuilder
     private var placeModeContent: some View {
+        addTriggerCameraPanel
+    }
+
+    /// "Forge Palette" mode: browse every object in the game and arm one
+    /// to place with a viewport click — the sidebar's own full column,
+    /// not a popup blocking the viewport (nothing to dismiss: the
+    /// viewport sits right beside this sidebar, always clickable).
+    @ViewBuilder
+    private var forgePaletteModeContent: some View {
+        if let armedPlacement {
+            Text("Armed: \(armedPlacement.name) — click in the viewport to place it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
         ForgePaletteView(
             placedThisSession: renderer?.pendingNewInstances.count ?? 0,
-            // "Global Thumbnails": prefer this level's own resolution when
-            // it has one, but fall back to any object this session has
-            // already resolved successfully in a *different* level — see
-            // `WorkspaceViewModel.globalObjectThumbnails`'s doc comment.
-            // `renderer?.globalObjectFallbacks` is kept in sync here
-            // (cheap COW reference assignment) rather than the renderer
-            // holding a `workspace` reference of its own — `spawnInstance`
-            // consults the same dictionary, so what a thumbnail promises
-            // and what actually gets placed always agree.
             canResolve: { objectID in
                 renderer?.globalObjectFallbacks = workspace.globalObjectThumbnails
                 if let can = renderer?.canResolveObjectID(objectID), can { return true }
@@ -788,10 +852,19 @@ struct LevelViewerWindow: View {
             armedPlacement = (objectID, name)
             renderer?.pendingPlacementObjectID = objectID
         }
-        Divider()
-        ForgeSceneryPaletteView(placements: context.placements)
-        Divider()
-        addTriggerCameraPanel
+    }
+
+    /// "Scenery" mode: see `SceneryModeView`'s own doc comment — every
+    /// real scenery model, this level first, no folder to click through.
+    @ViewBuilder
+    private var sceneryModeContent: some View {
+        if let destinationRoot = workspace.fileRoot(containing: context.sceneryNode) {
+            SceneryModeView(
+                cache: sceneryCache,
+                destinationSceneryFileRoot: destinationRoot,
+                initialPosition: renderer?.cameraEyeWorldPosition ?? .zero
+            )
+        }
     }
 
     @ViewBuilder
@@ -1046,7 +1119,7 @@ struct LevelViewerWindow: View {
             case .camera(let camera):
                 CameraInspectorView(node: node, camera: camera)
             case .aiPosition(let marker):
-                AIPositionInspectorView(marker: marker)
+                AIPositionInspectorView(node: node, marker: marker)
             default:
                 Text("No inspector available for this record type.")
                     .font(.caption2)
@@ -1702,8 +1775,13 @@ struct LevelViewerWindow: View {
     /// placements (`pendingNewInstances`, encoded here via
     /// `WorldPlacementWriter.writeNewInstance` and structurally inserted
     /// by `ChunkSectionInserter`) in one combined file write.
-    private func saveLevelOverrides() {
-        guard let renderer, let referenceNode = referenceNodeForFileOps else { return }
+    /// The shared computation behind both "Save Chunk Overrides…" and
+    /// "Quick Launch…" — every pending transform/insertion/deletion this
+    /// session has made to `referenceNodeForFileOps`'s own file, patched
+    /// into real bytes. `nil` when there's nothing pending at all, so both
+    /// call sites can tell "no edits" apart from "patch failed."
+    private func computingPendingOverridePatch() -> (referenceNode: ChunkNode, bytes: Data, summary: String)? {
+        guard let renderer, let referenceNode = referenceNodeForFileOps else { return nil }
         let edits = renderer.pendingLevelOverrides + renderer.pendingAIWaypointOverrides
         let controlPointEdits = renderer.pendingCameraControlPointOverrides
         let newInstances = renderer.pendingNewInstances
@@ -1717,7 +1795,7 @@ struct LevelViewerWindow: View {
         guard !edits.isEmpty || !controlPointEdits.isEmpty || !newInstances.isEmpty || !newAIPositions.isEmpty
             || !newTriggers.isEmpty || !newCameras.isEmpty
             || !removedInstanceIDs.isEmpty || !removedTriggerIDs.isEmpty || !removedCameraIDs.isEmpty || !removedAIPositionIDs.isEmpty
-        else { return }
+        else { return nil }
 
         let encodedNewInstances = newInstances.map { entry in
             (id: entry.syntheticID, encoded: WorldPlacementWriter.writeNewInstance(
@@ -1738,8 +1816,22 @@ struct LevelViewerWindow: View {
             removingCameraIDs: removedCameraIDs,
             removingAIPositionIDs: removedAIPositionIDs,
             levelNode: referenceNode
-        ) else { return }
+        ) else { return nil }
 
+        var parts: [String] = []
+        if !edits.isEmpty { parts.append("\(edits.count) transform override(s)") }
+        if !controlPointEdits.isEmpty { parts.append("\(controlPointEdits.count) camera control point(s)") }
+        if !newInstances.isEmpty { parts.append("\(newInstances.count) newly placed object(s)") }
+        if !newAIPositions.isEmpty { parts.append("\(newAIPositions.count) newly placed waypoint(s)") }
+        if !newTriggers.isEmpty { parts.append("\(newTriggers.count) newly placed trigger(s)") }
+        if !newCameras.isEmpty { parts.append("\(newCameras.count) newly placed camera(s)") }
+        let removedTotal = removedInstanceIDs.count + removedTriggerIDs.count + removedCameraIDs.count + removedAIPositionIDs.count
+        if removedTotal > 0 { parts.append("\(removedTotal) deleted object(s)") }
+        return (referenceNode, patchedBytes, parts.joined(separator: " and "))
+    }
+
+    private func saveLevelOverrides() {
+        guard let (referenceNode, patchedBytes, summary) = computingPendingOverridePatch() else { return }
         guard let url = ExportPanel.chooseSaveLocation(
             suggestedName: "\(workspace.originalFileName(for: referenceNode) ?? "chunk")_edited.rm2",
             message: "Save the edited copy of this file, with every Instance/AI Waypoint/Camera control point's current position applied, every newly placed object/waypoint/trigger/camera added, and every deleted object removed. The original file on disk is not modified."
@@ -1747,22 +1839,33 @@ struct LevelViewerWindow: View {
         Task {
             do {
                 try await workspace.writeDataAsync(patchedBytes, to: url)
-                var summary = "Saved edited copy to \(url.lastPathComponent)"
-                var parts: [String] = []
-                if !edits.isEmpty { parts.append("\(edits.count) transform override(s)") }
-                if !controlPointEdits.isEmpty { parts.append("\(controlPointEdits.count) camera control point(s)") }
-                if !newInstances.isEmpty { parts.append("\(newInstances.count) newly placed object(s)") }
-                if !newAIPositions.isEmpty { parts.append("\(newAIPositions.count) newly placed waypoint(s)") }
-                if !newTriggers.isEmpty { parts.append("\(newTriggers.count) newly placed trigger(s)") }
-                if !newCameras.isEmpty { parts.append("\(newCameras.count) newly placed camera(s)") }
-                let removedTotal = removedInstanceIDs.count + removedTriggerIDs.count + removedCameraIDs.count + removedAIPositionIDs.count
-                if removedTotal > 0 { parts.append("\(removedTotal) deleted object(s)") }
-                summary += " with " + parts.joined(separator: " and ") + ". The original file was not modified."
-                workspace.statusMessage = summary
+                workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent) with \(summary). The original file was not modified."
             } catch {
                 workspace.lastError = "Save failed: \(error)"
             }
         }
+    }
+
+    /// "Contextual / Chunk-Specific Launch" — hands `GameLauncherView` a
+    /// real plan built from exactly what "Save Chunk Overrides…" would
+    /// have written, without a save dialog first: this level's own real
+    /// archive base name (so the patched executable boots straight into
+    /// it, bypassing the main menu — `ExecutablePatcher.
+    /// writingStartingChunkPath`) plus, if there's anything pending, this
+    /// session's own live edits baked in as an archive replacement.
+    private func quickLaunchThisChunk() {
+        guard let referenceNode = referenceNodeForFileOps, let actorFileRoot = workspace.fileRoot(containing: referenceNode) else { return }
+        let baseName = (actorFileRoot.displayName as NSString).deletingPathExtension
+        var replacements: [String: Data] = [:]
+        var summary = "Boots \(baseName) exactly as it is on the disc — no pending edits to bake in."
+        if let patch = computingPendingOverridePatch() {
+            replacements[actorFileRoot.displayName] = patch.bytes
+            summary = "Boots \(baseName) with this session's own pending edits baked in — \(patch.summary)."
+        }
+        workspace.gameLauncherContext = WorkspaceViewModel.GameLauncherContext(
+            summary: summary, startingChunkBaseName: baseName, archiveReplacements: replacements
+        )
+        workspace.isGameLauncherPresented = true
     }
 
     /// Registers one ⌘Z step restoring the selected object's full
@@ -2042,12 +2145,12 @@ private struct ForgePaletteView: View {
                     } label: {
                         HStack {
                             paletteThumbnail(for: entry.id, resolvable: resolvable)
-                                .frame(width: 28, height: 28)
+                                .frame(width: 40, height: 40)
                                 .onAppear { loadThumbnailIfNeeded(for: entry.id) }
-                            Text(entry.name).lineLimit(1).font(.caption)
+                            Text(entry.name).lineLimit(1).font(.callout)
                                 .foregroundStyle(resolvable ? .primary : .secondary)
                             Spacer()
-                            Text("#\(entry.id)").font(.caption2).foregroundStyle(.tertiary)
+                            Text("#\(entry.id)").font(.caption).foregroundStyle(.tertiary)
                         }
                     }
                     .buttonStyle(.plain)
@@ -2060,16 +2163,16 @@ private struct ForgePaletteView: View {
                     .buttonStyle(.borderless)
                     .help("Pin to the numbered hotbar (next open 1-9 slot)")
                 }
-                .padding(.vertical, 2)
-                .padding(.horizontal, 4)
-                .background(isArmed ? Color.yellow.opacity(0.28) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                .padding(.vertical, 4)
+                .padding(.horizontal, 6)
+                .background(isArmed ? Color.yellow.opacity(0.28) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 4)
+                    RoundedRectangle(cornerRadius: 6)
                         .stroke(isArmed ? Color.yellow : Color.clear, lineWidth: 1.5)
                 )
-                .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
+                .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
             }
-            .frame(height: 220)
+            .frame(minHeight: 460, maxHeight: .infinity)
             .listStyle(.bordered)
         }
     }
@@ -2115,101 +2218,392 @@ private struct ForgePaletteView: View {
     }
 }
 
-/// "Forge Palette Environment Assets": the structural scenery pieces
-/// (trees, rocks, terrain chunks, ocean panels, …) that make up this
-/// level's world — real `SceneryModelPlacement`s, already resolved and
-/// rendered by the viewport's own `.scenery` layer (`context.placements`),
-/// grouped here by distinct model so browsing them doesn't mean scrolling
-/// every individual placement. Deliberately browse-only: unlike the
-/// Instance palette above, this build has no verified write path for
-/// *creating* a new `SceneryData` placement (see `selectModeContent`'s own
-/// note on this) — clicking a row here would either have to fake a save
-/// that doesn't work or silently do nothing, both worse than not offering
-/// the affordance at all. What it does offer is real: an actual thumbnail
-/// of the actual mesh, reusing the exact same `ModelThumbnailRenderer`
-/// the Instance palette already uses, not a generic placeholder icon.
-private struct ForgeScenerySummary: Identifiable {
-    var id: UInt32
+/// "Scenery" mode's real content — one continuous scrolling list, this
+/// level's own scenery always first, every other real level in this
+/// session streaming in right behind it as each one's catalog resolves.
+/// Deliberately no level picker to click through first: every level
+/// `WorkspaceViewModel.sceneryLevelSources` finds loads eagerly, in the
+/// background, one at a time — a real level's own graphics file can be
+/// several megabytes, so this is a genuinely honest cost (see the loading
+/// counter at the bottom), not a hidden one. Click a real thumbnail to
+/// place a new copy of it right at the viewer's current camera position:
+/// this level's own scenery duplicates in place
+/// (`WorkspaceViewModel.duplicatingSceneryPlacement`, one file, one save);
+/// another level's scenery copies its real geometry in first
+/// (`WorkspaceViewModel.placingSceneryFromAnotherLevel`, two files, two
+/// saves) — see that method's own doc comment for exactly what "root
+/// group only" means.
+/// One level's scenery catalog, once resolved — `SceneryLoadCache`'s own
+/// unit of storage.
+struct SceneryModeSection: Identifiable {
+    var id: String
     var displayName: String
-    var placementCount: Int
-    var asset: ResolvedModelAsset
+    var isCurrentLevel: Bool
+    var sceneryRoot: ChunkNode
+    var graphicsRoot: ChunkNode
+    var graphicsBytes: Data
+    var catalog: [WorkspaceViewModel.SceneryCatalogEntry]
 }
 
-private struct ForgeSceneryPaletteView: View {
-    let placements: [(worldPosition: SIMD3<Float>, rotation: simd_quatf, scale: SIMD3<Float>, asset: ResolvedModelAsset)]
-
-    @State private var thumbnailCache: [UInt32: NSImage] = [:]
-    @State private var failedThumbnailIDs: Set<UInt32> = []
-
-    private var summaries: [ForgeScenerySummary] {
-        var byRecordID: [UInt32: (count: Int, asset: ResolvedModelAsset)] = [:]
-        for placement in placements {
-            let recordID = placement.asset.recordID
-            byRecordID[recordID, default: (0, placement.asset)].count += 1
-        }
-        return byRecordID.map { recordID, entry in
-            ForgeScenerySummary(id: recordID, displayName: entry.asset.displayName, placementCount: entry.count, asset: entry.asset)
-        }.sorted { $0.displayName < $1.displayName }
+/// Owns everything `SceneryModeView` would otherwise lose every time the
+/// user leaves the Scenery tab and comes back — a real, reported bug:
+/// `SceneryModeView` is one branch of `LevelEditorMode`'s `@ViewBuilder`
+/// switch, so SwiftUI tears the whole view (and every `@State` it owned)
+/// down the moment `editorMode` changes to anything else, and builds a
+/// brand-new one — with loading started over from zero — the moment it
+/// changes back. `LevelViewerWindow` holds the one instance of this class
+/// as a `@StateObject`, which *does* survive that switch (its own
+/// lifetime is the whole Level Viewer window, not one mode tab), and
+/// hands the same instance to `SceneryModeView` every time regardless of
+/// which mode tab is currently showing.
+@MainActor
+final class SceneryLoadCache: ObservableObject {
+    /// The current level specifically — surfaced separately from the
+    /// generic "N of 134 loaded" counter so "where's *my* level" always
+    /// has a real, visible answer instead of silently blending into a
+    /// queue position the user can't see. Real reported confusion: with
+    /// only the generic counter, a current level that was slow (or
+    /// genuinely had zero scenery) looked identical to one silently stuck.
+    enum CurrentLevelStatus: Equatable {
+        case loading
+        case ready
+        case empty
+        /// Didn't turn up anywhere in `sceneryLevelSources` at all — a
+        /// real, different failure from "still loading" or "empty."
+        case notFound
+        case failed(String)
     }
 
+    @Published var didStartLoading = false
+    @Published var currentLevelStatus: CurrentLevelStatus = .loading
+    @Published var sections: [SceneryModeSection] = []
+    @Published var totalSourceCount = 0
+    @Published var loadedCount = 0
+    @Published var thumbnailCache: [String: NSImage] = [:]
+    @Published var failedThumbnailIDs: Set<String> = []
+}
+
+struct SceneryModeView: View {
+    @EnvironmentObject private var workspace: WorkspaceViewModel
+    @ObservedObject var cache: SceneryLoadCache
+    let destinationSceneryFileRoot: ChunkNode
+    let initialPosition: SIMD3<Float>
+
+    private typealias Section = SceneryModeSection
+
+    @State private var placingKey: String?
+    @State private var errorMessage: String?
+    @State private var statusMessage: String?
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("Scenery", systemImage: "tree.fill").font(.subheadline.bold())
-            Text("The real structural scenery pieces placed in this level — browse-only, since this build has no verified write path for creating a new scenery placement yet.")
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Scenery", systemImage: "tree.fill").font(.headline)
+            Text("Click a real thumbnail to place a new copy of it right at the viewer's current camera position. This level's own scenery is always first.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            if summaries.isEmpty {
-                Text("This level's own scenery data decoded to zero placements.")
+            currentLevelStatusView
+
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+            if let statusMessage {
+                Text(statusMessage).font(.caption2).foregroundStyle(.secondary)
+            }
+
+            if cache.didStartLoading, cache.sections.isEmpty, cache.loadedCount >= cache.totalSourceCount {
+                Text("No real scenery models found anywhere this session.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 64, maximum: 80), spacing: 8)], spacing: 8) {
-                        ForEach(summaries) { summary in
-                            VStack(spacing: 2) {
-                                sceneryThumbnail(for: summary)
-                                    .frame(width: 56, height: 56)
-                                    .onAppear { loadThumbnailIfNeeded(for: summary) }
-                                Text(summary.displayName).font(.caption2).lineLimit(1)
-                                Text("×\(summary.placementCount)").font(.caption2).foregroundStyle(.secondary)
+            }
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(cache.sections) { section in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label(
+                                section.isCurrentLevel ? "\(section.displayName) (this level)" : section.displayName,
+                                systemImage: section.isCurrentLevel ? "star.fill" : "doc.text"
+                            )
+                            .font(.subheadline.bold())
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 72, maximum: 92), spacing: 8)], spacing: 8) {
+                                ForEach(section.catalog) { entry in
+                                    tile(section: section, entry: entry)
+                                }
                             }
-                            .help(summary.displayName)
                         }
+                        Divider()
                     }
                 }
-                .frame(height: 140)
+                .padding(.vertical, 4)
+            }
+            .frame(minHeight: 420, maxHeight: .infinity)
+
+            if cache.didStartLoading, cache.loadedCount < cache.totalSourceCount {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Loading other levels… (\(cache.loadedCount)/\(cache.totalSourceCount)) — already-loaded ones above are ready to click now.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
+        .onAppear { loadAllLevels() }
     }
 
     @ViewBuilder
-    private func sceneryThumbnail(for summary: ForgeScenerySummary) -> some View {
-        if let thumbnail = thumbnailCache[summary.id] {
-            Image(nsImage: thumbnail)
+    private var currentLevelStatusView: some View {
+        switch cache.currentLevelStatus {
+        case .loading:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("Loading this level's own scenery…").font(.caption2).foregroundStyle(.secondary)
+            }
+        case .ready:
+            EmptyView()
+        case .empty:
+            Label("This level's own scenery data decoded to zero placements.", systemImage: "info.circle")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        case .notFound:
+            Label("Couldn't identify this level among the levels this session can browse — its scenery won't appear here.", systemImage: "exclamationmark.triangle")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+        case .failed(let reason):
+            Label("This level's own scenery failed to load: \(reason)", systemImage: "exclamationmark.triangle")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private func tile(section: Section, entry: WorkspaceViewModel.SceneryCatalogEntry) -> some View {
+        let key = "\(section.id)|\(entry.id)"
+        return Button {
+            place(section: section, entry: entry, key: key)
+        } label: {
+            VStack(spacing: 3) {
+                thumbnail(key: key, entry: entry)
+                    .frame(width: 64, height: 64)
+                    .onAppear { loadThumbnailIfNeeded(key: key, entry: entry) }
+                Text(entry.asset.displayName).font(.caption2).lineLimit(1)
+                Text("×\(entry.count)").font(.caption2).foregroundStyle(.secondary)
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity)
+            .background(Color.gray.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(placingKey == key ? Color.accentColor : Color.clear, lineWidth: 2)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(placingKey != nil)
+        .help("Click to place a new copy of \(entry.asset.displayName) right here")
+    }
+
+    @ViewBuilder
+    private func thumbnail(key: String, entry: WorkspaceViewModel.SceneryCatalogEntry) -> some View {
+        if placingKey == key {
+            ProgressView().controlSize(.small)
+        } else if let image = cache.thumbnailCache[key] {
+            Image(nsImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-        } else if failedThumbnailIDs.contains(summary.id) {
-            Image(systemName: "questionmark.square.dashed")
-                .foregroundStyle(.secondary)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+        } else if cache.failedThumbnailIDs.contains(key) {
+            Image(systemName: "cube.transparent")
+                .font(.title2)
+                .foregroundStyle(.orange)
         } else {
             ProgressView().controlSize(.mini)
         }
     }
 
-    private func loadThumbnailIfNeeded(for summary: ForgeScenerySummary) {
-        guard thumbnailCache[summary.id] == nil, !failedThumbnailIDs.contains(summary.id) else { return }
-        let asset = summary.asset
-        let id = summary.id
+    private func loadThumbnailIfNeeded(key: String, entry: WorkspaceViewModel.SceneryCatalogEntry) {
+        guard cache.thumbnailCache[key] == nil, !cache.failedThumbnailIDs.contains(key) else { return }
+        let asset = entry.asset
         Task.detached(priority: .userInitiated) {
             let image = ModelThumbnailRenderer.render(asset, size: 64)
             await MainActor.run {
                 if let image {
-                    thumbnailCache[id] = image
+                    cache.thumbnailCache[key] = image
                 } else {
-                    failedThumbnailIDs.insert(id)
+                    cache.failedThumbnailIDs.insert(key)
                 }
+            }
+        }
+    }
+
+    /// `cache.didStartLoading` makes this a real no-op on every mode-tab
+    /// re-entry after the first — `cache` itself is what actually survives
+    /// the tab switch (see `SceneryLoadCache`'s own doc comment); without
+    /// it this used to restart all ~130+ levels from zero on every single
+    /// visit to this tab, a real reported bug.
+    ///
+    /// This level loads on its own dedicated `Task`, never queued behind
+    /// anything else — a real reported complaint that waiting on 130+
+    /// other levels before even *this* one's own scenery showed up
+    /// defeated the entire point of "this level first." Every other level
+    /// loads across a handful of concurrent lanes (not one long queue)
+    /// so what's already resolved keeps appearing without waiting on the
+    /// slowest remaining file — plain parallel `Task`s, not a `TaskGroup`,
+    /// specifically to avoid the `Sendable`-capture hazards a `TaskGroup`
+    /// closing over this View's own `@State`/`ChunkNode`/
+    /// `WorkspaceViewModel` would raise.
+    private func loadAllLevels() {
+        guard !cache.didStartLoading else { return }
+        cache.didStartLoading = true
+        let sources = workspace.sceneryLevelSources(excluding: nil)
+        cache.totalSourceCount = sources.count
+        guard !sources.isEmpty else { return }
+
+        // Real bug this fixes: matching by `openFileRoot === destinationSceneryFileRoot`
+        // alone only ever recognized a level opened as a genuinely
+        // standalone loose file. The much more common real case — a level
+        // reached by browsing into a mounted archive/ISO — lives as a
+        // *nested child* of the archive's own root, never a top-level
+        // `rootNodes` entry itself, so `otherLevelSceneryFileRoots` (which
+        // only filters `rootNodes` directly) never matched it; it fell
+        // into `sceneryLevelSources`'s generic name-only archive-entry
+        // list instead, indistinguishable from any other level and queued
+        // behind however many others happened to sort before it. Matching
+        // by bare filename catches both shapes uniformly, since
+        // `SceneryLevelSource.displayName` is always just the bare
+        // filename either way.
+        let currentLevelSource = sources.first { isDestinationLevel(named: $0.displayName) }
+        let otherSources = sources.filter { !isDestinationLevel(named: $0.displayName) }
+
+        if let currentLevelSource {
+            Task { await loadOneLevel(currentLevelSource) }
+        } else {
+            cache.currentLevelStatus = .notFound
+        }
+
+        let laneCount = min(4, max(1, otherSources.count))
+        for lane in 0..<laneCount {
+            let laneSources = stride(from: lane, to: otherSources.count, by: laneCount).map { otherSources[$0] }
+            Task {
+                for source in laneSources {
+                    await loadOneLevel(source)
+                }
+            }
+        }
+    }
+
+    private func loadOneLevel(_ source: WorkspaceViewModel.SceneryLevelSource) async {
+        let isCurrent = isDestinationLevel(named: source.displayName)
+        guard let loaded = await workspace.loadingSceneryLevelSource(source) else {
+            cache.loadedCount += 1
+            if isCurrent { cache.currentLevelStatus = .failed(workspace.lastError ?? "Couldn't load \(source.displayName).") }
+            return
+        }
+        let catalog = await workspace.resolvedSceneryCatalog(sceneryRoot: loaded.sceneryRoot, graphicsRoot: loaded.graphicsRoot)
+        cache.loadedCount += 1
+        guard !catalog.isEmpty else {
+            if isCurrent { cache.currentLevelStatus = .empty }
+            return
+        }
+        let section = Section(
+            id: source.id, displayName: source.displayName,
+            isCurrentLevel: isCurrent,
+            sceneryRoot: loaded.sceneryRoot, graphicsRoot: loaded.graphicsRoot, graphicsBytes: loaded.graphicsBytes,
+            catalog: catalog
+        )
+        if section.isCurrentLevel {
+            cache.currentLevelStatus = .ready
+            cache.sections.insert(section, at: 0)
+        } else {
+            cache.sections.append(section)
+        }
+    }
+
+    /// Real bug this fixes: `sceneryRoot === destinationSceneryFileRoot`
+    /// (reference identity) only matches when the source came from
+    /// `.openFile` — an archive-entry source is freshly parsed each time
+    /// (a brand-new `ChunkNode`, never the same object), so it always
+    /// failed this check even when it genuinely *is* the destination
+    /// level, silently taking the cross-file copy path (and needing
+    /// `loadingDestinationGraphics` to independently succeed) instead of
+    /// the simpler, always-correct same-file duplicate. Bare-filename
+    /// comparison is robust to both shapes.
+    private func isDestinationLevel(named displayName: String) -> Bool {
+        displayName.caseInsensitiveCompare(destinationSceneryFileRoot.displayName) == .orderedSame
+    }
+
+    private func place(section: Section, entry: WorkspaceViewModel.SceneryCatalogEntry, key: String) {
+        guard placingKey == nil else { return }
+        errorMessage = nil
+        placingKey = key
+
+        if section.isCurrentLevel {
+            guard let bytes = workspace.duplicatingSceneryPlacement(
+                modelID: entry.modelID, isSpecial: entry.isSpecial, position: SIMD4(initialPosition, 1),
+                sceneryFileRoot: destinationSceneryFileRoot
+            ) else {
+                placingKey = nil
+                errorMessage = workspace.lastError ?? "Couldn't place \(entry.asset.displayName)."
+                return
+            }
+            placingKey = nil
+            saveSingleFile(bytes, placedName: entry.asset.displayName)
+            return
+        }
+
+        Task {
+            guard let destinationGraphics = await workspace.loadingDestinationGraphics(for: destinationSceneryFileRoot) else {
+                placingKey = nil
+                errorMessage = workspace.lastError ?? "Couldn't reach this level's own .rm2 to copy geometry into."
+                return
+            }
+            guard let result = workspace.placingSceneryFromAnotherLevel(
+                modelID: entry.modelID, isSpecial: entry.isSpecial, position: SIMD4(initialPosition, 1),
+                sourceGraphicsRoot: section.graphicsRoot, sourceGraphicsBytes: section.graphicsBytes,
+                destinationSceneryFileRoot: destinationSceneryFileRoot,
+                destinationGraphicsRoot: destinationGraphics.graphicsRoot, destinationGraphicsBytes: destinationGraphics.graphicsBytes
+            ) else {
+                placingKey = nil
+                errorMessage = workspace.lastError ?? "Couldn't place \(entry.asset.displayName)."
+                return
+            }
+            placingKey = nil
+            saveBothFiles(result, placedName: entry.asset.displayName)
+        }
+    }
+
+    private func saveSingleFile(_ bytes: Data, placedName: String) {
+        guard let url = ExportPanel.chooseSaveLocation(
+            suggestedName: "\((destinationSceneryFileRoot.displayName as NSString).deletingPathExtension)_edited.\((destinationSceneryFileRoot.displayName as NSString).pathExtension)",
+            message: "Save the edited copy of this level's scenery, with \(placedName) newly placed. The original file on disk is not modified."
+        ) else { return }
+        Task {
+            do {
+                try await workspace.writeDataAsync(bytes, to: url)
+                statusMessage = "Placed \(placedName). Saved \(url.lastPathComponent). The original file was not modified."
+                workspace.statusMessage = statusMessage ?? ""
+            } catch {
+                errorMessage = "Save failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func saveBothFiles(_ result: WorkspaceViewModel.CrossLevelSceneryPlacementResult, placedName: String) {
+        guard let folder = ExportPanel.chooseFolder(message: "Choose a folder to save both edited files into — the destination level's .sm2 (with \(placedName) newly placed) and its .rm2 (with the copied geometry). The originals on disk are not modified.") else { return }
+        let sceneryName = (result.sceneryFileRoot.displayName as NSString).deletingPathExtension
+        let sceneryExt = (result.sceneryFileRoot.displayName as NSString).pathExtension
+        let graphicsName = (result.graphicsFileRoot.displayName as NSString).deletingPathExtension
+        let graphicsExt = (result.graphicsFileRoot.displayName as NSString).pathExtension
+        let sceneryURL = folder.appendingPathComponent("\(sceneryName)_edited").appendingPathExtension(sceneryExt)
+        let graphicsURL = folder.appendingPathComponent("\(graphicsName)_edited").appendingPathExtension(graphicsExt)
+        Task {
+            do {
+                try await workspace.writeDataAsync(result.sceneryBytes, to: sceneryURL)
+                try await workspace.writeDataAsync(result.graphicsBytes, to: graphicsURL)
+                statusMessage = "Placed \(placedName). Saved \(sceneryURL.lastPathComponent) and \(graphicsURL.lastPathComponent) to \(folder.lastPathComponent). Neither original file was modified."
+                workspace.statusMessage = statusMessage ?? ""
+            } catch {
+                errorMessage = "Save failed: \(error.localizedDescription)"
             }
         }
     }

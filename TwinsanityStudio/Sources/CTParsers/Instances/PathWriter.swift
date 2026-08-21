@@ -4,9 +4,12 @@ import CTModels
 
 /// Encodes a `PathAsset` back to its real on-disk layout — the exact
 /// inverse of `PathParser.parse` (mirrors `Editors/PathEditor.cs` in the
-/// reference tool). Only safe to use with `WorkspaceViewModel.
-/// patchedFileBytes(replacing:with:)` when `positions.count`/`params.count`
-/// are unchanged from the decoded record.
+/// reference tool). `positions.count`/`params.count` may differ from the
+/// decoded record (adding/removing points or params) — use
+/// `WorkspaceViewModel.patchedFileBytes(replacingWholeRecord:with:)` in
+/// that case, since this record's on-disk size then changes; the
+/// fixed-size `patchedFileBytes(replacing:with:)` only works when both
+/// counts stay exactly what they were.
 public enum PathWriter {
     public static func write(_ path: PathAsset) -> Data {
         var w = BinaryWriter()

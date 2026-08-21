@@ -127,6 +127,67 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
         XCTAssertEqual(workspace.rootNodes.count, rootCountBefore + 1, "opening the same chunk link twice should select the existing entry, not duplicate it")
     }
 
+    /// Real, reported gap: "editing a level reached by browsing a mounted
+    /// ISO" is the *normal* way anyone opens a level (versus manually
+    /// picking a loose `.rm2` file from disk), but `expandArchiveEntry`
+    /// used to never register the file's own raw bytes into
+    /// `rawFileBytesByRootID` — only a genuinely standalone `Data(
+    /// contentsOf:)` open did. Every save path in the app
+    /// (`canSaveEdits`/`patchedFileBytes`, and everything built on them —
+    /// "Save Chunk Overrides…", Quick Launch's pending-edit bake-in) gates
+    /// on exactly that dictionary, so a level reached by browsing an
+    /// archive silently couldn't be saved: the button just showed
+    /// disabled, with no error explaining why. This opens the real
+    /// `CRASH.BH` archive (not a mounted disc, but the exact same
+    /// `expandArchiveEntry` code path a mounted-ISO browse converges on —
+    /// see `openDiscEntry`'s own doc comment), expands a real level, and
+    /// confirms it's now genuinely save-able.
+    func testExpandingArchiveEntryRegistersRawBytesSoTheLevelBecomesSaveable() async throws {
+        let bhURL = URL(fileURLWithPath: "/Users/marcuschandler/Documents/Crash Twinsanity/Games Files/PS2 FILES/CRASH6/CRASH.BH")
+        guard FileManager.default.fileExists(atPath: bhURL.path) else {
+            throw XCTSkip("Real CRASH.BH not present on this machine.")
+        }
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: bhURL)
+
+        guard let archiveRoot = workspace.rootNodes.first,
+              let fileEntry = archiveRoot.children.first(where: { $0.displayName == "Levels/Earth/Hub/beach.rm2" })
+        else {
+            return XCTFail("couldn't find Levels/Earth/Hub/beach.rm2 in the real archive index")
+        }
+
+        XCTAssertFalse(workspace.canSaveEdits(for: fileEntry), "an unexpanded archive entry has no bytes to save yet")
+
+        await workspace.expandArchiveEntry(fileEntry, rootID: archiveRoot.id)
+        guard let expanded = workspace.rootNodes.first?.children.first(where: { $0.displayName == "Levels/Earth/Hub/beach.rm2" }) else {
+            return XCTFail("expandArchiveEntry should have replaced the entry with its parsed contents")
+        }
+
+        XCTAssertTrue(workspace.canSaveEdits(for: expanded), "expanding a real archive entry must register its raw bytes so it becomes save-able, the same as a standalone-opened file — canSaveEdits is exactly rawFileBytesByRootID[fileRoot.id] != nil, the precise dictionary this fix populates")
+
+        // Prove it's not just the flag agreeing with itself: a real
+        // whole-record patch (a genuine no-op — replacing a real Instance's
+        // own already-decoded, re-encoded 28-byte transform prefix) must
+        // actually find real tracked bytes to patch into and succeed, not
+        // fail for lack of a standalone-opened file.
+        var instanceEdit: (node: ChunkNode, encoded: Data)?
+        func walk(_ node: ChunkNode) {
+            if instanceEdit == nil, case .instance(let instance) = node.payload {
+                let encoded = WorldPlacementWriter.writeInstanceTransform(
+                    position: instance.position, rotationRaw: instance.rotationRaw, comRotationRaw: instance.comRotationRaw
+                )
+                instanceEdit = (node, encoded)
+            }
+            for child in node.children { walk(child) }
+        }
+        walk(expanded)
+        guard let instanceEdit else {
+            return XCTFail("expected beach.rm2 to have at least one real Instance record")
+        }
+        let patched = workspace.patchedFileBytes(applyingPrefixPatches: [instanceEdit])
+        XCTAssertNotNil(patched, "a real prefix patch against the now-expanded level should succeed, not fail for lack of tracked bytes; lastError=\(workspace.lastError ?? "nil")")
+    }
+
     /// "Visual Loading Feedback" (performance mandate, Part 4): a real
     /// scan reports real, monotonically-increasing progress and clears it
     /// on completion — never left stuck showing a stale percentage.

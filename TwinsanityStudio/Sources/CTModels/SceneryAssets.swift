@@ -135,10 +135,18 @@ public struct SceneryModelPlacement: Sendable {
 public struct SceneryModelGroup: Sendable {
     public var header: UInt32
     public var placements: [SceneryModelPlacement]
+    /// `SceneryModelStruct.UnkPos[5]` — 5 real, always-present `Vector4`s
+    /// (`SceneryDataParser`'s own doc comment: "always present, unused by
+    /// this reader") trailing every model group regardless of `header`.
+    /// Kept so `SceneryDataWriter` can round-trip a group losslessly —
+    /// without this, re-encoding *any* group (even one with no placement
+    /// changes) would silently zero 80 real bytes.
+    public var unkPos: [SIMD4<Float>]
 
-    public init(header: UInt32, placements: [SceneryModelPlacement]) {
+    public init(header: UInt32, placements: [SceneryModelPlacement], unkPos: [SIMD4<Float>] = Array(repeating: .zero, count: 5)) {
         self.header = header
         self.placements = placements
+        self.unkPos = unkPos
     }
 }
 
@@ -179,20 +187,71 @@ public struct SceneryGroup: Sendable {
 }
 
 /// A single light entry — every one of `SceneryData`'s 4 light kinds
-/// (`LightAmbient`/`LightDirectional`/`LightPoint`/`LightNegative`) shares
-/// this common shape; the reference tool's extra per-kind fields (facing
-/// vectors, falloff shorts) aren't modeled here since nothing in this pass
-/// renders lighting from level data yet — position/radius/color is enough
-/// to place a marker in a future level viewport.
+/// (`LightAmbient`/`LightDirectional`/`LightPoint`/`LightNegative`, each a
+/// subclass of the reference's own `LightBase` in `SceneryData.cs`) shares
+/// this one flat shape now, superset of every kind's fields — which of the
+/// extra fields (`vector3`/`unkShort`/`unkFloat1`/`2`/`unkUInt1`/`2`/
+/// `unkUShort1`/`2`) actually get written back out is determined purely by
+/// *which array* a light is stored in (`SceneryAsset.directionalLights`
+/// writes `vector3`+`unkShort`, `.pointLights` writes only `unkShort`,
+/// `.negativeLights` writes `vector3` plus all 6 remaining unk fields,
+/// `.ambientLights` writes none of them) — see `SceneryDataWriter`.
+/// Real fields kept for round-tripping even though nothing in this pass
+/// renders lighting from level data yet.
 public struct SceneryLight: Sendable {
+    public var flagsRaw: UInt32
     public var radius: Float
-    public var color: SIMD3<Float>
+    public var colorR: Float
+    public var colorG: Float
+    public var colorB: Float
+    public var colorUnk: Float
     public var position: SIMD4<Float>
+    public var vector1: SIMD4<Float>
+    public var vector2: SIMD4<Float>
+    /// Directional/Negative only.
+    public var vector3: SIMD4<Float>
+    /// Directional/Point only.
+    public var unkShort: UInt16
+    /// Negative only.
+    public var unkFloat1: Float
+    public var unkFloat2: Float
+    public var unkUInt1: UInt32
+    public var unkUInt2: UInt32
+    public var unkUShort1: UInt16
+    public var unkUShort2: UInt16
 
-    public init(radius: Float, color: SIMD3<Float>, position: SIMD4<Float>) {
+    public init(
+        flagsRaw: UInt32 = 0, radius: Float, colorR: Float, colorG: Float, colorB: Float, colorUnk: Float = 0,
+        position: SIMD4<Float>, vector1: SIMD4<Float> = .zero, vector2: SIMD4<Float> = .zero,
+        vector3: SIMD4<Float> = .zero, unkShort: UInt16 = 0,
+        unkFloat1: Float = 0, unkFloat2: Float = 0, unkUInt1: UInt32 = 0, unkUInt2: UInt32 = 0,
+        unkUShort1: UInt16 = 0, unkUShort2: UInt16 = 0
+    ) {
+        self.flagsRaw = flagsRaw
         self.radius = radius
-        self.color = color
+        self.colorR = colorR
+        self.colorG = colorG
+        self.colorB = colorB
+        self.colorUnk = colorUnk
         self.position = position
+        self.vector1 = vector1
+        self.vector2 = vector2
+        self.vector3 = vector3
+        self.unkShort = unkShort
+        self.unkFloat1 = unkFloat1
+        self.unkFloat2 = unkFloat2
+        self.unkUInt1 = unkUInt1
+        self.unkUInt2 = unkUInt2
+        self.unkUShort1 = unkUShort1
+        self.unkUShort2 = unkUShort2
+    }
+
+    /// Convenience view for existing display code — real `Color_R/G/B`
+    /// packed into one vector, same as this type exposed before it grew
+    /// the rest of its real fields.
+    public var color: SIMD3<Float> {
+        get { SIMD3(colorR, colorG, colorB) }
+        set { colorR = newValue.x; colorG = newValue.y; colorB = newValue.z }
     }
 }
 
@@ -201,24 +260,60 @@ public struct SceneryLight: Sendable {
 /// directional/point/negative lights.
 public struct SceneryAsset: Sendable, Identifiable {
     public let id: UInt32
+    /// Real opaque bitfield (`HeaderUnk1`) — bit `0x10000` gates
+    /// `skydomeID`, bit `0x20000` gates `headerBuffer`/lights. Kept as the
+    /// real raw value (not just those two derived bools) since unknown
+    /// other bits may be set in real data and must round-trip untouched.
+    public var headerUnk1: UInt32
     public var chunkName: String
+    public var headerUnk2: UInt32
+    /// `HeaderUnk3` — gates whether `root`/`unkVar5` are present at all
+    /// (`== 0x160A`). Kept raw for the same reason as `headerUnk1`.
+    public var headerUnk3: UInt32
+    public var headerUnk4: UInt8
+    /// Whether this record's own file is a MonkeyBall-variant build —
+    /// gates 3 extra zero bytes right after `headerUnk2` on both read and
+    /// write (`SceneryData.cs`'s own `IsMonkeyBall`, set by the *caller*
+    /// before parsing based on which file kind this came from). This
+    /// package doesn't currently distinguish that file kind at the
+    /// dispatch level (see `SceneryDataParser`'s own doc comment), so this
+    /// is always `false` for anything actually parsed by this build.
+    public var isMonkeyBall: Bool
     public var skydomeID: UInt32?
+    /// `HeaderBuffer` — real, fixed 0x400-byte opaque block, present only
+    /// when `headerUnk1 & 0x20000 != 0`. Never interpreted, only
+    /// round-tripped.
+    public var headerBuffer: Data?
     public var ambientLights: [SceneryLight]
     public var directionalLights: [SceneryLight]
     public var pointLights: [SceneryLight]
     public var negativeLights: [SceneryLight]
+    /// Present only alongside `root` (both gated by `headerUnk3 == 0x160A`).
+    public var unkVar5: UInt32?
     /// `nil` when this record's `HeaderUnk3 != 0x160A` — the reference
     /// tool leaves the whole tree unset in that case too.
     public var root: SceneryGroup?
 
-    public init(id: UInt32, chunkName: String, skydomeID: UInt32?, ambientLights: [SceneryLight], directionalLights: [SceneryLight], pointLights: [SceneryLight], negativeLights: [SceneryLight], root: SceneryGroup?) {
+    public init(
+        id: UInt32, headerUnk1: UInt32 = 0, chunkName: String, headerUnk2: UInt32 = 0, headerUnk3: UInt32 = 0x160A,
+        headerUnk4: UInt8 = 0, isMonkeyBall: Bool = false, skydomeID: UInt32?, headerBuffer: Data? = nil,
+        ambientLights: [SceneryLight], directionalLights: [SceneryLight], pointLights: [SceneryLight], negativeLights: [SceneryLight],
+        unkVar5: UInt32? = nil, root: SceneryGroup?
+    ) {
         self.id = id
+        self.headerUnk1 = headerUnk1
         self.chunkName = chunkName
+        self.headerUnk2 = headerUnk2
+        self.headerUnk3 = headerUnk3
+        self.headerUnk4 = headerUnk4
+        self.isMonkeyBall = isMonkeyBall
         self.skydomeID = skydomeID
+        self.headerBuffer = headerBuffer
         self.ambientLights = ambientLights
         self.directionalLights = directionalLights
         self.pointLights = pointLights
         self.negativeLights = negativeLights
+        self.unkVar5 = unkVar5
         self.root = root
     }
 

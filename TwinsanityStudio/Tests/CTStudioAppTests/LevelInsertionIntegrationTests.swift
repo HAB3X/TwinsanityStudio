@@ -123,6 +123,274 @@ final class LevelInsertionIntegrationTests: XCTestCase {
         XCTAssertEqual(insertedWaypoint.rawNodeType, 4)
     }
 
+    /// "PositionEditor" parity: `positionCollectionNode`/
+    /// `patchedFileBytes(insertingPosition:inSameFileAs:)`/
+    /// `patchedFileBytes(removingPosition:)` through the real
+    /// `WorkspaceViewModel` flow, same discipline as the Instance/
+    /// AIPosition test above — not just `ChunkSectionInserter` in
+    /// isolation.
+    func testPositionAddAndRemoveThroughRealWorkspaceFlow() throws {
+        let originalPosition = WorldPlacementWriter.writePosition(PositionMarker(id: 50, point: SIMD4<Float>(1, 2, 3, 1)))
+        let toRemove = WorldPlacementWriter.writePosition(PositionMarker(id: 51, point: SIMD4<Float>(4, 5, 6, 1)))
+        let positionCollection = makeSection(children: [(id: 50, bytes: originalPosition), (id: 51, bytes: toRemove)])
+        let instanceContainer = makeSection(children: [(id: 3, bytes: positionCollection)])
+        let emptyCodeSection = makeSection(children: [])
+        let fileBytes = makeSection(children: [(id: 0, bytes: instanceContainer), (id: 10, bytes: emptyCodeSection)])
+
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("synthetic-\(UUID().uuidString).rm2")
+        try fileBytes.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: tempURL)
+
+        let loadExpectation = expectation(description: "single-file load completes")
+        let observation = workspace.$isLoading.dropFirst().sink { loading in
+            if !loading { loadExpectation.fulfill() }
+        }
+        wait(for: [loadExpectation], timeout: 10)
+        observation.cancel()
+
+        let fileRoot = try XCTUnwrap(workspace.rootNodes.first)
+        let positionLeaves = try XCTUnwrap(findFirst(fileRoot, sectionType: .position)?.children)
+        XCTAssertEqual(positionLeaves.count, 2)
+
+        let collectionNode = try XCTUnwrap(workspace.positionCollectionNode(inSameFileAs: positionLeaves[0]))
+        XCTAssertEqual(collectionNode.sectionType, .position)
+
+        // Insert: new record ID must be one past the highest existing ID (51 -> 52).
+        let inserted = try XCTUnwrap(workspace.patchedFileBytes(insertingPosition: SIMD4<Float>(7, 8, 9, 1), inSameFileAs: positionLeaves[0]))
+        let reparsedAfterInsert = try RM2Parser.parse(data: inserted, fileKind: .rm2, fileName: "synthetic.rm2")
+        let collectionAfterInsert = try XCTUnwrap(findFirst(reparsedAfterInsert, sectionType: .position))
+        XCTAssertEqual(collectionAfterInsert.children.count, 3)
+        guard case .position(let insertedMarker)? = collectionAfterInsert.children.first(where: { $0.recordID == 52 })?.payload else {
+            return XCTFail("newly inserted Position didn't decode with the expected next-available ID")
+        }
+        XCTAssertEqual(insertedMarker.point, SIMD4<Float>(7, 8, 9, 1))
+
+        // Remove: the second original record is gone, the first survives untouched.
+        let removed = try XCTUnwrap(workspace.patchedFileBytes(removingPosition: positionLeaves[1]))
+        let reparsedAfterRemove = try RM2Parser.parse(data: removed, fileKind: .rm2, fileName: "synthetic.rm2")
+        let collectionAfterRemove = try XCTUnwrap(findFirst(reparsedAfterRemove, sectionType: .position))
+        XCTAssertEqual(collectionAfterRemove.children.count, 1)
+        guard case .position(let survivingMarker)? = collectionAfterRemove.children.first(where: { $0.recordID == 50 })?.payload else {
+            return XCTFail("pre-existing Position didn't survive removing a sibling")
+        }
+        XCTAssertEqual(survivingMarker.point, SIMD4<Float>(1, 2, 3, 1))
+    }
+
+    /// "PathEditor" parity: `patchedFileBytes(replacingWholeRecord:with:)`
+    /// through the real `WorkspaceViewModel` flow, exercising a genuine
+    /// size-changing edit (adding a point grows the record) — the one
+    /// case `patchedFileBytes(replacing:with:)` explicitly refuses.
+    /// `replacingWholeRecord` had no direct test coverage anywhere before
+    /// this, despite `PathEditorSheet`'s add/remove-point buttons and
+    /// `MainScriptEditorSheet`'s State/Body/Command CRUD both depending on
+    /// it.
+    func testPathReplaceWholeRecordSurvivesASizeChangingEditThroughRealWorkspaceFlow() throws {
+        let originalPath = PathWriter.write(PathAsset(id: 30, positions: [SIMD4<Float>(1, 1, 1, 1)], params: [PathAsset.Param(p1: 0.5, p2: 1.5)]))
+        let pathCollection = makeSection(children: [(id: 30, bytes: originalPath)])
+        let instanceContainer = makeSection(children: [(id: 4, bytes: pathCollection)])
+        let emptyCodeSection = makeSection(children: [])
+        let fileBytes = makeSection(children: [(id: 0, bytes: instanceContainer), (id: 10, bytes: emptyCodeSection)])
+
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("synthetic-\(UUID().uuidString).rm2")
+        try fileBytes.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: tempURL)
+
+        let loadExpectation = expectation(description: "single-file load completes")
+        let observation = workspace.$isLoading.dropFirst().sink { loading in
+            if !loading { loadExpectation.fulfill() }
+        }
+        wait(for: [loadExpectation], timeout: 10)
+        observation.cancel()
+
+        let fileRoot = try XCTUnwrap(workspace.rootNodes.first)
+        let pathLeaf = try XCTUnwrap(findFirst(fileRoot, sectionType: .path)?.children.first)
+
+        var grown = PathAsset(id: 30, positions: [SIMD4<Float>(1, 1, 1, 1), SIMD4<Float>(2, 2, 2, 1)], params: [PathAsset.Param(p1: 0.5, p2: 1.5)])
+        grown.positions.append(SIMD4<Float>(3, 3, 3, 1))
+        let encoded = PathWriter.write(grown)
+        let patched = try XCTUnwrap(workspace.patchedFileBytes(replacingWholeRecord: pathLeaf, with: encoded))
+
+        let reparsed = try RM2Parser.parse(data: patched, fileKind: .rm2, fileName: "synthetic.rm2")
+        let reparsedCollection = try XCTUnwrap(findFirst(reparsed, sectionType: .path))
+        XCTAssertEqual(reparsedCollection.children.count, 1, "record count in the collection shouldn't change from a same-ID replace")
+        guard case .path(let survivingPath)? = reparsedCollection.children.first(where: { $0.recordID == 30 })?.payload else {
+            return XCTFail("the size-changed Path record didn't decode back after going through the real WorkspaceViewModel save path")
+        }
+        XCTAssertEqual(survivingPath.positions, grown.positions)
+        XCTAssertEqual(survivingPath.params.count, 1)
+        XCTAssertEqual(survivingPath.params[0].p1, 0.5)
+        XCTAssertEqual(survivingPath.params[0].p2, 1.5)
+    }
+
+    /// "ObjectEditor" parity: `gameObjectCollectionNode`/
+    /// `patchedFileBytes(insertingGameObject:inSameFileAs:)`/
+    /// `patchedFileBytes(removingGameObject:)` through the real
+    /// `WorkspaceViewModel` flow. Also proves the `max(8192, ...) + 1` ID
+    /// scheme matches the reference editor's own create/duplicate exactly.
+    func testGameObjectCreateAndDeleteThroughRealWorkspaceFlow() throws {
+        let existingObject = GameObjectWriter.encode(GameObjectInfo(id: 500, name: "Keep Me", ogiIDs: [1, 2]))
+        let objectCollection = makeSection(children: [(id: 500, bytes: existingObject)])
+        let codeContainer = makeSection(children: [(id: 0, bytes: objectCollection)])
+        let instanceContainer = makeSection(children: [])
+        let fileBytes = makeSection(children: [(id: 0, bytes: instanceContainer), (id: 10, bytes: codeContainer)])
+
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("synthetic-\(UUID().uuidString).rm2")
+        try fileBytes.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: tempURL)
+
+        let loadExpectation = expectation(description: "single-file load completes")
+        let observation = workspace.$isLoading.dropFirst().sink { loading in
+            if !loading { loadExpectation.fulfill() }
+        }
+        wait(for: [loadExpectation], timeout: 10)
+        observation.cancel()
+
+        let fileRoot = try XCTUnwrap(workspace.rootNodes.first)
+        let objectLeaves = try XCTUnwrap(findFirst(fileRoot, sectionType: .object)?.children)
+        XCTAssertEqual(objectLeaves.count, 1)
+        let existingLeaf = try XCTUnwrap(objectLeaves.first)
+
+        // Insert: ID must be one past max(8192, existing max) — here 500 < 8192, so 8193.
+        let newObject = GameObjectInfo(id: 0, name: "New Game Object", ogiIDs: [])
+        let (inserted, insertedID) = try XCTUnwrap(workspace.patchedFileBytes(insertingGameObject: newObject, inSameFileAs: existingLeaf))
+        XCTAssertEqual(insertedID, 8193)
+
+        let reparsedAfterInsert = try RM2Parser.parse(data: inserted, fileKind: .rm2, fileName: "synthetic.rm2")
+        let collectionAfterInsert = try XCTUnwrap(findFirst(reparsedAfterInsert, sectionType: .object))
+        XCTAssertEqual(collectionAfterInsert.children.count, 2)
+        guard case .gameObject(let insertedDecoded)? = collectionAfterInsert.children.first(where: { $0.recordID == 8193 })?.payload else {
+            return XCTFail("newly inserted GameObject didn't decode with the expected next-available ID")
+        }
+        XCTAssertEqual(insertedDecoded.name, "New Game Object")
+
+        // Remove: the original object is gone.
+        let removed = try XCTUnwrap(workspace.patchedFileBytes(removingGameObject: existingLeaf))
+        let reparsedAfterRemove = try RM2Parser.parse(data: removed, fileKind: .rm2, fileName: "synthetic.rm2")
+        let collectionAfterRemove = try XCTUnwrap(findFirst(reparsedAfterRemove, sectionType: .object))
+        XCTAssertEqual(collectionAfterRemove.children.count, 0)
+    }
+
+    /// "AIPositionEditor"/"AIPathEditor" parity: real write-back through
+    /// the real `WorkspaceViewModel` flow — both record types are
+    /// fixed-size, so insert/remove exercises `ChunkSectionInserter`
+    /// exactly like Position's own test above, just for a different
+    /// section pair (`.aiPosition` sub-ID 1, `.aiPath` sub-ID 2).
+    func testAIPositionAndAIPathAddAndRemoveThroughRealWorkspaceFlow() throws {
+        let originalWaypoint = WorldPlacementWriter.writeAIPosition(position: SIMD4<Float>(1, 2, 3, 1), rawNodeType: 0)
+        let aiPositionCollection = makeSection(children: [(id: 50, bytes: originalWaypoint)])
+        let originalPath = WorldPlacementWriter.writeAIPath([1, 2, 3, 4, 5])
+        let aiPathCollection = makeSection(children: [(id: 60, bytes: originalPath)])
+        let instanceContainer = makeSection(children: [(id: 1, bytes: aiPositionCollection), (id: 2, bytes: aiPathCollection)])
+        let emptyCodeSection = makeSection(children: [])
+        let fileBytes = makeSection(children: [(id: 0, bytes: instanceContainer), (id: 10, bytes: emptyCodeSection)])
+
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("synthetic-\(UUID().uuidString).rm2")
+        try fileBytes.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: tempURL)
+        let loadExpectation = expectation(description: "single-file load completes")
+        let observation = workspace.$isLoading.dropFirst().sink { loading in
+            if !loading { loadExpectation.fulfill() }
+        }
+        wait(for: [loadExpectation], timeout: 10)
+        observation.cancel()
+
+        let fileRoot = try XCTUnwrap(workspace.rootNodes.first)
+        let waypointLeaf = try XCTUnwrap(findFirst(fileRoot, sectionType: .aiPosition)?.children.first)
+        let pathLeaf = try XCTUnwrap(findFirst(fileRoot, sectionType: .aiPath)?.children.first)
+
+        let (insertedWaypointBytes, waypointID) = try XCTUnwrap(workspace.patchedFileBytes(insertingAIPosition: SIMD4<Float>(4, 5, 6, 1), rawNodeType: 2, inSameFileAs: waypointLeaf))
+        XCTAssertEqual(waypointID, 51)
+        var reparsed = try RM2Parser.parse(data: insertedWaypointBytes, fileKind: .rm2, fileName: "synthetic.rm2")
+        var waypointCollection = try XCTUnwrap(findFirst(reparsed, sectionType: .aiPosition))
+        XCTAssertEqual(waypointCollection.children.count, 2)
+        guard case .aiPosition(let inserted)? = waypointCollection.children.first(where: { $0.recordID == 51 })?.payload else {
+            return XCTFail("newly inserted AIPosition didn't decode")
+        }
+        XCTAssertEqual(inserted.rawNodeType, 2)
+
+        let removedWaypointBytes = try XCTUnwrap(workspace.patchedFileBytes(removingAIPosition: waypointLeaf))
+        reparsed = try RM2Parser.parse(data: removedWaypointBytes, fileKind: .rm2, fileName: "synthetic.rm2")
+        waypointCollection = try XCTUnwrap(findFirst(reparsed, sectionType: .aiPosition))
+        XCTAssertEqual(waypointCollection.children.count, 0)
+
+        let (insertedPathBytes, pathID) = try XCTUnwrap(workspace.patchedFileBytes(insertingAIPath: [9, 8, 7, 6, 5], inSameFileAs: pathLeaf))
+        XCTAssertEqual(pathID, 61)
+        reparsed = try RM2Parser.parse(data: insertedPathBytes, fileKind: .rm2, fileName: "synthetic.rm2")
+        var pathCollection = try XCTUnwrap(findFirst(reparsed, sectionType: .aiPath))
+        XCTAssertEqual(pathCollection.children.count, 2)
+        guard case .aiPath(let insertedPath)? = pathCollection.children.first(where: { $0.recordID == 61 })?.payload else {
+            return XCTFail("newly inserted AIPath didn't decode")
+        }
+        XCTAssertEqual(insertedPath.args, [9, 8, 7, 6, 5])
+
+        let removedPathBytes = try XCTUnwrap(workspace.patchedFileBytes(removingAIPath: pathLeaf))
+        reparsed = try RM2Parser.parse(data: removedPathBytes, fileKind: .rm2, fileName: "synthetic.rm2")
+        pathCollection = try XCTUnwrap(findFirst(reparsed, sectionType: .aiPath))
+        XCTAssertEqual(pathCollection.children.count, 0)
+    }
+
+    /// "IDEditor" parity: `patchedFileBytes(reassigningIDOf:to:)` through
+    /// the real `WorkspaceViewModel` flow — the record's own bytes and
+    /// position in the section must survive untouched, only the
+    /// index-table `id` field changes; a sibling record must be
+    /// completely unaffected.
+    func testReassigningIDThroughRealWorkspaceFlow() throws {
+        let keep = WorldPlacementWriter.writePosition(PositionMarker(id: 10, point: SIMD4<Float>(1, 1, 1, 1)))
+        let rename = WorldPlacementWriter.writePosition(PositionMarker(id: 20, point: SIMD4<Float>(2, 2, 2, 1)))
+        let positionCollection = makeSection(children: [(id: 10, bytes: keep), (id: 20, bytes: rename)])
+        let instanceContainer = makeSection(children: [(id: 3, bytes: positionCollection)])
+        let emptyCodeSection = makeSection(children: [])
+        let fileBytes = makeSection(children: [(id: 0, bytes: instanceContainer), (id: 10, bytes: emptyCodeSection)])
+
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("synthetic-\(UUID().uuidString).rm2")
+        try fileBytes.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: tempURL)
+        let loadExpectation = expectation(description: "single-file load completes")
+        let observation = workspace.$isLoading.dropFirst().sink { loading in
+            if !loading { loadExpectation.fulfill() }
+        }
+        wait(for: [loadExpectation], timeout: 10)
+        observation.cancel()
+
+        let fileRoot = try XCTUnwrap(workspace.rootNodes.first)
+        let positionLeaves = try XCTUnwrap(findFirst(fileRoot, sectionType: .position)?.children)
+        let toRename = try XCTUnwrap(positionLeaves.first { $0.recordID == 20 })
+
+        // Refuses a collision with an existing ID (reference: "New ID already exists").
+        XCTAssertNil(workspace.patchedFileBytes(reassigningIDOf: toRename, to: 10))
+
+        let patched = try XCTUnwrap(workspace.patchedFileBytes(reassigningIDOf: toRename, to: 99))
+        let reparsed = try RM2Parser.parse(data: patched, fileKind: .rm2, fileName: "synthetic.rm2")
+        let collection = try XCTUnwrap(findFirst(reparsed, sectionType: .position))
+        XCTAssertEqual(collection.children.count, 2, "record count must be unchanged — this is a rename, not an insert/remove")
+        XCTAssertNil(collection.children.first { $0.recordID == 20 }, "the old ID must no longer resolve")
+
+        guard case .position(let renamed)? = collection.children.first(where: { $0.recordID == 99 })?.payload else {
+            return XCTFail("the renamed record didn't decode under its new ID")
+        }
+        XCTAssertEqual(renamed.point, SIMD4<Float>(2, 2, 2, 1), "the record's own bytes must be untouched by a pure ID rename")
+
+        guard case .position(let untouched)? = collection.children.first(where: { $0.recordID == 10 })?.payload else {
+            return XCTFail("the sibling record must be completely unaffected by renaming a different record's ID")
+        }
+        XCTAssertEqual(untouched.point, SIMD4<Float>(1, 1, 1, 1))
+    }
+
     /// Real-delete parity foundation: a single "Save Chunk Overrides…" that
     /// both adds a new Trigger and removes a pre-existing Instance, through
     /// the real `WorkspaceViewModel` flow — not just `ChunkSectionInserter`

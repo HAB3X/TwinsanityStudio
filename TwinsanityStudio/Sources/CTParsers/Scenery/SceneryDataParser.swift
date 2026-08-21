@@ -18,28 +18,33 @@ public enum SceneryDataParser {
         let headerUnk1 = try cursor.readUInt32()
         let chunkNameLength = try cursor.readUInt32()
         let chunkName = try cursor.readASCIIString(length: Int(chunkNameLength))
-        _ = try cursor.readUInt32() // HeaderUnk2 — unused by this reader
+        let headerUnk2 = try cursor.readUInt32()
         // `IsMonkeyBall` in the reference tool is set by the *caller* before
         // parsing (based on which file kind this scenery record came from),
         // not read from the stream — this package doesn't currently
         // distinguish an MB scenery variant at the dispatch level, so this
-        // always takes the non-MonkeyBall (no 3-byte skip) path.
+        // always takes the non-MonkeyBall (no 3-byte skip) path. Stored on
+        // the result so a round-trip write knows to keep skipping it (it
+        // will always decode `false` here, but the field exists so a
+        // future MB-aware caller has somewhere real to put `true`).
+        let isMonkeyBall = false
         let headerUnk3 = try cursor.readUInt32()
-        _ = try cursor.readUInt8() // HeaderUnk4 — unused by this reader
+        let headerUnk4 = try cursor.readUInt8()
 
         var skydomeID: UInt32?
         if headerUnk1 & hasSkydomeFlag != 0 {
             skydomeID = try cursor.readUInt32()
         }
 
+        var headerBuffer: Data?
         var ambientLights: [SceneryLight] = []
         var directionalLights: [SceneryLight] = []
         var pointLights: [SceneryLight] = []
         var negativeLights: [SceneryLight] = []
 
         if headerUnk1 & hasLightsFlag != 0 {
-            _ = try cursor.readBytes(0x400) // HeaderBuffer — fixed-size, unused by this reader
-            _ = try cursor.readUInt32() // LightsNum — redundant total, unused by this reader
+            headerBuffer = try cursor.readBytes(0x400)
+            _ = try cursor.readUInt32() // LightsNum — redundant total, recomputed by the writer
             let ambientCount = try cursor.readUInt32()
             let directionalCount = try cursor.readUInt32()
             let pointCount = try cursor.readUInt32()
@@ -49,61 +54,71 @@ public enum SceneryDataParser {
                 ambientLights.append(try parseBaseLight(&cursor))
             }
             for _ in 0..<directionalCount {
-                let light = try parseBaseLight(&cursor)
-                _ = try cursor.readVector4() // Vector3
-                _ = try cursor.readUInt16()  // unkShort
+                var light = try parseBaseLight(&cursor)
+                light.vector3 = try cursor.readVector4()
+                light.unkShort = try cursor.readUInt16()
                 directionalLights.append(light)
             }
             for _ in 0..<pointCount {
-                let light = try parseBaseLight(&cursor)
-                _ = try cursor.readUInt16() // unkShort
+                var light = try parseBaseLight(&cursor)
+                light.unkShort = try cursor.readUInt16()
                 pointLights.append(light)
             }
             for _ in 0..<negativeCount {
-                let light = try parseBaseLight(&cursor)
-                _ = try cursor.readVector4()  // Vector3
-                _ = try cursor.readFloat32()  // unkFloat1
-                _ = try cursor.readFloat32()  // unkFloat2
-                _ = try cursor.readUInt32()   // unkUInt1
-                _ = try cursor.readUInt32()   // unkUInt2
-                _ = try cursor.readUInt16()   // unkUShort1
-                _ = try cursor.readUInt16()   // unkUShort2
+                var light = try parseBaseLight(&cursor)
+                light.vector3 = try cursor.readVector4()
+                light.unkFloat1 = try cursor.readFloat32()
+                light.unkFloat2 = try cursor.readFloat32()
+                light.unkUInt1 = try cursor.readUInt32()
+                light.unkUInt2 = try cursor.readUInt32()
+                light.unkUShort1 = try cursor.readUInt16()
+                light.unkUShort2 = try cursor.readUInt16()
                 negativeLights.append(light)
             }
         }
 
+        var unkVar5: UInt32?
         var root: SceneryGroup?
         if headerUnk3 == hasSceneryTreeMarker {
-            _ = try cursor.readUInt32() // unkVar5 — unused by this reader
+            unkVar5 = try cursor.readUInt32()
             root = try parseSceneryGroup(&cursor)
         }
 
         return SceneryAsset(
             id: recordID,
+            headerUnk1: headerUnk1,
             chunkName: chunkName,
+            headerUnk2: headerUnk2,
+            headerUnk3: headerUnk3,
+            headerUnk4: headerUnk4,
+            isMonkeyBall: isMonkeyBall,
             skydomeID: skydomeID,
+            headerBuffer: headerBuffer,
             ambientLights: ambientLights,
             directionalLights: directionalLights,
             pointLights: pointLights,
             negativeLights: negativeLights,
+            unkVar5: unkVar5,
             root: root
         )
     }
 
     /// Reads the shared `LightBase` shape: `Flags`(4 raw bytes) + `Radius`
-    /// + `Color_R/G/B/Unk` + `Position` + `Vector1` + `Vector2`. Only
-    /// radius/color/position are kept — see `SceneryLight`'s doc comment.
+    /// + `Color_R/G/B/Unk` + `Position` + `Vector1` + `Vector2`. Per-kind
+    /// extra fields (`vector3`/`unkShort`/etc.) are filled in by the
+    /// caller afterward — see each call site above.
     private static func parseBaseLight(_ cursor: inout BinaryCursor) throws -> SceneryLight {
-        _ = try cursor.readBytes(4) // Flags
+        let flagsBytes = try cursor.readBytes(4)
+        let flagsRaw = flagsBytes.enumerated().reduce(UInt32(0)) { acc, entry in acc | (UInt32(entry.element) << (8 * entry.offset)) }
         let radius = try cursor.readFloat32()
         let r = try cursor.readFloat32()
         let g = try cursor.readFloat32()
         let b = try cursor.readFloat32()
-        _ = try cursor.readFloat32() // Color_Unk
+        let colorUnk = try cursor.readFloat32()
         let position = try cursor.readVector4()
-        _ = try cursor.readVector4() // Vector1
-        _ = try cursor.readVector4() // Vector2
-        return SceneryLight(radius: radius, color: SIMD3(r, g, b), position: position)
+        let vector1 = try cursor.readVector4()
+        let vector2 = try cursor.readVector4()
+        return SceneryLight(flagsRaw: flagsRaw, radius: radius, colorR: r, colorG: g, colorB: b, colorUnk: colorUnk, position: position, vector1: vector1, vector2: vector2)
     }
 
     /// Ported from `LoadScenery`: this group's own model, then all 8 child
@@ -181,8 +196,10 @@ public enum SceneryDataParser {
             }
         }
 
-        for _ in 0..<5 { _ = try cursor.readVector4() } // UnkPos[5] — always present, unused by this reader
+        var unkPos: [SIMD4<Float>] = []
+        unkPos.reserveCapacity(5)
+        for _ in 0..<5 { unkPos.append(try cursor.readVector4()) } // UnkPos[5] — always present
 
-        return SceneryModelGroup(header: header, placements: placements)
+        return SceneryModelGroup(header: header, placements: placements, unkPos: unkPos)
     }
 }

@@ -157,7 +157,7 @@ public final class WorkspaceViewModel: ObservableObject {
     /// Extension this build recognizes well enough to be worth offering an
     /// "extract and open" action for — the same real chunk/archive/sound-
     /// bank/cross-engine extensions the regular Open panel accepts.
-    static let recognizedDiscFileExtensions: Set<String> = ["RM2", "SM2", "RMX", "SMX", "BH", "BD", "MH", "MB", "CRT", "WMP"]
+    nonisolated static let recognizedDiscFileExtensions: Set<String> = ["RM2", "SM2", "RMX", "SMX", "BH", "BD", "MH", "MB", "CRT", "WMP"]
 
     /// Real `ISO9660Entry` + the `LogicalSectorSource` to extract it from,
     /// keyed by the synthetic `ChunkNode.id` mirroring it in `rootNodes` —
@@ -249,12 +249,22 @@ public final class WorkspaceViewModel: ObservableObject {
     /// unexpanded archive-index entry): a disc entry isn't chunk-headered
     /// data itself, just a directory listing.
     private nonisolated static func buildDiscNode(from entry: ISO9660Entry, isRoot: Bool) -> ChunkNode {
+        // A disc file's own name never ends in `.RM2`/`.SM2` — those live
+        // packed *inside* `CRASH.BH`/`CRASH.BD`, invisible to the ISO's own
+        // directory listing — so `looksLikeChunkFileName` alone never
+        // matches anything here, and every disc leaf (`CRASH.BH` included)
+        // silently vanished under "Smart File Filtering"'s default pruning
+        // before this was wired up. `recognizedDiscFileExtensions` existed
+        // for exactly this and was simply never consulted — a real bug,
+        // not a design choice: mounting a disc image showed nothing at all.
+        let ext = (entry.name as NSString).pathExtension.uppercased()
         let node = ChunkNode(
             recordID: 0,
             sectionType: .null,
             displayName: isRoot ? "\(entry.name.isEmpty ? "Disc" : entry.name)" : entry.name,
             byteSize: Int(entry.size),
-            fileOffset: Int(entry.lba)
+            fileOffset: Int(entry.lba),
+            isLazyLoadable: !entry.isDirectory && recognizedDiscFileExtensions.contains(ext)
         )
         node.children = entry.children
             .sorted { $0.name < $1.name }
@@ -327,19 +337,65 @@ public final class WorkspaceViewModel: ObservableObject {
     /// file, and hands off to the *existing* `open(url:)` — reusing the
     /// one real, already-tested ingestion path rather than a second
     /// parallel one for disc-mounted files.
-    private func openDiscEntry(_ entry: ISO9660Entry, source: any LogicalSectorSource) {
+    ///
+    /// A real, reported bug: for a `.BH` (or `.BD`) entry specifically,
+    /// this used to extract *only* the one file clicked. `open(url:)`'s
+    /// `.BH` handling (`BDArchiveParser.readIndex`) parses the index fine
+    /// from that alone — real archive entries showed up correctly — but
+    /// every entry's own data lives in the sibling `.BD`, which
+    /// `counterpartURL(for:)` expects to find *alongside* the `.BH` in the
+    /// same directory. Since only the `.BH` was ever extracted, every
+    /// attempt to actually read an entry's bytes ("Parse") failed with
+    /// "CRASH.BD ... no such file" — the sibling was never there to find.
+    /// Now the real sibling is located in the disc's own tree (same
+    /// pairing `siblingActorEntryName`/`registerDiscEntries` already use
+    /// elsewhere) and extracted into the same temp directory first.
+    private func openDiscEntry(_ entry: ISO9660Entry, source: any LogicalSectorSource, node: ChunkNode) {
         guard let data = ISO9660Reader.readFile(entry, from: source) else {
             lastError = "Couldn't read \(entry.name)'s real bytes from the mounted image."
             return
         }
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent(entry.name)
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let tempURL = tempDirectory.appendingPathComponent(entry.name)
         do {
-            try FileManager.default.createDirectory(at: tempURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
             try data.write(to: tempURL)
+            if let (siblingEntry, siblingSource) = discArchiveSibling(of: entry, node: node) {
+                let siblingData = ISO9660Reader.readFile(siblingEntry, from: siblingSource)
+                if let siblingData {
+                    try siblingData.write(to: tempDirectory.appendingPathComponent(siblingEntry.name))
+                } else {
+                    lastError = "Couldn't read \(siblingEntry.name)'s real bytes from the mounted image — \(entry.name) will only show its index, not real entry data."
+                }
+            }
             open(url: tempURL)
         } catch {
             lastError = "Couldn't extract \(entry.name) from the mounted image: \(error)"
         }
+    }
+
+    /// `entry`'s real `.BH`/`.BD` counterpart, if `entry` is one half of an
+    /// archive pair and its sibling is also a real disc-mounted leaf in
+    /// the same directory — `nil` for every other kind of disc entry
+    /// (nothing else needs a paired extraction).
+    private func discArchiveSibling(of entry: ISO9660Entry, node: ChunkNode) -> (entry: ISO9660Entry, source: any LogicalSectorSource)? {
+        let ext = (entry.name as NSString).pathExtension
+        let siblingExt: String
+        switch ext {
+        case "BH": siblingExt = "BD"
+        case "bh": siblingExt = "bd"
+        case "BD": siblingExt = "BH"
+        case "bd": siblingExt = "bh"
+        default: return nil
+        }
+        let siblingName = (entry.name as NSString).deletingPathExtension + "." + siblingExt
+        guard let parentNode = parent(of: node, inAnyOf: rootNodes) else { return nil }
+        guard let siblingNode = parentNode.children.first(where: { $0.displayName.caseInsensitiveCompare(siblingName) == .orderedSame }) else { return nil }
+        guard let siblingHolder = discEntryByNodeID[siblingNode.id],
+              let siblingEntry = siblingHolder.entry as? ISO9660Entry,
+              let siblingSource = siblingHolder.source as? any LogicalSectorSource
+        else { return nil }
+        return (siblingEntry, siblingSource)
     }
 
     /// Non-nil presents the Model Viewer sheet (see `ContentView`).
@@ -348,6 +404,21 @@ public final class WorkspaceViewModel: ObservableObject {
     @Published public var collisionViewerMesh: CollisionMesh?
     /// Non-nil presents the Level Viewer sheet (see `ContentView`).
     @Published public var levelViewerContext: LevelViewerContext?
+    /// A live query for "wherever the 3D camera currently is" — set by
+    /// `LevelViewerWindow` while it's open, cleared on close. The
+    /// reference editor's `PositionEditor`/`AIPositionEditor`/
+    /// `AIPathEditor`'s own "Copy Viewer Pos" buttons read the *currently
+    /// open* 3D viewer's camera at the moment of the click, not a
+    /// continuously-mirrored value — this closure indirection matches
+    /// that same "ask right now" semantics without `PositionInspectorView`
+    /// (a plain sidebar sheet, not necessarily backed by an open Level
+    /// Viewer) needing a direct reference to whichever `LevelViewerRenderer`
+    /// happens to be alive. `nil` when no Level Viewer is open, or when
+    /// the one that's open belongs to a different file than the position
+    /// being edited — this build doesn't try to disambiguate multiple
+    /// simultaneously-open viewers, matching the reference tool's own
+    /// single-viewer-at-a-time design.
+    public var currentViewerCameraPositionProvider: (() -> SIMD3<Float>?)?
     /// Every RigidModel/Skeleton successfully resolved (mesh + textures, and
     /// skeleton + animations where rigged) across every scanned file —
     /// populated automatically as archives are scanned, so browsing models
@@ -400,6 +471,17 @@ public final class WorkspaceViewModel: ObservableObject {
     @Published public var soundBanks: [SoundBankAsset] = []
     @Published public var isSoundBanksHubPresented = false
     @Published public var isLoadingSoundBank = false
+    /// Every standalone `.ptc`/`.psm` font/particle-sprite sheet opened
+    /// this session — unlike `.MH`/`.MB` sound banks, these are small,
+    /// single-file, self-contained formats (real embedded Texture/Material
+    /// pairs, not a separate index+data pair), so loading is synchronous.
+    /// A standalone `.ptc` file is modeled as a one-entry `TwinsPSMAsset`
+    /// rather than a third array — same real on-disk shape (a
+    /// `TwinsPTCEntry`), just one of them.
+    @Published public var ptcSheets: [TwinsPSMAsset] = []
+    /// Every standalone `.psf` font container opened this session.
+    @Published public var fontSheets: [TwinsPSFAsset] = []
+    @Published public var isPTCSheetsHubPresented = false
     /// Every dangling reference / unreferenced record flagged by the
     /// "Scrapped Content Scanner" across every scanned file — populated
     /// alongside `modelsHub` so cut content surfaces automatically as
@@ -423,6 +505,35 @@ public final class WorkspaceViewModel: ObservableObject {
     /// independent of any open archive: it operates on a `.BH`/`.BD` pair
     /// the user picks directly, not anything already mounted here.
     @Published public var isArchiveRepackagerPresented = false
+    @Published public var isImageMakerPresented = false
+
+    /// A real, ready-to-build "Quick Launch" plan for whatever chunk is
+    /// currently open in the Level Viewer — `startingChunkBaseName` boots
+    /// straight into it, `archiveReplacements` (keyed by bare filename,
+    /// e.g. `"beach.rm2"`) carries this session's own real pending edits,
+    /// computed the same way "Save Level Overrides…" already computes them.
+    /// Assembled by `LevelViewerWindow` right before presenting
+    /// `GameLauncherView`, not by `WorkspaceViewModel` itself — it has no
+    /// visibility into a Level Viewer's live `renderer` state.
+    public struct GameLauncherContext {
+        public var summary: String
+        public var startingChunkBaseName: String
+        public var archiveReplacements: [String: Data]
+
+        public init(summary: String, startingChunkBaseName: String, archiveReplacements: [String: Data]) {
+            self.summary = summary
+            self.startingChunkBaseName = startingChunkBaseName
+            self.archiveReplacements = archiveReplacements
+        }
+    }
+
+    /// "Direct Boot/Launch" — presents `GameLauncherView`. `gameLauncherContext`
+    /// is set (to a real, non-nil chunk-launch plan) right before presenting
+    /// for a contextual "Quick Launch" from the Level Viewer, and left `nil`
+    /// for the global "Play in PCSX2…" toolbar entry — same nil-means-
+    /// global-scope convention `typeFilter` already uses.
+    @Published public var isGameLauncherPresented = false
+    @Published public var gameLauncherContext: GameLauncherContext?
 
     private var archiveIndexByRootID: [UUID: ArchiveIndex] = [:]
     /// "No More Placeholder Squares": the real game's shared object
@@ -480,6 +591,12 @@ public final class WorkspaceViewModel: ObservableObject {
         if let path = UserDefaults.standard.string(forKey: Self.masterDirectoryDefaultsKey) {
             masterDirectoryURL = URL(fileURLWithPath: path)
         }
+        if let path = UserDefaults.standard.string(forKey: Self.discImageURLDefaultsKey) {
+            discImageURL = URL(fileURLWithPath: path)
+        }
+        if let path = UserDefaults.standard.string(forKey: Self.pcsx2AppURLDefaultsKey) {
+            pcsx2AppURL = URL(fileURLWithPath: path)
+        }
     }
 
     // MARK: - Settings (Preferences window)
@@ -526,6 +643,33 @@ public final class WorkspaceViewModel: ObservableObject {
         }
     }
     private static let masterDirectoryDefaultsKey = "TwinsanityStudio.MasterDirectoryURL"
+
+    /// "Direct Boot/Launch": the real, bootable disc image `GameLauncher`
+    /// patches and boots — a plain `.iso` only (see `ISO9660Writer`'s own
+    /// doc comment on why `.bin`/`.cue` isn't supported for write-back).
+    @Published public var discImageURL: URL? {
+        didSet {
+            if let discImageURL {
+                UserDefaults.standard.set(discImageURL.path, forKey: Self.discImageURLDefaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.discImageURLDefaultsKey)
+            }
+        }
+    }
+    private static let discImageURLDefaultsKey = "TwinsanityStudio.DiscImageURL"
+
+    /// The real PCSX2 app (or its bundled binary) `GameLauncher.launching`
+    /// runs the built image with.
+    @Published public var pcsx2AppURL: URL? {
+        didSet {
+            if let pcsx2AppURL {
+                UserDefaults.standard.set(pcsx2AppURL.path, forKey: Self.pcsx2AppURLDefaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.pcsx2AppURLDefaultsKey)
+            }
+        }
+    }
+    private static let pcsx2AppURLDefaultsKey = "TwinsanityStudio.PCSX2AppURL"
 
     /// "Multi-Region & Cross-Game Auto-Patcher" (roadmap 1.4): the real
     /// `SYSTEM.CNF` info detected the last time a folder was opened — `nil`
@@ -698,6 +842,50 @@ public final class WorkspaceViewModel: ObservableObject {
     /// this, a directly-opened `.RM2`/`.SM2` was the one `.levelResource`/
     /// `.sceneryResource` path never routed through the async fix — see
     /// `load(_:)`'s own doc comment at its call site.
+    /// "MonkeyBall (MB) File-Kind Detection" — there's no reliable magic
+    /// byte distinguishing a Super Monkey Ball Adventure `.RM2`/`.SM2` from
+    /// a retail Crash Twinsanity one (both are the same underlying "nu2"
+    /// engine container format); this is the closest real equivalent to
+    /// automatic detection this project's reference material supports: an
+    /// explicit "open as Monkey Ball" entry point, same posture
+    /// `ExecutablePatcherView`'s manual `GameExecutableRevision` picker
+    /// already takes for a build variant with no reliable auto-probe. Once
+    /// routed through `.rm2MB`/`.sm2MB`, every previously-unreachable
+    /// `SectionType.*MB` case (`RM2Parser.tier0Kind`/`tier1ChildType`) is
+    /// real and taggable in the tree, not dead code.
+    public func openAsMonkeyBall(url: URL) {
+        let ext = url.pathExtension.uppercased()
+        let fileKind: TwinsFileKind
+        switch ext {
+        case "RM2": fileKind = .rm2MB
+        case "SM2": fileKind = .sm2MB
+        default:
+            lastError = "\(url.lastPathComponent): Monkey Ball opening only applies to .RM2/.SM2 files."
+            return
+        }
+        isLoading = true
+        statusMessage = "Loading \(url.lastPathComponent) as Monkey Ball…"
+        Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                let node = try Self.mainTreeDriver(forExtension: url.pathExtension).parseChunkFile(data: data, fileKind: fileKind, fileName: url.lastPathComponent)
+                await MainActor.run {
+                    guard let self else { return }
+                    self.rawFileBytesByRootID[node.id] = data
+                    self.rootNodes.append(node)
+                    self.isLoading = false
+                    self.statusMessage = "Loaded \(url.lastPathComponent) as Monkey Ball."
+                    self.addRecentFile(url)
+                }
+            } catch {
+                await MainActor.run {
+                    self?.isLoading = false
+                    self?.lastError = "\(url.lastPathComponent): \(error)"
+                }
+            }
+        }
+    }
+
     private func loadSingleLevelFileAsync(_ file: DetectedFile) {
         isLoading = true
         statusMessage = "Loading \(file.url.lastPathComponent)…"
@@ -887,6 +1075,26 @@ public final class WorkspaceViewModel: ObservableObject {
                 // model's standing rule against blocking the main actor on
                 // a heavy parse.
                 loadSoundBankAsync(mhURL: file.url)
+
+            case .ptcSheet:
+                let baseName = file.url.deletingPathExtension().lastPathComponent
+                let data = try Data(contentsOf: file.url)
+                switch file.url.pathExtension.uppercased() {
+                case "PTC":
+                    let entry = try TwinsPTCParser.parsePTCFile(data)
+                    ptcSheets.append(TwinsPSMAsset(sourceLabel: baseName, entries: [entry]))
+                    statusMessage = "Loaded \(file.url.lastPathComponent) — 1 entry."
+                case "PSM":
+                    let sheet = try TwinsPTCParser.parsePSM(data, sourceLabel: baseName)
+                    ptcSheets.append(sheet)
+                    statusMessage = "Loaded \(file.url.lastPathComponent) — \(sheet.entries.count) entries."
+                case "PSF":
+                    let font = try TwinsPTCParser.parsePSF(data, sourceLabel: baseName)
+                    fontSheets.append(font)
+                    statusMessage = "Loaded \(file.url.lastPathComponent) — \(font.fontPages.count) font page(s), \(font.vectors.count) vector(s)."
+                default:
+                    break
+                }
 
             case .folder, .unknown:
                 break
@@ -1364,7 +1572,7 @@ public final class WorkspaceViewModel: ObservableObject {
                     Task { [weak self] in await self?.expandWOCSoundArchive(node, entry: entry, source: source) }
                     return
                 }
-                self.openDiscEntry(entry, source: source)
+                self.openDiscEntry(entry, source: source, node: node)
                 return
             }
 
@@ -1446,18 +1654,18 @@ public final class WorkspaceViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        let outcome: Result<ChunkNode, Error> = await Task.detached(priority: .userInitiated) {
+        let outcome: Result<(ChunkNode, Data), Error> = await Task.detached(priority: .userInitiated) {
             do {
                 let data = try BDArchiveParser.readEntryData(entry, index: index)
                 let parsed = try Self.mainTreeDriver(forExtension: (entry.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: kind, fileName: entry.name)
-                return .success(parsed)
+                return .success((parsed, data))
             } catch {
                 return .failure(error)
             }
         }.value
 
         switch outcome {
-        case .success(let parsed):
+        case .success(let (parsed, data)):
             let replacement = ChunkNode(
                 recordID: node.recordID,
                 sectionType: parsed.sectionType,
@@ -1467,6 +1675,24 @@ public final class WorkspaceViewModel: ObservableObject {
                 children: parsed.children,
                 payload: parsed.payload
             )
+            // Real, reported gap: expanding an archive entry (whether from
+            // a directly-opened `.BH` or one extracted from a mounted disc
+            // image — both converge here) used to only ever update the
+            // browsable tree, never register this file's own raw bytes.
+            // `canSaveEdits`/`patchedFileBytes` (and everything built on
+            // them — "Save Chunk Overrides…", Quick Launch's pending-edit
+            // bake-in) all gate on `rawFileBytesByRootID`, so every level
+            // reached by *browsing* an archive — the normal way anyone
+            // opens a level from a mounted ISO — silently couldn't be
+            // saved at all, with no error until the save button itself
+            // turned out disabled. `replacement` is exactly the file root
+            // `findFileRoot` will later identify for any record inside it
+            // (`sectionType == .null` with a `.graphics`/`.code`-family
+            // child — the same shape a standalone `Data(contentsOf:)` open
+            // already produces), so this is the same real invariant
+            // `load(_:)`'s own `rawFileBytesByRootID[node.id] = data` line
+            // establishes for a directly-opened file, not a special case.
+            rawFileBytesByRootID[replacement.id] = data
             rootNodes = rootNodes.map { replacingDescendant(node, with: replacement, in: $0) }
             if selectedNode === node {
                 selectedNode = replacement
@@ -1697,6 +1923,13 @@ public final class WorkspaceViewModel: ObservableObject {
     /// actually knows for the file.
     public func originalFileName(for node: ChunkNode) -> String? {
         findFileRoot(containing: node, in: rootNodes)?.displayName
+    }
+
+    /// Public wrapper over `findFileRoot` — "Add Scenery From Other
+    /// Level…" needs the destination `.sm2`'s own file root (not just any
+    /// node inside it) to pass to `placingSceneryFromAnotherLevel`.
+    public func fileRoot(containing node: ChunkNode) -> ChunkNode? {
+        findFileRoot(containing: node, in: rootNodes)
     }
 
     /// "Memory-Mapped Hex Engine" (blueprint 5.2): the exact on-disk bytes
@@ -2009,6 +2242,632 @@ public final class WorkspaceViewModel: ObservableObject {
             return nil
         }
         return walk(fileRoot)
+    }
+
+    /// The `.position` Tier 2 collection in the same file as `node` —
+    /// `PositionInspectorView`'s Add/Duplicate/Delete insertion/removal
+    /// target, same role/limitation as `aiPositionCollectionNode`: `nil`
+    /// when this file has no `Position` collection at all yet (only grows
+    /// an existing one, doesn't fabricate a brand-new section).
+    public func positionCollectionNode(inSameFileAs node: ChunkNode) -> ChunkNode? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return nil }
+        func walk(_ n: ChunkNode) -> ChunkNode? {
+            if n.sectionType == .position, !n.children.isEmpty { return n }
+            for child in n.children {
+                if let found = walk(child) { return found }
+            }
+            return nil
+        }
+        return walk(fileRoot)
+    }
+
+    /// "PositionEditor" parity — one new record ID higher than every
+    /// existing record already in `collection`, matching the same
+    /// `(existing.max() ?? 0) + 1` scheme `LevelViewerRenderer`'s
+    /// `nextSyntheticInstanceID`/`nextSyntheticTriggerID`/
+    /// `nextSyntheticCameraID` seed themselves from — recomputed fresh
+    /// from the live tree each call rather than a stored counter, since
+    /// `PositionInspectorView` adds/duplicates one record per user action
+    /// with no multi-add staging session to keep a counter warm across.
+    private func nextAvailableRecordID(in collection: ChunkNode) -> UInt32 {
+        (collection.children.map(\.recordID).max() ?? 0) + 1
+    }
+
+    /// Appends one brand-new `Position` record (id one past every existing
+    /// one in this file's `.position` collection) — real structural
+    /// insertion via `ChunkSectionInserter`, same generic path the Forge
+    /// Palette trusts for Instance/Trigger/Camera placement. `nil` (with
+    /// `lastError` set) when this file has no existing `Position`
+    /// collection to grow.
+    public func patchedFileBytes(insertingPosition point: SIMD4<Float>, inSameFileAs node: ChunkNode) -> Data? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes),
+              let bytes = rawFileBytesByRootID[fileRoot.id]
+        else {
+            lastError = "Can't save edits here — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return nil
+        }
+        guard let collection = positionCollectionNode(inSameFileAs: node) else {
+            lastError = "Can't add a Position here — this file has no existing Position collection this build recognizes."
+            return nil
+        }
+        let newID = nextAvailableRecordID(in: collection)
+        let encoded = WorldPlacementWriter.writePosition(PositionMarker(id: newID, point: point))
+        guard let result = ChunkSectionInserter.insertingRecord(id: newID, encoded: encoded, into: collection, fileRoot: fileRoot, originalFileBytes: bytes) else {
+            lastError = "Internal error: couldn't safely insert the new Position into the file structure — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        return result
+    }
+
+    /// Removes one existing `Position` record — the deletion counterpart
+    /// to `patchedFileBytes(insertingPosition:inSameFileAs:)`. `nil` (with
+    /// `lastError` set) when `node` isn't actually a `Position` record, or
+    /// its containing collection can't be found.
+    public func patchedFileBytes(removingPosition node: ChunkNode) -> Data? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes),
+              let bytes = rawFileBytesByRootID[fileRoot.id]
+        else {
+            lastError = "Can't save edits here — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return nil
+        }
+        guard let collection = parent(of: node, inAnyOf: rootNodes) else {
+            lastError = "Internal error: couldn't find this record's containing section — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        guard let result = ChunkSectionInserter.removingRecord(id: node.recordID, from: collection, fileRoot: fileRoot, originalFileBytes: bytes) else {
+            lastError = "Internal error: couldn't safely remove this Position from the file structure — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        return result
+    }
+
+    /// The `.object`/`.objectDemo` collection in the same file as `node`
+    /// — `GameObjectEditorSheet`'s "New Blank Object"/"Duplicate"/"Delete"
+    /// insertion/removal target, same role/limitation as
+    /// `positionCollectionNode`: `nil` when this file has no `GameObject`
+    /// collection at all yet.
+    public func gameObjectCollectionNode(inSameFileAs node: ChunkNode) -> ChunkNode? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return nil }
+        let targetTypes: Set<SectionType> = [.object, .objectDemo]
+        func walk(_ n: ChunkNode) -> ChunkNode? {
+            if targetTypes.contains(n.sectionType), !n.children.isEmpty { return n }
+            for child in n.children {
+                if let found = walk(child) { return found }
+            }
+            return nil
+        }
+        return walk(fileRoot)
+    }
+
+    /// "ObjectEditor" parity — the reference's own `createObjectToolStripMenuItem_Click`/
+    /// `duplicateObjectToolStripMenuItem_Click` ID scheme exactly:
+    /// `max(8192, every existing ID in this collection) + 1`. The 8192
+    /// floor keeps new custom objects out of the range real game content
+    /// actually uses, same as the reference tool does.
+    private func nextGameObjectID(in collection: ChunkNode) -> UInt32 {
+        max(8192, collection.children.map(\.recordID).max() ?? 0) + 1
+    }
+
+    /// Inserts `object` (with a fresh ID one past every existing
+    /// `GameObject` in this file, or `object.id` itself if the caller
+    /// already assigned one — `duplicatingGameObject` needs that so it can
+    /// show the caller which ID landed before saving) into this file's
+    /// `.object`/`.objectDemo` collection. `nil` (with `lastError` set)
+    /// when this file has no existing collection to grow.
+    public func patchedFileBytes(insertingGameObject object: GameObjectInfo, inSameFileAs node: ChunkNode) -> (data: Data, insertedID: UInt32)? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes),
+              let bytes = rawFileBytesByRootID[fileRoot.id]
+        else {
+            lastError = "Can't save edits here — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return nil
+        }
+        guard let collection = gameObjectCollectionNode(inSameFileAs: node) else {
+            lastError = "Can't add a GameObject here — this file has no existing GameObject collection this build recognizes."
+            return nil
+        }
+        let newID = nextGameObjectID(in: collection)
+        let withNewID = GameObjectInfo(
+            id: newID, name: object.name, ogiIDs: object.ogiIDs, unkBitfield: object.unkBitfield,
+            ui32: object.ui32, animIDs: object.animIDs, scriptIDs: object.scriptIDs,
+            objectIDs: object.objectIDs, soundIDs: object.soundIDs,
+            instanceProperties: object.instanceProperties, linkedIDs: object.linkedIDs,
+            scriptCommands: object.scriptCommands
+        )
+        let encoded = GameObjectWriter.encode(withNewID)
+        guard let result = ChunkSectionInserter.insertingRecord(id: newID, encoded: encoded, into: collection, fileRoot: fileRoot, originalFileBytes: bytes) else {
+            lastError = "Internal error: couldn't safely insert the new GameObject into the file structure — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        return (result, newID)
+    }
+
+    /// Removes one existing `GameObject` record — the deletion
+    /// counterpart to `patchedFileBytes(insertingGameObject:inSameFileAs:)`.
+    public func patchedFileBytes(removingGameObject node: ChunkNode) -> Data? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes),
+              let bytes = rawFileBytesByRootID[fileRoot.id]
+        else {
+            lastError = "Can't save edits here — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return nil
+        }
+        guard let collection = parent(of: node, inAnyOf: rootNodes) else {
+            lastError = "Internal error: couldn't find this record's containing section — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        guard let result = ChunkSectionInserter.removingRecord(id: node.recordID, from: collection, fileRoot: fileRoot, originalFileBytes: bytes) else {
+            lastError = "Internal error: couldn't safely remove this GameObject from the file structure — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        return result
+    }
+
+    /// "IDEditor" parity — ports the reference editor's own `IDEditor.
+    /// button1_Click` exactly: reassigns `node`'s ID *in place*, by
+    /// patching only the 4-byte `id` field of its own entry in the
+    /// containing section's index table
+    /// (`Magic(4)+RecordCount(4)+ContentSize(4)` header, then
+    /// `{offset(4), size(4), id(4)}` per entry, in on-disk order — see
+    /// `ChunkSectionInserter`'s own doc comment for this exact layout).
+    /// Nothing else moves: the record's own bytes, its position in the
+    /// section, and every other entry are untouched — the same minimal
+    /// diff the reference's own `RecordIDs.Remove`/`Add` produces (it
+    /// swaps a dictionary key, never touches the physical `Records` list
+    /// order). Deliberately narrow, matching the reference tool's own
+    /// real behavior rather than a "fixed" version of it: nothing else in
+    /// the file that references the old ID by value (an `Instance.
+    /// objectID`, a `Trigger.instanceIDs` entry, a script slot, ...) gets
+    /// updated — the reference editor's own `IDEditor` doesn't chase
+    /// those down either. `nil` (with `lastError` set) when `newID`
+    /// already exists in the same section (the reference's own "New ID
+    /// already exists" refusal) or `node` has no containing section.
+    public func patchedFileBytes(reassigningIDOf node: ChunkNode, to newID: UInt32) -> Data? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes),
+              let bytes = rawFileBytesByRootID[fileRoot.id]
+        else {
+            lastError = "Can't save edits here — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return nil
+        }
+        guard let section = parent(of: node, inAnyOf: rootNodes) else {
+            lastError = "Internal error: couldn't find this record's containing section — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        guard newID != node.recordID else { return bytes } // matches the reference: "if ID == DataID, Close()" — a same-value rename is a no-op, not an error.
+        guard !section.children.contains(where: { $0.recordID == newID }) else {
+            lastError = "A record with ID \(newID) already exists in this section — the reference editor refuses this too (\"New ID already exists\")."
+            return nil
+        }
+        guard let entryIndex = section.children.firstIndex(where: { $0 === node }) else {
+            lastError = "Internal error: this record isn't actually a child of its own containing section — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        let idFieldOffset = section.fileOffset + 12 + entryIndex * 12 + 8
+        guard idFieldOffset >= 0, idFieldOffset + 4 <= bytes.count else {
+            lastError = "Internal error: this record's index-table entry falls outside its file's bounds."
+            return nil
+        }
+        var writer = BinaryWriter()
+        writer.writeUInt32(newID)
+        var patched = bytes
+        patched.replaceSubrange((bytes.startIndex + idFieldOffset)..<(bytes.startIndex + idFieldOffset + 4), with: writer.data)
+        return patched
+    }
+
+    /// The `.aiPath` Tier 2 collection in the same file as `node` —
+    /// `AIPathInspectorView`'s Add/Duplicate/Delete insertion/removal
+    /// target, same role/limitation as `positionCollectionNode`.
+    public func aiPathCollectionNode(inSameFileAs node: ChunkNode) -> ChunkNode? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes) else { return nil }
+        func walk(_ n: ChunkNode) -> ChunkNode? {
+            if n.sectionType == .aiPath, !n.children.isEmpty { return n }
+            for child in n.children {
+                if let found = walk(child) { return found }
+            }
+            return nil
+        }
+        return walk(fileRoot)
+    }
+
+    /// Public wrapper over `aiPositionCollectionNode` —
+    /// `AIPositionInspectorView`'s Add/Duplicate/Delete target. The
+    /// private helper stays as-is (still used internally by the Forge
+    /// Palette's combined save path); this just exposes the same lookup
+    /// to a plain inspector sheet that isn't part of that combined flow.
+    public func aiWaypointCollectionNode(inSameFileAs node: ChunkNode) -> ChunkNode? {
+        aiPositionCollectionNode(inSameFileAs: node)
+    }
+
+    /// Inserts one brand-new `AIPosition` waypoint (id one past every
+    /// existing one in this file's `.aiPosition` collection) via
+    /// `ChunkSectionInserter` — same insertion path the Forge Palette's
+    /// own "Add Waypoint" trusts, exposed here for `AIPositionInspectorView`
+    /// to call directly (immediate insert-and-save, not staged).
+    public func patchedFileBytes(insertingAIPosition position: SIMD4<Float>, rawNodeType: UInt16, inSameFileAs node: ChunkNode) -> (data: Data, insertedID: UInt32)? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes),
+              let bytes = rawFileBytesByRootID[fileRoot.id]
+        else {
+            lastError = "Can't save edits here — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return nil
+        }
+        guard let collection = aiWaypointCollectionNode(inSameFileAs: node) else {
+            lastError = "Can't add an AI waypoint here — this file has no existing AIPosition collection this build recognizes."
+            return nil
+        }
+        let newID = (collection.children.map(\.recordID).max() ?? 0) + 1
+        let encoded = WorldPlacementWriter.writeAIPosition(position: position, rawNodeType: rawNodeType)
+        guard let result = ChunkSectionInserter.insertingRecord(id: newID, encoded: encoded, into: collection, fileRoot: fileRoot, originalFileBytes: bytes) else {
+            lastError = "Internal error: couldn't safely insert the new AI waypoint into the file structure — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        return (result, newID)
+    }
+
+    public func patchedFileBytes(removingAIPosition node: ChunkNode) -> Data? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes),
+              let bytes = rawFileBytesByRootID[fileRoot.id]
+        else {
+            lastError = "Can't save edits here — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return nil
+        }
+        guard let collection = parent(of: node, inAnyOf: rootNodes) else {
+            lastError = "Internal error: couldn't find this record's containing section — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        guard let result = ChunkSectionInserter.removingRecord(id: node.recordID, from: collection, fileRoot: fileRoot, originalFileBytes: bytes) else {
+            lastError = "Internal error: couldn't safely remove this AI waypoint from the file structure — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        return result
+    }
+
+    /// Same insertion/removal shape as the AIPosition pair above, for
+    /// `AIPathInspectorView`'s `.aiPath` collection.
+    public func patchedFileBytes(insertingAIPath args: [UInt16], inSameFileAs node: ChunkNode) -> (data: Data, insertedID: UInt32)? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes),
+              let bytes = rawFileBytesByRootID[fileRoot.id]
+        else {
+            lastError = "Can't save edits here — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return nil
+        }
+        guard let collection = aiPathCollectionNode(inSameFileAs: node) else {
+            lastError = "Can't add an AI path here — this file has no existing AIPath collection this build recognizes."
+            return nil
+        }
+        let newID = (collection.children.map(\.recordID).max() ?? 0) + 1
+        let encoded = WorldPlacementWriter.writeAIPath(args)
+        guard let result = ChunkSectionInserter.insertingRecord(id: newID, encoded: encoded, into: collection, fileRoot: fileRoot, originalFileBytes: bytes) else {
+            lastError = "Internal error: couldn't safely insert the new AI path into the file structure — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        return (result, newID)
+    }
+
+    public func patchedFileBytes(removingAIPath node: ChunkNode) -> Data? {
+        guard let fileRoot = findFileRoot(containing: node, in: rootNodes),
+              let bytes = rawFileBytesByRootID[fileRoot.id]
+        else {
+            lastError = "Can't save edits here — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            return nil
+        }
+        guard let collection = parent(of: node, inAnyOf: rootNodes) else {
+            lastError = "Internal error: couldn't find this record's containing section — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        guard let result = ChunkSectionInserter.removingRecord(id: node.recordID, from: collection, fileRoot: fileRoot, originalFileBytes: bytes) else {
+            lastError = "Internal error: couldn't safely remove this AI path from the file structure — refusing to save a possibly-corrupt result."
+            return nil
+        }
+        return result
+    }
+
+    // MARK: - "Place Scenery From Another Level"
+
+    /// Every already-open standalone `.sm2`/`.smx` file root this session
+    /// that has at least one real, decoded `SceneryData` placement.
+    /// `sceneryLevelSources` is the real candidate list "Add Scenery From
+    /// Other Level…"'s picker uses — this stays a separate, narrower
+    /// property because `placingSceneryFromAnotherLevel`'s *destination*
+    /// side still needs "already open, byte-tracked" specifically (see
+    /// `canSaveEdits`'s own doc comment on why every edit feature in this
+    /// build requires that).
+    public var otherLevelSceneryFileRoots: [ChunkNode] {
+        rootNodes.filter { root in
+            root.displayName.lowercased().hasSuffix(".sm2") || root.displayName.lowercased().hasSuffix(".smx")
+        }.filter { root in
+            sceneryNode(in: root) != nil
+        }
+    }
+
+    /// The real `SceneryData` node inside `fileRoot`, if any.
+    public func sceneryNode(in fileRoot: ChunkNode) -> ChunkNode? {
+        func walk(_ node: ChunkNode) -> ChunkNode? {
+            if case .scenery = node.payload { return node }
+            for child in node.children {
+                if let found = walk(child) { return found }
+            }
+            return nil
+        }
+        return walk(fileRoot)
+    }
+
+    /// The `.rm2`/`.rmx` file root already open this session whose base
+    /// filename matches `sm2Root`'s own — real scenery geometry
+    /// (`RigidModel`/`Material`/`Texture`/`Model`) lives in a level's
+    /// paired `.rm2`, not its `.sm2` (confirmed against real disc data —
+    /// see `CrossFileModelCopierTests`' own doc comment), the same real
+    /// pairing `loadSoundBankAsync` already applies to `.MH`/`.MB`. `nil`
+    /// if that sibling isn't *also* already open — this doesn't reach
+    /// into the archive to open it automatically.
+    public func pairedGraphicsFileRoot(for sm2Root: ChunkNode) -> ChunkNode? {
+        let baseName = (sm2Root.displayName as NSString).deletingPathExtension.lowercased()
+        return rootNodes.first { root in
+            let rootBase = (root.displayName as NSString).deletingPathExtension.lowercased()
+            let ext = (root.displayName as NSString).pathExtension.lowercased()
+            return rootBase == baseName && (ext == "rm2" || ext == "rmx")
+        }
+    }
+
+    /// One entry in "Add Scenery From Other Level…"'s level picker — either
+    /// an already-open standalone `.sm2`/`.smx` (`openFileRoot`, resolved
+    /// through the existing byte-tracked path), or a real `.sm2`/`.smx`
+    /// entry sitting in a *mounted* archive that's never been opened at all
+    /// (`archiveRootID`/`sceneryEntryName`/`graphicsEntryName`) — read
+    /// straight off the archive on demand in `loadingSceneryLevelSource`,
+    /// same as `siblingActorFileRoot`/`loadChunkLinkActors` already read
+    /// sibling files without requiring them pre-opened. This is the real
+    /// fix for "the button is always greyed out": most levels a user wants
+    /// to borrow scenery from were never individually opened as loose
+    /// files — they're just sitting in the mounted `.BD`, which this now
+    /// browses directly instead of requiring that manual step first.
+    public struct SceneryLevelSource: Identifiable, Hashable {
+        public var id: String
+        public var displayName: String
+        public var openFileRoot: ChunkNode?
+        public var archiveRootID: UUID?
+        public var sceneryEntryName: String?
+        public var graphicsEntryName: String?
+
+        public static func == (lhs: SceneryLevelSource, rhs: SceneryLevelSource) -> Bool { lhs.id == rhs.id }
+        public func hash(into hasher: inout Hasher) { hasher.combine(id) }
+    }
+
+    /// Every real source level "Add Scenery From Other Level…" can borrow
+    /// from: already-open standalone files first, then every other
+    /// `.sm2`/`.smx` archive entry (across every mounted archive) that has
+    /// a real sibling `.rm2`/`.rmx` in the same archive — the geometry a
+    /// scenery placement actually needs lives there (see
+    /// `pairedGraphicsFileRoot`'s own doc comment). Excludes the
+    /// destination level itself so it doesn't offer to borrow scenery from
+    /// the very file being edited.
+    public func sceneryLevelSources(excluding destinationSceneryFileRoot: ChunkNode?) -> [SceneryLevelSource] {
+        var seenNames = Set<String>()
+        var results: [SceneryLevelSource] = []
+        if let excludedName = destinationSceneryFileRoot?.displayName.lowercased() {
+            seenNames.insert(excludedName)
+        }
+
+        for root in otherLevelSceneryFileRoots {
+            let key = root.displayName.lowercased()
+            guard seenNames.insert(key).inserted else { continue }
+            results.append(SceneryLevelSource(id: key, displayName: root.displayName, openFileRoot: root))
+        }
+
+        for (rootID, index) in archiveIndexByRootID {
+            for entry in index.entries {
+                let ext = (entry.name as NSString).pathExtension.lowercased()
+                guard ext == "sm2" || ext == "smx" else { continue }
+                let key = entry.name.lowercased()
+                guard !seenNames.contains(key) else { continue }
+                guard let graphicsName = Self.siblingActorEntryName(forSceneryEntryName: entry.name, in: index.entries),
+                      index.entries.contains(where: { $0.name.caseInsensitiveCompare(graphicsName) == .orderedSame })
+                else { continue }
+                seenNames.insert(key)
+                results.append(SceneryLevelSource(
+                    id: key, displayName: (entry.name as NSString).lastPathComponent,
+                    archiveRootID: rootID, sceneryEntryName: entry.name, graphicsEntryName: graphicsName
+                ))
+            }
+        }
+        return results.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+    }
+
+    /// A `.sm2`/`.smx` file root's own real, parsed graphics root and raw
+    /// bytes — its paired `.rm2`/`.rmx` if already open and byte-tracked,
+    /// falling back to reading it straight off the same mounted archive
+    /// `sceneryFileRoot` itself came from. Shared by both sides of "Add
+    /// Scenery From Other Level…": the *source* level (via
+    /// `loadingSceneryLevelSource`) and the *destination* level currently
+    /// open in the Level Viewer (`placingSceneryFromAnotherLevel`'s own
+    /// caller resolves this before invoking it) — the destination side
+    /// used to only check `rawFileBytesByRootID` directly, which silently
+    /// failed whenever the current level was reached by browsing a mounted
+    /// archive rather than manually opening a loose file pair, a real bug.
+    private func resolvingGraphicsRoot(for sceneryFileRoot: ChunkNode) async -> (graphicsRoot: ChunkNode, graphicsBytes: Data)? {
+        if let graphicsRoot = pairedGraphicsFileRoot(for: sceneryFileRoot), let graphicsBytes = rawFileBytesByRootID[graphicsRoot.id] {
+            return (graphicsRoot, graphicsBytes)
+        }
+        guard let rootID = owningArchiveRootID(of: sceneryFileRoot), let index = archiveIndexByRootID[rootID],
+              let graphicsName = Self.siblingActorEntryName(forSceneryEntryName: sceneryFileRoot.displayName, in: index.entries),
+              let graphicsEntry = index.entries.first(where: { $0.name.caseInsensitiveCompare(graphicsName) == .orderedSame })
+        else {
+            lastError = "\(sceneryFileRoot.displayName)'s paired .rm2/.rmx isn't available — it's not open, and isn't sitting in the same mounted archive."
+            return nil
+        }
+        return await Task.detached(priority: .userInitiated) { () -> (ChunkNode, Data)? in
+            guard let data = try? BDArchiveParser.readEntryData(graphicsEntry, index: index),
+                  let parsed = try? Self.mainTreeDriver(forExtension: (graphicsEntry.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: Self.fileKind(forEntryNamed: graphicsEntry.name), fileName: graphicsEntry.name)
+            else { return nil }
+            return (parsed, data)
+        }.value
+    }
+
+    /// Resolves one `SceneryLevelSource` into its real, parsed scenery root
+    /// plus its real, parsed graphics root and raw bytes — reading straight
+    /// off a mounted archive when the source isn't already an open file.
+    /// Deliberately doesn't touch `rootNodes`/`rawFileBytesByRootID`: same
+    /// read-only posture `siblingActorFileRoot`'s own doc comment already
+    /// establishes for a stitched neighbor's data, this is browsing another
+    /// level's geometry to copy *from*, not opening it for editing.
+    public func loadingSceneryLevelSource(_ source: SceneryLevelSource) async -> (sceneryRoot: ChunkNode, graphicsRoot: ChunkNode, graphicsBytes: Data)? {
+        if let openRoot = source.openFileRoot {
+            guard let (graphicsRoot, graphicsBytes) = await resolvingGraphicsRoot(for: openRoot) else { return nil }
+            return (openRoot, graphicsRoot, graphicsBytes)
+        }
+
+        guard let rootID = source.archiveRootID, let index = archiveIndexByRootID[rootID],
+              let sceneryName = source.sceneryEntryName, let graphicsName = source.graphicsEntryName,
+              let sceneryEntry = index.entries.first(where: { $0.name == sceneryName }),
+              let graphicsEntry = index.entries.first(where: { $0.name.caseInsensitiveCompare(graphicsName) == .orderedSame })
+        else {
+            lastError = "\(source.displayName) isn't in a mounted archive anymore."
+            return nil
+        }
+        return await Task.detached(priority: .userInitiated) { () -> (ChunkNode, ChunkNode, Data)? in
+            guard let sceneryData = try? BDArchiveParser.readEntryData(sceneryEntry, index: index),
+                  let sceneryRoot = try? Self.mainTreeDriver(forExtension: (sceneryEntry.name as NSString).pathExtension).parseChunkFile(data: sceneryData, fileKind: Self.fileKind(forEntryNamed: sceneryEntry.name), fileName: sceneryEntry.name),
+                  let graphicsData = try? BDArchiveParser.readEntryData(graphicsEntry, index: index),
+                  let graphicsRoot = try? Self.mainTreeDriver(forExtension: (graphicsEntry.name as NSString).pathExtension).parseChunkFile(data: graphicsData, fileKind: Self.fileKind(forEntryNamed: graphicsEntry.name), fileName: graphicsEntry.name)
+            else { return nil }
+            return (sceneryRoot, graphicsRoot, graphicsData)
+        }.value
+    }
+
+    /// One real, distinct model this level places, resolved into a real
+    /// `ResolvedModelAsset` so the picker can render an actual thumbnail —
+    /// the same `AssetResolver.resolveModelID` call `resolvedLevelPlacements`
+    /// already uses for the live viewport, not a re-derived resolution path.
+    public struct SceneryCatalogEntry: Identifiable {
+        public var id: String { "\(modelID)-\(isSpecial)" }
+        public var modelID: UInt32
+        public var isSpecial: Bool
+        public var count: Int
+        public var asset: ResolvedModelAsset
+    }
+
+    /// Every distinct real model placed in `sceneryRoot`, resolved against
+    /// `graphicsRoot`'s own Graphics data — the click-to-place catalog for
+    /// one picked source level.
+    public func resolvedSceneryCatalog(sceneryRoot: ChunkNode, graphicsRoot: ChunkNode) async -> [SceneryCatalogEntry] {
+        guard let sceneryNode = sceneryNode(in: sceneryRoot), case .scenery(let asset)? = sceneryNode.payload else { return [] }
+        return await Task.detached(priority: .userInitiated) {
+            let index = AssetResolver.buildIndex(fileRoot: graphicsRoot)
+            var byKey: [String: SceneryCatalogEntry] = [:]
+            for placement in asset.placements {
+                let key = "\(placement.modelID)-\(placement.isSpecial)"
+                if byKey[key] != nil {
+                    byKey[key]?.count += 1
+                } else if let resolved = AssetResolver.resolveModelID(placement.modelID, displayName: "Model #\(placement.modelID)", index: index) {
+                    byKey[key] = SceneryCatalogEntry(modelID: placement.modelID, isSpecial: placement.isSpecial, count: 1, asset: resolved)
+                }
+            }
+            return byKey.values.sorted { $0.modelID < $1.modelID }
+        }.value
+    }
+
+    /// "Add Scenery From Other Level…" — the full cross-file operation:
+    /// copies `modelID`/`isSpecial`'s real `RigidModel` chain from
+    /// `sourceGraphicsRoot` (the source level's `.rm2`) into the
+    /// *destination* level's own paired `.rm2`, then inserts one new,
+    /// real, non-special `SceneryModelPlacement` (at `position`,
+    /// referencing the freshly-copied `RigidModel`) into the destination
+    /// level's `.sm2` `SceneryData` tree — two files, two separate saves,
+    /// since the geometry and the placement genuinely live in different
+    /// files. Real insertion, same non-aggregated-bbox reasoning
+    /// `SceneryModelPlacement.matrixFileOffset`'s doc comment and
+    /// `SceneryDataWriter`'s own doc comment establish: always joins the
+    /// tree's *root* group directly (no group-level bounding box exists to
+    /// maintain, so nesting depth is a spatial-culling optimization this
+    /// doesn't need to replicate for a modded placement to render
+    /// correctly).
+    public struct CrossLevelSceneryPlacementResult {
+        public var graphicsFileRoot: ChunkNode
+        public var graphicsBytes: Data
+        public var sceneryFileRoot: ChunkNode
+        public var sceneryBytes: Data
+    }
+
+    /// Places another copy of a model *this level's own file already
+    /// resolves* — the same-file counterpart to `placingSceneryFromAnotherLevel`,
+    /// with no cross-file geometry copy at all: `modelID`/`isSpecial` are
+    /// reused exactly as-is, since the placement they came from already
+    /// proves that reference resolves here. One file, one save. Real
+    /// insertion into the tree's root group, same reasoning as the
+    /// cross-level version's own doc comment.
+    public func duplicatingSceneryPlacement(modelID: UInt32, isSpecial: Bool, position: SIMD4<Float>, sceneryFileRoot: ChunkNode) -> Data? {
+        guard let sceneryNode = sceneryNode(in: sceneryFileRoot),
+              case .scenery(let sceneryAsset)? = sceneryNode.payload,
+              var root = sceneryAsset.root
+        else {
+            lastError = "This level has no real SceneryData tree this build recognizes."
+            return nil
+        }
+        let newPlacement = SceneryModelPlacement(
+            modelID: modelID, isSpecial: isSpecial,
+            boundingBoxMin: position - SIMD4<Float>(1, 1, 1, 0), boundingBoxMax: position + SIMD4<Float>(1, 1, 1, 0),
+            modelMatrix: [SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0), position]
+        )
+        let insertIndex = root.model.placements.firstIndex(where: { $0.isSpecial }) ?? root.model.placements.count
+        root.model.placements.insert(newPlacement, at: insertIndex)
+        root.model.header = 0x1613
+        var mutatedScenery = sceneryAsset
+        mutatedScenery.root = root
+        let encoded = SceneryDataWriter.encode(mutatedScenery)
+        return patchedFileBytes(replacingWholeRecord: sceneryNode, with: encoded)
+    }
+
+    /// The public entry point for resolving the *destination* level's
+    /// graphics root/bytes before calling `placingSceneryFromAnotherLevel`
+    /// — the same archive-reaching fallback `loadingSceneryLevelSource`
+    /// uses for the source side, now shared by the destination side too.
+    public func loadingDestinationGraphics(for sceneryFileRoot: ChunkNode) async -> (graphicsRoot: ChunkNode, graphicsBytes: Data)? {
+        await resolvingGraphicsRoot(for: sceneryFileRoot)
+    }
+
+    public func placingSceneryFromAnotherLevel(
+        modelID: UInt32, isSpecial: Bool, position: SIMD4<Float>,
+        sourceGraphicsRoot: ChunkNode, sourceGraphicsBytes: Data,
+        destinationSceneryFileRoot: ChunkNode,
+        destinationGraphicsRoot: ChunkNode, destinationGraphicsBytes: Data
+    ) -> CrossLevelSceneryPlacementResult? {
+        guard let sceneryNode = sceneryNode(in: destinationSceneryFileRoot),
+              case .scenery(let sceneryAsset)? = sceneryNode.payload,
+              var root = sceneryAsset.root
+        else {
+            lastError = "The destination level has no real SceneryData tree this build recognizes."
+            return nil
+        }
+
+        let copyResult: CrossFileModelCopier.CopyResult
+        do {
+            copyResult = try CrossFileModelCopier.copyingRigidModelChain(
+                modelID: modelID, isSpecial: isSpecial,
+                sourceFileRoot: sourceGraphicsRoot, sourceBytes: sourceGraphicsBytes,
+                destinationFileRoot: destinationGraphicsRoot, destinationBytes: destinationGraphicsBytes
+            )
+        } catch {
+            lastError = "Couldn't copy the source model's geometry: \(error.localizedDescription)"
+            return nil
+        }
+
+        let newPlacement = SceneryModelPlacement(
+            modelID: copyResult.rigidModelID, isSpecial: false,
+            boundingBoxMin: position - SIMD4<Float>(1, 1, 1, 0), boundingBoxMax: position + SIMD4<Float>(1, 1, 1, 0),
+            modelMatrix: [SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0), position]
+        )
+        let insertIndex = root.model.placements.firstIndex(where: { $0.isSpecial }) ?? root.model.placements.count
+        root.model.placements.insert(newPlacement, at: insertIndex)
+        root.model.header = 0x1613
+        var mutatedScenery = sceneryAsset
+        mutatedScenery.root = root
+        let encodedScenery = SceneryDataWriter.encode(mutatedScenery)
+
+        guard let sceneryBytes = patchedFileBytes(replacingWholeRecord: sceneryNode, with: encodedScenery) else {
+            return nil // lastError already set
+        }
+
+        return CrossLevelSceneryPlacementResult(
+            graphicsFileRoot: destinationGraphicsRoot, graphicsBytes: copyResult.destinationBytes,
+            sceneryFileRoot: destinationSceneryFileRoot, sceneryBytes: sceneryBytes
+        )
     }
 
     /// The `.trigger` Tier 2 collection in the same file as `levelNode` —
@@ -2331,6 +3190,7 @@ public final class WorkspaceViewModel: ObservableObject {
         let defaultAssetIndex = await loadSharedDefaultAssetIndexIfNeeded() ?? GraphicsAssetIndex()
         levelViewerContext = LevelViewerContext(
             scenery: scenery,
+            sceneryNode: node,
             placements: placements,
             instanceMarkers: instanceMarkers,
             resolvedInstanceAssets: resolvedAssets,

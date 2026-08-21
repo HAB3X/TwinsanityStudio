@@ -36,9 +36,9 @@ public enum WorldPlacementParser {
         let rotZ = try cursor.readUInt16()
         let comRotZ = try cursor.readUInt16()
 
-        let childInstanceIDs = try readCountedUInt16List(&cursor)
-        let childPositionIDs = try readCountedUInt16List(&cursor)
-        let childPathIDs = try readCountedUInt16List(&cursor)
+        let (childInstanceIDs, someNum1) = try readCountedUInt16List(&cursor)
+        let (childPositionIDs, someNum2) = try readCountedUInt16List(&cursor)
+        let (childPathIDs, someNum3) = try readCountedUInt16List(&cursor)
 
         let objectIDFileOffset = cursor.position
         let objectID = try cursor.readUInt16()
@@ -68,6 +68,9 @@ public enum WorldPlacementParser {
             childInstanceIDs: childInstanceIDs,
             childPositionIDs: childPositionIDs,
             childPathIDs: childPathIDs,
+            someNum1: someNum1,
+            someNum2: someNum2,
+            someNum3: someNum3,
             objectID: objectID,
             refList: refList,
             scriptID: scriptID,
@@ -91,7 +94,11 @@ public enum WorldPlacementParser {
         let position = try cursor.readVector4()
         let size = try cursor.readVector4()
 
-        let instanceIDs = try readCountedUInt16List(&cursor)
+        // `Trigger.SectionHead` (the same real, independent third field
+        // `Instance.SomeNum1/2/3` is — see that property's own doc
+        // comment) isn't captured here: nothing writes a Trigger's
+        // `instanceIDs` list back yet, so there's no round-trip to protect.
+        let (instanceIDs, _) = try readCountedUInt16List(&cursor)
 
         let argsFileOffset = cursor.position
         let arg1 = try cursor.readUInt16()
@@ -127,7 +134,9 @@ public enum WorldPlacementParser {
         let rotationQuaternion = try cursor.readVector4()
         let position = try cursor.readVector4()
         let size = try cursor.readVector4()
-        let instanceIDs = try readCountedUInt16List(&cursor)
+        // Same "not captured, nothing writes it back yet" reasoning as
+        // `parseTrigger`'s own `instanceIDs` above.
+        let (instanceIDs, _) = try readCountedUInt16List(&cursor)
 
         let fixedFieldsFileOffset = cursor.position
         let camHeader = try cursor.readUInt32()
@@ -324,16 +333,21 @@ public enum WorldPlacementParser {
     /// (the reference tool reads both but only keeps the second), then one
     /// more `int32` field ("SomeNum" on `Instance`, "SectionHead" on
     /// `Trigger` — same byte layout, different label), then `count` `uint16`s.
-    private static func readCountedUInt16List(_ cursor: inout BinaryCursor) throws -> [UInt16] {
+    /// Returns the decoded values *and* the real `SomeNum`/`SectionHead`
+    /// `int32` (`Instance.SomeNum1`/`2`/`3` in the reference) — genuinely
+    /// independent, saved data, not derived from the list's own count.
+    /// `WorldPlacementWriter.writeInstance` needs it back verbatim to
+    /// round-trip a full record safely.
+    private static func readCountedUInt16List(_ cursor: inout BinaryCursor) throws -> (values: [UInt16], someNum: Int32) {
         _ = try cursor.readInt32() // duplicate count
         let count = try cursor.readInt32()
-        _ = try cursor.readInt32() // SomeNum / SectionHead — unused by this reader
+        let someNum = try cursor.readInt32()
         var values: [UInt16] = []
         values.reserveCapacity(cursor.safeReserveCount(count, elementSize: 2))
         for _ in 0..<max(0, count) {
             values.append(try cursor.readUInt16())
         }
-        return values
+        return (values, someNum)
     }
 
     private static func readUInt32List(_ cursor: inout BinaryCursor) throws -> [UInt32] {

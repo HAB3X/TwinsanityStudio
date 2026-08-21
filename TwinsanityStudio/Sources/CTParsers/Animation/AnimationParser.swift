@@ -19,10 +19,10 @@ public enum AnimationParser {
         // `totalFrames` itself decoded as the low 16 bits of what should
         // have been `AnimationDataPacker`, producing implausible frame
         // counts (seen in the wild: 23,730) and a garbled pose.
-        _ = try cursor.readUInt32()
+        let bitfield = try cursor.readUInt32()
         let body = try readTrack(&cursor, requireNonEmpty: true)
         let facial = try readTrack(&cursor, requireNonEmpty: false)
-        return AnimationAsset(id: recordID, body: body, facial: facial)
+        return AnimationAsset(id: recordID, bitfield: bitfield, body: body, facial: facial)
     }
 
     /// `requireNonEmpty` mirrors the original's asymmetry: the body track's
@@ -38,10 +38,14 @@ public enum AnimationParser {
         let jointCount = Int(packer & 0x7F)
         let transformationCount = Int((packer >> 0xA) & 0xFFE) / 2
         let componentsPerFrame = Int(packer >> 0x16)
+        // Bits 7–10 — see `AnimationTrack.reservedPackerBits`'s own doc
+        // comment for why these specific 4 bits (and no others) need to
+        // survive a round-trip untouched.
+        let reservedPackerBits = (packer >> 7) & 0xF
 
         let dataSize = jointCount * 8 + transformationCount * 2 + componentsPerFrame * Int(totalFrames) * 2
         guard requireNonEmpty || dataSize > 0 else {
-            return AnimationTrack(jointSettings: [], staticTransforms: [], frames: [], componentsPerFrame: componentsPerFrame)
+            return AnimationTrack(jointSettings: [], staticTransforms: [], frames: [], componentsPerFrame: componentsPerFrame, reservedPackerBits: reservedPackerBits)
         }
 
         var jointSettings: [AnimJointSettings] = []
@@ -72,6 +76,6 @@ public enum AnimationParser {
             frames.append(AnimFrame(values: values))
         }
 
-        return AnimationTrack(jointSettings: jointSettings, staticTransforms: staticTransforms, frames: frames, componentsPerFrame: componentsPerFrame)
+        return AnimationTrack(jointSettings: jointSettings, staticTransforms: staticTransforms, frames: frames, componentsPerFrame: componentsPerFrame, reservedPackerBits: reservedPackerBits)
     }
 }

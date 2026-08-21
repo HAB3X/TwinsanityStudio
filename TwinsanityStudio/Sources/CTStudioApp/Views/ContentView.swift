@@ -71,6 +71,15 @@ struct ContentView: View {
                 .help("Open a .BH archive, .RM2/.SM2 file, or a folder to scan.")
             }
             ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    workspace.gameLauncherContext = nil
+                    workspace.isGameLauncherPresented = true
+                } label: {
+                    Label("Play in PCSX2", systemImage: "play.fill")
+                }
+                .help("Build and boot the full modded game in PCSX2.")
+            }
+            ToolbarItemGroup(placement: .primaryAction) {
                 Menu {
                     Button {
                         workspace.isModelsHubPresented = true
@@ -96,6 +105,12 @@ struct ContentView: View {
                         Label("Sound Banks", systemImage: "waveform")
                     }
                     .disabled(workspace.soundBanks.isEmpty && !workspace.isLoadingSoundBank)
+                    Button {
+                        workspace.isPTCSheetsHubPresented = true
+                    } label: {
+                        Label("Font & Particle Sheets", systemImage: "textformat")
+                    }
+                    .disabled(workspace.ptcSheets.isEmpty && workspace.fontSheets.isEmpty)
                     Divider()
                     Button {
                         workspace.isScrappedContentScannerPresented = true
@@ -124,6 +139,11 @@ struct ContentView: View {
                     } label: {
                         Label("Archive Repackager…", systemImage: "arrow.triangle.2.circlepath")
                     }
+                    Button {
+                        workspace.isImageMakerPresented = true
+                    } label: {
+                        Label("Image Maker…", systemImage: "opticaldiscdrive.fill")
+                    }
                     Divider()
                     Button {
                         presentMemoryCardOpenPanel()
@@ -135,6 +155,12 @@ struct ContentView: View {
                     } label: {
                         Label("Mount Disc Image…", systemImage: "opticaldiscdrive")
                     }
+                    Button {
+                        presentMonkeyBallOpenPanel()
+                    } label: {
+                        Label("Open as Monkey Ball…", systemImage: "circle.grid.2x2")
+                    }
+                    .help("Opens a .RM2/.SM2 as a Super Monkey Ball Adventure build — the same shared \"nu2\" engine container format, but with real, distinct Instance/Code/Graphics section layouts this build otherwise never reaches.")
                     Divider()
                     Button {
                         wocWorkspace.isLevelsHubPresented = true
@@ -273,6 +299,9 @@ struct ContentView: View {
                 WOCCharacterArchiveBrowserView(archiveURL: characterArchiveURL)
             }
         }
+        .sheet(isPresented: $workspace.isPTCSheetsHubPresented) {
+            PTCSheetsHubView()
+        }
         .sheet(isPresented: $workspace.isSoundBanksHubPresented) {
             SoundBanksHubView()
                 .environmentObject(workspace)
@@ -288,8 +317,14 @@ struct ContentView: View {
         .sheet(isPresented: $workspace.isExecutablePatcherPresented) {
             ExecutablePatcherView()
         }
+        .sheet(isPresented: $workspace.isImageMakerPresented) {
+            ImageMakerView()
+        }
         .sheet(isPresented: $workspace.isArchiveRepackagerPresented) {
             ArchiveRepackagerView()
+        }
+        .sheet(isPresented: $workspace.isGameLauncherPresented) {
+            GameLauncherView()
         }
         .sheet(item: $workspace.agentLabNode) { node in
             AgentLabGraphView(sectionNode: node)
@@ -377,6 +412,21 @@ struct ContentView: View {
         panel.message = "Choose a disc image: .iso, or .bin/.cue (pick either file — its match is found automatically alongside it)."
         if panel.runModal() == .OK, let url = panel.urls.first {
             workspace.mountDiscImage(url: url)
+        }
+    }
+
+    /// "MonkeyBall (MB) File-Kind Detection" — see `WorkspaceViewModel.
+    /// openAsMonkeyBall`'s own doc comment for why this is a manual entry
+    /// point rather than automatic detection.
+    private func presentMonkeyBallOpenPanel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = ["RM2", "SM2"].compactMap { UTType(filenameExtension: $0) }
+        panel.message = "Choose a Super Monkey Ball Adventure .RM2/.SM2 file."
+        if panel.runModal() == .OK, let url = panel.urls.first {
+            workspace.openAsMonkeyBall(url: url)
         }
     }
 }

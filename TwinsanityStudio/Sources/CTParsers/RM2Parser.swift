@@ -54,35 +54,47 @@ public enum RM2Parser {
 
     private static func tier0Kind(fileKind: TwinsFileKind, subID: UInt32) -> Tier0Kind {
         switch fileKind {
-        case .rm2, .rm2Demo, .rmx:
+        case .rm2, .rm2Demo, .rmx, .rm2MB:
             switch subID {
             case 0...7:
-                return .section(fileKind == .rm2Demo ? .instanceDemo : .instance)
+                switch fileKind {
+                case .rm2Demo: return .section(.instanceDemo)
+                case .rm2MB: return .section(.instanceMB)
+                default: return .section(.instance)
+                }
             case 8: return .rawLeaf("ParticleData")
             case 9: return .rawLeaf("ColData")
             case 10:
                 switch fileKind {
                 case .rm2Demo: return .section(.codeDemo)
                 case .rmx: return .section(.codeX)
+                case .rm2MB: return .section(.codeMB)
                 default: return .section(.code)
                 }
             case 11:
                 switch fileKind {
                 case .rmx: return .section(.graphicsX)
                 case .rm2Demo: return .section(.graphicsD)
+                case .rm2MB: return .section(.graphicsMB)
                 default: return .section(.graphics)
                 }
             default: return .rawLeaf("Unknown")
             }
-        case .sm2, .sm2Demo, .smx:
+        case .sm2, .sm2Demo, .smx, .sm2MB:
             switch subID {
             case 6:
                 switch fileKind {
                 case .smx: return .section(.graphicsX)
                 case .sm2Demo: return .section(.graphicsD)
+                case .sm2MB: return .section(.graphicsMB)
                 default: return .section(.graphics)
                 }
             case 5: return .rawLeaf("ChunkLinks")
+            // `SceneryData`'s real Monkey Ball byte layout isn't in this
+            // project's reference material — routed through the same raw
+            // leaf as retail/Demo/Xbox rather than guessing a distinct
+            // format `SectionType.sceneryMB` might imply. `sceneryMB`
+            // stays reachable for future work but unused here.
             case 0: return .rawLeaf("SceneryData")
             case 4: return .rawLeaf("DynamicSceneryData")
             default: return .rawLeaf("Unknown")
@@ -134,11 +146,11 @@ public enum RM2Parser {
 
     // MARK: - Tier 1 (containers) / Tier 2 (collections)
 
-    private static let containerTypes: Set<SectionType> = [.graphics, .graphicsX, .graphicsD, .instance, .instanceDemo, .code, .codeX, .codeDemo]
+    private static let containerTypes: Set<SectionType> = [.graphics, .graphicsX, .graphicsD, .graphicsMB, .instance, .instanceDemo, .instanceMB, .code, .codeX, .codeDemo, .codeMB]
 
     private static func tier1ChildType(parent: SectionType, subID: UInt32) -> SectionType? {
         switch parent {
-        case .graphics, .graphicsX, .graphicsD:
+        case .graphics, .graphicsX, .graphicsD, .graphicsMB:
             switch subID {
             case 0: return parent == .graphicsX ? .textureX : .texture
             case 1: return parent == .graphicsD ? .materialD : .material
@@ -147,31 +159,72 @@ public enum RM2Parser {
             case 4: return parent == .graphicsX ? .skinX : .skin
             case 5: return parent == .graphicsX ? .blendSkinX : .blendSkin
             case 6: return .mesh
-            case 7: return .lodModel
+            // No distinct `.lodModelMB` byte layout is confirmed against
+            // real Monkey Ball data yet, but the `SectionType` already
+            // exists — tagging it here at least keeps it distinguishable
+            // in the tree instead of silently reading as plain `.lodModel`.
+            case 7: return parent == .graphicsMB ? .lodModelMB : .lodModel
             case 8: return .skydome
             default: return nil
             }
-        case .instance, .instanceDemo:
+        case .instance, .instanceDemo, .instanceMB:
             switch subID {
-            case 0: return parent == .instanceDemo ? .instanceTemplateDemo : .instanceTemplate
+            case 0:
+                switch parent {
+                case .instanceDemo: return .instanceTemplateDemo
+                case .instanceMB: return .instanceTemplateMB
+                default: return .instanceTemplate
+                }
             case 1: return .aiPosition
             case 2: return .aiPath
             case 3: return .position
             case 4: return .path
             case 5: return .collisionSurface
-            case 6: return parent == .instanceDemo ? .objectInstanceDemo : .objectInstance
+            case 6:
+                switch parent {
+                case .instanceDemo: return .objectInstanceDemo
+                case .instanceMB: return .objectInstanceMB
+                default: return .objectInstance
+                }
             case 7: return .trigger
+            // No confirmed `CameraMB` variant exists in this project's
+            // reference material — retail `Camera`'s layout is the least-
+            // wrong default (matches `agentLabPlatform`'s own MB->PS2 fallback).
             case 8: return parent == .instanceDemo ? .cameraDemo : .camera
             default: return nil
             }
-        case .code, .codeX, .codeDemo:
+        case .code, .codeX, .codeDemo, .codeMB:
             switch subID {
-            case 0: return parent == .codeDemo ? .objectDemo : .object
-            case 1: return parent == .codeX ? .scriptX : (parent == .codeDemo ? .scriptDemo : .script)
+            case 0:
+                switch parent {
+                case .codeDemo: return .objectDemo
+                case .codeMB: return .objectMB
+                default: return .object
+                }
+            case 1:
+                switch parent {
+                case .codeX: return .scriptX
+                case .codeDemo: return .scriptDemo
+                case .codeMB: return .scriptMB
+                default: return .script
+                }
             case 2: return .animation
-            case 3: return .ogi
+            case 3:
+                // `.ogi` (retail/Demo/MB all share `GraphicsInfo.cs`'s own
+                // structural layout per the reference's `GameObject.Load`
+                // platform check — only Xbox diverges) still routes
+                // through `.ogi`'s own decoder; `.graphicsInfoMB` is left
+                // reachable for a future MB-specific reader, not wired to
+                // one yet since none of this project's reference material
+                // shows it actually differs from `.ogi`.
+                return .ogi
             case 4: return parent == .codeX ? .customAgentX : (parent == .codeDemo ? .customAgentDemo : .customAgent)
-            case 6: return parent == .codeX ? .xboxSE : .se
+            case 6:
+                switch parent {
+                case .codeX: return .xboxSE
+                case .codeMB: return .mbSE
+                default: return .se
+                }
             case 7: return parent == .codeX ? .xboxSEEng : .seEng
             case 8: return parent == .codeX ? .xboxSEFre : .seFre
             case 9: return parent == .codeX ? .xboxSEGer : .seGer
@@ -296,7 +349,11 @@ public enum RM2Parser {
         switch fileKind {
         case .rmx, .smx: return .xbox
         case .rm2Demo, .sm2Demo: return .demo
-        case .rm2, .sm2: return .ps2
+        // Matches the reference `GameObject.Load`'s own real platform
+        // check, which only branches on Xbox/Demo — Monkey Ball is PS2
+        // hardware and gets no separate branch there, so PS2 is its real
+        // layout too, not a guess.
+        case .rm2, .sm2, .rm2MB, .sm2MB: return .ps2
         }
     }
 

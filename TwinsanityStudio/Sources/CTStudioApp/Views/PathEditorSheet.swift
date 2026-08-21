@@ -3,9 +3,13 @@ import CTModels
 import CTParsers
 
 /// Write-back editor for a decoded `Path` record — ports
-/// `Editors/PathEditor.cs`'s field set. Point/param counts are fixed by
-/// this record's own on-disk size — this build can move existing points
-/// and edit existing params, not add or remove them.
+/// `Editors/PathEditor.cs`'s field set, including add/remove for both the
+/// Positions and Params lists (independently, matching the reference's
+/// own two separate list boxes — `PathAsset`'s own doc comment notes
+/// they're "not assumed to always be the same length"). Saves through
+/// `patchedFileBytes(replacingWholeRecord:with:)` rather than the
+/// fixed-size `patchedFileBytes(replacing:with:)`, since adding/removing a
+/// point or param changes this record's total on-disk size.
 struct PathEditorSheet: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.dismiss) private var dismiss
@@ -29,29 +33,35 @@ struct PathEditorSheet: View {
             Text("Edit Path #\(original.id)").font(.title3.bold())
 
             Form {
-                if !positions.isEmpty {
-                    Section("Points (\(positions.count))") {
-                        ForEach(positions.indices, id: \.self) { i in
-                            HStack {
-                                Text("Point \(i)").frame(width: 60, alignment: .leading)
-                                TextField("x", text: $positions[i].x).textFieldStyle(.roundedBorder)
-                                TextField("y", text: $positions[i].y).textFieldStyle(.roundedBorder)
-                                TextField("z", text: $positions[i].z).textFieldStyle(.roundedBorder)
-                                TextField("w", text: $positions[i].w).textFieldStyle(.roundedBorder)
+                Section("Points (\(positions.count))") {
+                    ForEach(positions.indices, id: \.self) { i in
+                        HStack {
+                            Text("Point \(i)").frame(width: 60, alignment: .leading)
+                            TextField("x", text: $positions[i].x).textFieldStyle(.roundedBorder)
+                            TextField("y", text: $positions[i].y).textFieldStyle(.roundedBorder)
+                            TextField("z", text: $positions[i].z).textFieldStyle(.roundedBorder)
+                            TextField("w", text: $positions[i].w).textFieldStyle(.roundedBorder)
+                            Button(role: .destructive) { positions.remove(at: i) } label: {
+                                Image(systemName: "minus.circle")
                             }
+                            .buttonStyle(.borderless)
                         }
                     }
+                    Button("Add Point") { positions.append(("0", "0", "0", "1")) }
                 }
-                if !params.isEmpty {
-                    Section("Params (real, undetermined meaning)") {
-                        ForEach(params.indices, id: \.self) { i in
-                            HStack {
-                                Text("Point \(i)").frame(width: 60, alignment: .leading)
-                                TextField("p1", text: $params[i].p1).textFieldStyle(.roundedBorder)
-                                TextField("p2", text: $params[i].p2).textFieldStyle(.roundedBorder)
+                Section("Params (real, undetermined meaning)") {
+                    ForEach(params.indices, id: \.self) { i in
+                        HStack {
+                            Text("Point \(i)").frame(width: 60, alignment: .leading)
+                            TextField("p1", text: $params[i].p1).textFieldStyle(.roundedBorder)
+                            TextField("p2", text: $params[i].p2).textFieldStyle(.roundedBorder)
+                            Button(role: .destructive) { params.remove(at: i) } label: {
+                                Image(systemName: "minus.circle")
                             }
+                            .buttonStyle(.borderless)
                         }
                     }
+                    Button("Add Param") { params.append(("0", "0")) }
                 }
             }
             .formStyle(.grouped)
@@ -98,7 +108,7 @@ struct PathEditorSheet: View {
         edited.params = newParams
 
         let encoded = PathWriter.write(edited)
-        guard let patchedBytes = workspace.patchedFileBytes(replacing: node, with: encoded) else { return }
+        guard let patchedBytes = workspace.patchedFileBytes(replacingWholeRecord: node, with: encoded) else { return }
         guard let url = ExportPanel.chooseSaveLocation(
             suggestedName: "\(node.displayName)_edited.rm2",
             message: "Save the edited copy of this file, with this path changed. The original file on disk is not modified."

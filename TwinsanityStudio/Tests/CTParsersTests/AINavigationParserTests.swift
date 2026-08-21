@@ -55,4 +55,15 @@ extension AINavigationParserTests {
         XCTAssertEqual(decoded.nodeType, .wormPath)
         XCTAssertEqual(cursor.position, encoded.count)
     }
+
+    func testWriteAIPathRoundTripsThroughParser() throws {
+        let args: [UInt16] = [10, 20, 30, 40, 50]
+        let encoded = WorldPlacementWriter.writeAIPath(args)
+        XCTAssertEqual(encoded.count, 10, "AIPath is fixed-size — 5 uint16s")
+
+        var cursor = BinaryCursor(data: encoded)
+        let decoded = try AINavigationParser.parseAIPath(&cursor, recordID: 5)
+        XCTAssertEqual(decoded.args, args)
+        XCTAssertEqual(cursor.position, encoded.count)
+    }
 }

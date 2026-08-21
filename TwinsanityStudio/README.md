@@ -35,9 +35,22 @@ before.
   thumbnails, and save your edits back out (byte-exact patches, never a
   blind overwrite — the original file is never touched).
 - Mount a real `.iso`/`.bin`+`.cue` disc image and browse it like any other
-  archive; rebuild a patched `.iso` with a file replaced.
+  archive; rebuild a patched `.iso` with a file replaced, or build a
+  brand-new bootable-shaped `.iso` from scratch out of a folder tree
+  (**Image Maker** — a real, from-scratch ECMA-119 image builder, verified
+  byte-for-byte through this app's own disc reader; not hardware-tested).
 - Export edits as a `.crate`, installable through
   [CrateModLoader](https://github.com/DorratzOG/CrateModLoader).
+- Real add/remove/duplicate for `Position`/`GameObject`/AI waypoint/AI path
+  records (not just editing existing ones), a full variable-length
+  `Instance` record editor (every child-ID list, not just the transform),
+  and a generic ID Editor for reassigning any record's ID within its
+  section — the same real, narrow behavior (and same limitation: nothing
+  else that references an ID by value gets updated) the reference editor's
+  own tools have.
+- Browse standalone `.ptc`/`.psm`/`.psf` font/particle-sprite sheets —
+  real embedded texture+material decode and PNG export; no write-back yet
+  (would need a from-scratch PS2 texture encoder this build doesn't have).
 - **Wrath of Cortex**: RNC ProPack decompression, full container format
   decode, real per-object mesh geometry (positions + triangle connectivity,
   reverse-engineered from the raw PS2 chunk data), texture decode, a

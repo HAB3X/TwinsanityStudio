@@ -2,17 +2,20 @@ import SwiftUI
 import CTModels
 import CTParsers
 
-/// "Parity Phase D": write-back editor for a decoded `GameObject` record —
-/// ports `Editors/ObjectEditor.cs`'s field set (minus create/delete/
-/// duplicate-object, which need chunk-section-insert wiring for a brand-new
-/// record ID and are out of scope for this pass; editing an *existing*
-/// object's own data is the real gap this fills). Unlike every field-level
-/// "Apply" sheet elsewhere in this app, `GameObject` has no individually
-/// offset-patchable fields worth the complexity — `ScriptSlots`/`PHeader`/
-/// `LinkedIDs.flag` are all derived caches recomputed from list contents on
-/// save (see `GameObjectWriter`), so any edit here already needs a whole-
-/// record re-encode. One editable working copy, one "Save Edited Copy…"
-/// button, same as `SkydomeEditorSheet`'s simpler pattern.
+/// Write-back editor for a decoded `GameObject` record — ports
+/// `Editors/ObjectEditor.cs`'s full field set, including create/duplicate/
+/// delete-whole-record (`WorkspaceViewModel.gameObjectCollectionNode`/
+/// `patchedFileBytes(insertingGameObject:inSameFileAs:)`/
+/// `patchedFileBytes(removingGameObject:)`, the same `ChunkSectionInserter`
+/// path the Forge Palette trusts for Instance placement). Unlike every
+/// field-level "Apply" sheet elsewhere in this app, `GameObject` has no
+/// individually offset-patchable fields worth the complexity —
+/// `ScriptSlots`/`PHeader`/`LinkedIDs.flag` are all derived caches
+/// recomputed from list contents on save (see `GameObjectWriter`), so any
+/// in-place field edit here already needs a whole-record re-encode. One
+/// editable working copy, one "Save Edited Copy…" button for in-place
+/// edits, same as `SkydomeEditorSheet`'s simpler pattern; New/Duplicate/
+/// Delete are separate, immediate structural actions.
 struct GameObjectEditorSheet: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.dismiss) private var dismiss
@@ -57,6 +60,25 @@ struct GameObjectEditorSheet: View {
                     .padding(.bottom, 4)
             }
             Divider()
+            Divider()
+            HStack {
+                Button("New Blank Object…") { createNewObject() }
+                    .disabled(isSaving || !workspace.canSaveEdits(for: node))
+                    .help("Inserts a brand-new, blank GameObject into this file's own collection (a real structural edit) and saves a copy — doesn't change the object shown here.")
+                Button("Duplicate This Object…") { duplicateObject() }
+                    .disabled(isSaving || !workspace.canSaveEdits(for: node))
+                Button("Delete This Object…", role: .destructive) { deleteObject() }
+                    .disabled(isSaving || !workspace.canSaveEdits(for: node))
+                Spacer()
+            }
+            .padding(.horizontal)
+            .padding(.top, 8)
+            Text("\"ObjectEditor\" parity — a new object's ID is one past the highest existing GameObject ID (floor 8192), matching the reference editor's own create/duplicate scheme exactly.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -397,6 +419,48 @@ struct GameObjectEditorSheet: View {
             .padding(.leading, 8)
         }
         .font(.caption)
+    }
+
+    /// A blank object (`id` assigned by `WorkspaceViewModel` itself, per
+    /// its own doc comment) — matches the reference's own
+    /// `createObjectToolStripMenuItem_Click` defaults (empty name/lists).
+    private func createNewObject() {
+        let blank = GameObjectInfo(id: 0, name: "New Game Object", ogiIDs: [])
+        guard let (patchedBytes, insertedID) = workspace.patchedFileBytes(insertingGameObject: blank, inSameFileAs: node) else { return }
+        saveAsCopy(patchedBytes, suffix: "object_\(insertedID)_added", statusSuffix: "with new GameObject #\(insertedID) added")
+    }
+
+    /// Inserts a copy of `editableObject` — the currently in-sheet edited
+    /// state, not necessarily what's still on disk — as a brand-new
+    /// record with its own fresh ID. The object currently open in this
+    /// sheet is untouched either way.
+    private func duplicateObject() {
+        guard let (patchedBytes, insertedID) = workspace.patchedFileBytes(insertingGameObject: editableObject, inSameFileAs: node) else { return }
+        saveAsCopy(patchedBytes, suffix: "object_\(insertedID)_duplicated", statusSuffix: "with GameObject #\(editableObject.id) duplicated as #\(insertedID)")
+    }
+
+    private func deleteObject() {
+        guard let patchedBytes = workspace.patchedFileBytes(removingGameObject: node) else { return }
+        saveAsCopy(patchedBytes, suffix: "object_\(editableObject.id)_deleted", statusSuffix: "with GameObject #\(editableObject.id) deleted")
+        dismiss()
+    }
+
+    private func saveAsCopy(_ patchedBytes: Data, suffix: String, statusSuffix: String) {
+        guard let url = ExportPanel.chooseSaveLocation(
+            suggestedName: "\(node.displayName)_\(suffix).rm2",
+            message: "Save the edited copy of this file, \(statusSuffix). The original file on disk is not modified."
+        ) else { return }
+        isSaving = true
+        Task {
+            do {
+                try await workspace.writeDataAsync(patchedBytes, to: url)
+                workspace.statusMessage = "Saved edited copy to \(url.lastPathComponent) \(statusSuffix)."
+                isSaving = false
+            } catch {
+                workspace.lastError = "Save failed: \(error)"
+                isSaving = false
+            }
+        }
     }
 
     private func save() {

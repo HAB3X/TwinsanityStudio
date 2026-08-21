@@ -82,6 +82,29 @@ final class BDArchiveParserTests: XCTestCase {
         XCTAssertEqual(contents, "contents")
     }
 
+    func testExtractSelectedOnlyWritesNamedEntries() throws {
+        let (bh, _) = try writeSyntheticArchive(named: "test3b", entries: [
+            ("keep/this.txt", Array("kept".utf8)),
+            ("skip/that.txt", Array("skipped".utf8))
+        ])
+        let index = try BDArchiveParser.readIndex(bhURL: bh)
+        let outDir = tempDir.appendingPathComponent("extracted_selected")
+        try BDArchiveParser.extractSelected(index: index, entryNames: ["keep/this.txt"], to: outDir)
+
+        let keptContents = try String(contentsOf: outDir.appendingPathComponent("keep/this.txt"), encoding: .utf8)
+        XCTAssertEqual(keptContents, "kept")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outDir.appendingPathComponent("skip/that.txt").path))
+    }
+
+    func testExtractSelectedIgnoresUnknownNames() throws {
+        let (bh, _) = try writeSyntheticArchive(named: "test3c", entries: [
+            ("real.txt", Array("data".utf8))
+        ])
+        let index = try BDArchiveParser.readIndex(bhURL: bh)
+        let outDir = tempDir.appendingPathComponent("extracted_unknown")
+        XCTAssertNoThrow(try BDArchiveParser.extractSelected(index: index, entryNames: ["nonexistent.txt"], to: outDir))
+    }
+
     func testCompileAllRoundTripsThroughReadIndex() throws {
         let sourceDir = tempDir.appendingPathComponent("source")
         try FileManager.default.createDirectory(at: sourceDir.appendingPathComponent("sub"), withIntermediateDirectories: true)

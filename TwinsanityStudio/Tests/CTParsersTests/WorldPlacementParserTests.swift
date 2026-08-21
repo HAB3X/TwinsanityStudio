@@ -129,6 +129,103 @@ final class WorldPlacementParserTests: XCTestCase {
         XCTAssertEqual(patched.count, w.count)
     }
 
+    /// `someNum1`/`2`/`3` (`Instance.SomeNum1`/`2`/`3`, real independent
+    /// data, not derived from the list it sits next to) must decode as the
+    /// real on-disk value, not the list's own count — uses a value that
+    /// deliberately differs from both the reference's `= 10` default and
+    /// each list's own element count, so a bug that confused this field
+    /// with count/duplicate-count would be caught.
+    func testParseInstanceCapturesRealSomeNumValues() throws {
+        var w = BinaryWriter()
+        w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(0); w.writeFloat32(1)
+        w.writeUInt16(0); w.writeUInt16(0)
+        w.writeUInt16(0); w.writeUInt16(0)
+        w.writeUInt16(0); w.writeUInt16(0)
+
+        w.writeInt32(1); w.writeInt32(1); w.writeInt32(777) // someNum1 = 777
+        w.writeUInt16(101)
+        w.writeInt32(0); w.writeInt32(0); w.writeInt32(888) // someNum2 = 888
+        w.writeInt32(0); w.writeInt32(0); w.writeInt32(999) // someNum3 = 999
+
+        w.writeUInt16(1); w.writeInt16(-1); w.writeInt16(-1)
+        w.writeUInt32(0); w.writeUInt32(0)
+        w.writeInt32(0); w.writeInt32(0); w.writeInt32(0)
+
+        var cursor = BinaryCursor(data: w.data)
+        let instance = try WorldPlacementParser.parseInstance(&cursor, recordID: 1)
+        XCTAssertEqual(instance.someNum1, 777)
+        XCTAssertEqual(instance.someNum2, 888)
+        XCTAssertEqual(instance.someNum3, 999)
+    }
+
+    /// `WorldPlacementWriter.writeInstance` — the general, arbitrary-field
+    /// encoder `InstanceInspectorView`'s full-record editing depends on —
+    /// must round-trip `parse(write(parse(x))) == parse(x)` byte-exactly,
+    /// including `someNum1`/`2`/`3` and every list.
+    func testWriteInstanceRoundTripsExactly() throws {
+        var w = BinaryWriter()
+        w.writeFloat32(1); w.writeFloat32(2); w.writeFloat32(3); w.writeFloat32(1)
+        w.writeUInt16(10); w.writeUInt16(20)
+        w.writeUInt16(30); w.writeUInt16(40)
+        w.writeUInt16(50); w.writeUInt16(60)
+
+        w.writeInt32(2); w.writeInt32(2); w.writeInt32(777)
+        w.writeUInt16(101); w.writeUInt16(102)
+        w.writeInt32(1); w.writeInt32(1); w.writeInt32(888)
+        w.writeUInt16(201)
+        w.writeInt32(1); w.writeInt32(1); w.writeInt32(999)
+        w.writeUInt16(301)
+
+        w.writeUInt16(42); w.writeInt16(5); w.writeInt16(9)
+        w.writeUInt32(0x02_01_01) // PHeader: 1 | (1 << 8) | (2 << 16) — matches the three list counts below
+        w.writeUInt32(0x6)
+        w.writeInt32(1); w.writeUInt32(0xDEAD_BEEF)
+        w.writeInt32(1); w.writeFloat32(1.5)
+        w.writeInt32(2); w.writeUInt32(1); w.writeUInt32(2)
+
+        var cursor = BinaryCursor(data: w.data)
+        let instance = try WorldPlacementParser.parseInstance(&cursor, recordID: 1)
+
+        let reEncoded = WorldPlacementWriter.writeInstance(instance)
+        XCTAssertEqual(reEncoded, w.data, "re-encoding an unmodified parse must reproduce the original bytes exactly")
+
+        var reCursor = BinaryCursor(data: reEncoded)
+        let reparsed = try WorldPlacementParser.parseInstance(&reCursor, recordID: 1)
+        XCTAssertEqual(reparsed.someNum1, 777)
+        XCTAssertEqual(reparsed.someNum2, 888)
+        XCTAssertEqual(reparsed.someNum3, 999)
+        XCTAssertEqual(reparsed.childInstanceIDs, [101, 102])
+        XCTAssertEqual(reparsed.childPositionIDs, [201])
+        XCTAssertEqual(reparsed.childPathIDs, [301])
+        XCTAssertEqual(reparsed.unknownUInt32List, [0xDEAD_BEEF])
+        XCTAssertEqual(reparsed.unknownFloatList, [1.5])
+        XCTAssertEqual(reparsed.unknownUInt32List2, [1, 2])
+    }
+
+    /// Adding a new element to a list must grow the record correctly and
+    /// keep every later field (crucially, `objectID`/`refList`/`scriptID`
+    /// which come right after the ID lists) at its new, shifted offset —
+    /// exercising `InstanceInspectorView`'s "Add" buttons through the real
+    /// writer, not just a same-shape round-trip.
+    func testWriteInstanceReflectsAnAddedChildID() throws {
+        let original = PlacedInstance(
+            id: 1, position: SIMD4<Float>(0, 0, 0, 1), rotationRaw: .zero, comRotationRaw: .zero,
+            childInstanceIDs: [101], childPositionIDs: [], childPathIDs: [],
+            someNum1: 10, someNum2: 10, someNum3: 10,
+            objectID: 42, refList: -1, scriptID: -1, flags: 6,
+            unknownUInt32List: [], unknownFloatList: [1], unknownUInt32List2: [0, 0]
+        )
+        var grown = original
+        grown.childInstanceIDs.append(102)
+        let encoded = WorldPlacementWriter.writeInstance(grown)
+
+        var cursor = BinaryCursor(data: encoded)
+        let reparsed = try WorldPlacementParser.parseInstance(&cursor, recordID: 1)
+        XCTAssertEqual(reparsed.childInstanceIDs, [101, 102])
+        XCTAssertEqual(reparsed.objectID, 42, "objectID must decode correctly from its new, shifted offset after the list grew")
+        XCTAssertEqual(cursor.position, encoded.count, "the writer must not leave trailing/missing bytes")
+    }
+
     /// "Instance Flags" write-back: `flagsFileOffset` must point at the
     /// real bytes (4 later than `objectIDFileOffset` — past RefList,
     /// ScriptID, and PHeader), and `writeInstanceFlags`'s 4 bytes patched
