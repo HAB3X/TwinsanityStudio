@@ -1,4 +1,5 @@
 import XCTest
+import simd
 @testable import CTParsers
 
 /// `WOCCharacterSkeletonParser` -- decodes real joint hierarchies from
@@ -80,5 +81,50 @@ final class WOCCharacterSkeletonParserTests: XCTestCase {
         let entries = try WOCCharacterArchiveParser.parseTable(fileURL: charsURL)
         let decoded = try WOCCharacterArchiveParser.decode(entries[0], fileURL: charsURL)
         XCTAssertThrowsError(try WOCCharacterSkeletonParser.parseSkeleton(decoded))
+    }
+
+    /// Real-bytes re-verification of the `Table A`/`Table B`/`Table C`
+    /// `NUJOINTDATA_s`/`T[]`/`INV_WT[]` decode (see
+    /// `WOCCharacterSkeletonParser`'s own doc comment for the source
+    /// this is grounded in) -- checks the structural invariants a real
+    /// affine matrix must have, not just "some floats came out", on the
+    /// same real 47-joint Crash rig the golden-value test above uses.
+    func testJointMatricesHaveRealAffineStructure() throws {
+        try requireDisc()
+        let entries = try WOCCharacterArchiveParser.parseTable(fileURL: charsURL)
+        let decoded = try WOCCharacterArchiveParser.decode(entries[71], fileURL: charsURL)
+        let skeleton = try WOCCharacterSkeletonParser.parseSkeleton(decoded)
+
+        // Row-major, translation in row 3 (this codebase's established WoC
+        // matrix convention -- see `WOCObjectInstance.matrix`'s own doc
+        // comment): the real affine invariant is column 3 == [0,0,0,1],
+        // not row 3 -- row 3's x/y/z *are* the real translation, free to
+        // be any value.
+        func hasRealAffineColumn(_ m: simd_float4x4) -> Bool {
+            let col3 = m[3]
+            return abs(col3.x) < 1e-4 && abs(col3.y) < 1e-4 && abs(col3.z) < 1e-4 && abs(col3.w - 1) < 1e-4
+        }
+        for joint in skeleton.joints {
+            XCTAssertTrue(hasRealAffineColumn(joint.restOrientation), "\(joint.name): restOrientation isn't a real affine matrix")
+            XCTAssertTrue(hasRealAffineColumn(joint.localBindMatrix), "\(joint.name): localBindMatrix isn't a real affine matrix")
+            XCTAssertTrue(hasRealAffineColumn(joint.inverseBindMatrix), "\(joint.name): inverseBindMatrix isn't a real affine matrix")
+        }
+
+        // The root's rest orientation is the identity on every real joint
+        // sampled during investigation -- re-check it holds for the whole
+        // rig, not just the 3 joints spot-checked by hand.
+        XCTAssertEqual(skeleton.joints[0].restOrientation, matrix_identity_float4x4)
+
+        // Table C's rotation submatrix is the cumulative world rotation,
+        // so it must be a real orthonormal rotation matrix (unit-length
+        // rows) for every joint -- a hard structural signal, not
+        // something plausible-looking noise would satisfy.
+        for joint in skeleton.joints {
+            let m = joint.inverseBindMatrix
+            for row in 0..<3 {
+                let v = SIMD3(m[0][row], m[1][row], m[2][row])
+                XCTAssertEqual(simd_length(v), 1, accuracy: 0.01, "\(joint.name): inverseBindMatrix row \(row) isn't unit length")
+            }
+        }
     }
 }

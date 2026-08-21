@@ -60,6 +60,36 @@ import simd
 /// proven rule, so this parser doesn't rely on it structurally (every
 /// record is still independently validated on its own merits), but it's
 /// worth knowing when interpreting `nil` entries.
+///
+/// **Checked against a real source reference, real conflict found, left
+/// unresolved rather than forced.** `OpenCrashWOC-main/code/src/gamecode/
+/// lights.c`'s `LoadLights()` (tagged `//94% NGC`) reads a *different*
+/// record shape: a leading `type:Int32` (0 ambient/point, 1 directional,
+/// 2 spot), then `pos:Vec3, radius_pos:Vec3, radius:Float32,
+/// colorByte:UInt8x3, colorFloat:Vec3x3` (47 bytes total for `type==0`),
+/// with a `direction:Vec3` (12 bytes) inserted *between* `colorFloat` and
+/// a trailing `globalflag:Int32, brightness:Int32` only when `type` is 1
+/// or 2 -- giving 55/67-byte totals that match this parser's own
+/// confirmed record sizes exactly, and a real, mechanical explanation for
+/// the extended shape's extra 12 bytes (a mid-record insert, not a
+/// prefix). Tempting to adopt directly, but it doesn't actually
+/// reconcile with what's independently confirmed here: this parser's own
+/// "normal" body has no leading `type` field at all -- `position` starts
+/// at byte 0 -- and has no separate `radius_pos` field, both load-bearing
+/// parts of the source's shape. The source's file-level header also
+/// reads as 16 bytes (`LIGHTCOUNT/AMBIENTCOUNT/DIRECTCOUNT/POINTCOUNT`,
+/// four `Int32`s), not this parser's own byte-exact-confirmed 28 bytes
+/// (checked against all 37 real files, zero exceptions -- a harder
+/// verification than a single source reading). Real possibilities, not
+/// disambiguated: this source is for a build/version of the format that
+/// doesn't exactly match the shipped PS2 disc this parser is verified
+/// against; the "94% NGC"-tagged decompilation has a genuine error in
+/// this specific function; or there's a reconciling reinterpretation
+/// neither reading has found yet. Left as a documented, real lead rather
+/// than acted on, since acting on it would mean discarding this file's
+/// own harder, corpus-wide byte verification for a single, lower-
+/// confidence source reading that doesn't actually fit without
+/// unexplained field drops.
 public enum WOCLightParser {
     public enum ParseError: Error, Equatable {
         case truncated

@@ -295,6 +295,56 @@ import Foundation
 /// header -- not the motion data itself. The real keyframe/curve payload
 /// almost certainly starts somewhere in the sparse region just
 /// characterized, but its own internal format is still genuinely open.
+///
+/// **Update: re-checked directly against `OpenCrashWOC-main`'s real
+/// source (`nu3dx/nuanim.c`/`nuanim.h`), not just the earlier symbol-
+/// table grep this doc comment was originally based on.** `nuanimdata2_s`
+/// et al. are DWARF-verified (compiler-confirmed, not just source-level)
+/// at the exact same offsets already documented above -- this re-check
+/// doesn't change the conclusion, it removes the remaining doubt that the
+/// original mismatch was a transcription error rather than a real one.
+/// No "keyframe"-named struct or 240-byte-header animation format exists
+/// anywhere in that reference (grepped exhaustively, source and the
+/// 457K-line DWARF dump both). Two real, transferable *design* patterns
+/// found in the same source, worth keeping in mind even though neither
+/// matches `CHARS.DAT`'s byte layout: (1) `NuAnimDataRead`'s v1 loader
+/// distinguishes "this channel is one constant float" from "this channel
+/// has a real curve" via an `FLT_MAX` sentinel value, and `nuanimdata2_s`
+/// does the same thing via an explicit `curveflags[k]` byte -- if
+/// `CHARS.DAT`'s still-undecoded sparse region has a similar constant-
+/// vs-curve discriminator, a sentinel-value or flag-byte scan is the
+/// pattern to try first; (2) curve evaluation in both formats uses a
+/// per-32-frame-chunk sparse bitmask (`BitCountTable`, a popcount lookup
+/// table) to map a requested frame to a real array index among only the
+/// frames that actually have a keyframe -- a real "run-length keyframe
+/// compression" scheme, useful context if the sparse region turns out to
+/// be bitmask-prefixed.
+///
+/// A separate, real, and complete finding from the same reference,
+/// explicitly **out of scope for this parser** (it decodes `CHARS.DAT`'s
+/// static catalog, not runtime animation playback) but worth recording
+/// so it isn't rediscovered from scratch later: `OpenCrashWOC-main` has a
+/// full, real skeletal-animation *playback* pipeline, entirely separate
+/// from this clip-catalog storage format -- skeleton/joint hierarchy
+/// (`nu3dx/nuhgobj.h`'s `NUHGOBJ_s`, the same real struct
+/// `WOCCharacterSkeletonParser`'s own doc comment now grounds `CHARS.DAT`
+/// tables A/B/C in) → curve evaluation writing per-joint world matrices
+/// (`nuanim.c`'s `NuAnimCurveSetApplyToJoint*`/`NuAnimCurve2SetApplyToJoint*`)
+/// → a 16-matrix GPU bone palette upload
+/// (`system/port.c`'s `NuShaderSetSkinningConstants`) → real per-vertex
+/// GPU-style blending (`system/skinning.c`'s `SkinnedShader`,
+/// `VecMatMulAndWeight1`/`VecMatMulAndWeight3`, up to 3 bone influences
+/// per vertex via `nuvtx_sk3tc1_s`). The same reference also has a real,
+/// separate **per-model collision** system (distinct from `.TER`'s world/
+/// level collision -- see `WOCTerrainParser`'s own doc comment): sphere/
+/// ellipsoid/cylinder hit volumes (`NUCOLLISIONDATA_s`/
+/// `NUCOLLISIONHDR_s`, `nu3dx/nuhgobj.h`) attached per-joint to a
+/// `NUHGOBJ_s`, for characters/creatures specifically. Neither of these
+/// is decoded by this codebase today -- this build has no WoC skinned-
+/// mesh renderer or character-collision consumer at all, only the static
+/// `CHARS.DAT` skeleton/clip-catalog data these systems would sit on top
+/// of -- but both are now real, source-grounded, and scoped for whenever
+/// that becomes the next real piece of work, rather than an unknown.
 public enum WOCCharacterAnimationCatalogParser {
     public enum ParseError: Error, Equatable {
         case truncated

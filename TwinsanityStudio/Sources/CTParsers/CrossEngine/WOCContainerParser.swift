@@ -935,8 +935,55 @@ public enum WOCContainerParser {
     /// needs an external reference (a decompiled/disassembled WoC
     /// executable, or community documentation of this specific TT-engine
     /// tristream format) the way every original-Twinsanity parser in this
-    /// codebase is grounded in `twinsanity-editor-master` -- no equivalent
-    /// exists for WoC's `OBJ0` format as of this update.
+    /// codebase is grounded in `twinsanity-editor-master`.
+    ///
+    /// **Update: that external reference does exist
+    /// (`OpenCrashWOC-main`, a real decompiled/DWARF-debug-verified
+    /// source tree for this exact engine family, already used elsewhere
+    /// in this codebase for `SST0`/`MS00`) and was searched specifically
+    /// for this -- real, useful confirmation of the surrounding
+    /// structure, but the core mystery itself stays open.** `PS2_Version/
+    /// GHG_GSC_FUNCTIONS.txt`'s `ReadObjSet` is the real source for
+    /// `OBJ0` (confirmed: it reads `numgobj`, then per-`gobj` a
+    /// sub-object count, `type` (0=mesh/1=faceon), per-mesh-geom a
+    /// material-index-based `geo->mtl->attrib.ot == 1` branch selecting
+    /// `tristream` (this codebase's "arc" format) vs. `dmastream` (a
+    /// `sceDmaTag`-chained format this codebase doesn't decode at all) --
+    /// real confirmation of the "leading working explanation" this doc
+    /// comment already carried, not a new finding). The tristream fixup
+    /// loop itself (`*(int*)(t + 0x14) = (int)(t1 + 0x10)` on each
+    /// `nuvutri_s` element) confirms each element is at least 0x18 bytes
+    /// and that offset 0x14 is a *runtime-only* pointer-chain slot
+    /// (overwritten at load time, not real on-disk vertex data) -- but
+    /// **`struct nuvutri_s` itself has zero definitions anywhere in this
+    /// reference**, source or the 457K-line GameCube DWARF debug dump
+    /// (grepped directly, confirmed absent). The GameCube port doesn't
+    /// help either: its own parallel loader (`nu3dx/nuscene.c`'s
+    /// `ReadNuIFFGeomVtx`) abandoned the PS2 VU tristream format
+    /// entirely, reading a fully-expanded, DWARF-verified
+    /// `nuvtx_tc1_s{pnt:Vec3, nrm:Vec3, diffuse:packedARGB, tc:Float32x2}`
+    /// (0x24 bytes) straight off disk instead -- confirming real UV data
+    /// *does* exist in this vertex-format family in general (`tc[2]`,
+    /// not "texcoord" -- the actual field name throughout this engine),
+    /// but not in the specific PS2-only packed shape this codebase's
+    /// `OBJ0` decoder has to contend with. Net: this reference
+    /// independently corroborates the tristream/dmastream split and
+    /// proves UV data is a real, normal part of this engine's vertex
+    /// formats in general, but does not hand over the one struct
+    /// (`nuvutri_s`) that would actually close this file's own open
+    /// question -- not even Traveller's Tales' own GameCube port team
+    /// carried that specific struct forward into a form this reference
+    /// preserves.
+    ///
+    /// One more real, separate finding from the same search, worth
+    /// recording here rather than losing: `numtlattrib_s`'s real,
+    /// DWARF-verified 32-bit bitfield (`alpha:2,filter:2,fx:2,utc:2,
+    /// vtc:2,cull:2,zmode:2,lighting:2,colour:1,fill:1,atst:3,aref:8,
+    /// afail:2,uvmode:1` -- exactly 32 bits, no room left over) has no
+    /// field literally named `ot` -- independently reconfirming (not
+    /// just repeating) the naming mismatch `parseMaterialSet`'s own doc
+    /// comment already flags between this struct and `ReadObjSet`'s own
+    /// `attrib.ot` reference.
     public static func parseOBJ0ChunkArcs(_ payload: Data, chunk: OBJ0Chunk) -> [OBJ0Arc] {
         let bytes = [UInt8](payload)
         let arcMagic: [UInt8] = [0xD2, 0x80, 0x01, 0x6C]
