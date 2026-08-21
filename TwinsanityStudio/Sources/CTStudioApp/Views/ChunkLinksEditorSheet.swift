@@ -96,7 +96,7 @@ struct ChunkLinksEditorSheet: View {
                     .frame(width: 100)
                     .font(.caption.monospaced())
                 }
-                Text(link.hasTree ? "(has tree — Type bit 0 set)" : "").font(.caption2).foregroundStyle(.secondary)
+                Text(link.hasTree ? "(has tree, Type bit 0 set)" : "").font(.caption2).foregroundStyle(.secondary)
             }
             .font(.caption)
 
@@ -136,7 +136,7 @@ struct ChunkLinksEditorSheet: View {
         let link = editableAsset.links[linkIndex]
         return VStack(alignment: .leading, spacing: 4) {
             Text("Load-Zone Tree Nodes (\(link.treeNodes.count))").font(.caption2.bold())
-            Text(link.hasTree ? "" : "Type's bit 0 is clear — tree nodes won't be read back even if present. Set Type's low bit to re-enable.")
+            Text(link.hasTree ? "" : "Type's bit 0 is clear. Tree nodes won't be read back even if present. Set Type's low bit to re-enable.")
                 .font(.caption2)
                 .foregroundStyle(.orange)
             ForEach(link.treeNodes.indices, id: \.self) { nodeIndex in

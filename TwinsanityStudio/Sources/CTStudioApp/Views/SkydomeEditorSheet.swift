@@ -28,7 +28,7 @@ struct SkydomeEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Edit Skydome #\(original.id)").font(.title3.bold())
-            Text("Mesh count is fixed by this record's on-disk size — this build can change which model/rigid-model IDs it points to, not add or remove slots.")
+            Text("Mesh count is fixed by this record's on-disk size. This build can change which model/rigid-model IDs it points to, not add or remove slots.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 

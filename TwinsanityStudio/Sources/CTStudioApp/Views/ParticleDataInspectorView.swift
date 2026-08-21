@@ -22,7 +22,7 @@ struct ParticleDataInspectorView: View {
                 if particleData.canWriteBack, workspace.canSaveEdits(for: node) {
                     Button("Edit…") { isEditing = true }
                 } else if !particleData.canWriteBack {
-                    Text("This record has an on-disk pre-header this build doesn't model — editing isn't available.")
+                    Text("This record has an on-disk pre-header this build doesn't model. Editing isn't available.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

@@ -28,7 +28,7 @@ struct ImageMakerView: View {
                 Spacer()
                 Button("Close") { dismiss() }
             }
-            Text("Builds a complete, real ISO-9660 (ECMA-119) disc image from a folder of files — every directory record round-trips through this app's own disc-image reader, verified the same way every other writer in this app is. The result has been verified to actually boot in a real PCSX2 build. Real PS2 hardware hasn't been tested; that verification needs hardware this project has no access to.")
+            Text("Builds a complete, real ISO-9660 (ECMA-119) disc image from a folder of files. Every directory record round-trips through this app's own disc-image reader, verified the same way every other writer in this app is. The result has been verified to actually boot in a real PCSX2 build. Real PS2 hardware hasn't been tested; that verification needs hardware this project has no access to.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

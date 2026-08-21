@@ -63,7 +63,7 @@ struct InspectorView: View {
                                 Label("Change ID…", systemImage: "number")
                             }
                             .disabled(!workspace.canSaveEdits(for: node))
-                            .help("Reassign this record's ID within its containing section — ports the reference editor's own generic ID Editor.")
+                            .help("Reassign this record's ID within its containing section. Ports the reference editor's own generic ID Editor.")
                         }
                         if Self.isCompositeEligible(node.payload) {
                             Toggle(isOn: $showComposite) {
@@ -241,7 +241,7 @@ struct InspectorView: View {
             ContentUnavailableView(
                 "No Parent Found",
                 systemImage: "questionmark.circle",
-                description: Text("Nothing in this file currently references this record — it may be orphaned. Check the Scrapped Content Scanner.")
+                description: Text("Nothing in this file currently references this record. It may be orphaned. Check the Scrapped Content Scanner.")
             )
         }
     }
@@ -365,7 +365,7 @@ struct RawInspectorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if node.children.isEmpty {
-                Label("Not decoded by this build — browsable as raw bytes only.", systemImage: "info.circle")
+                Label("Not decoded by this build. Browsable as raw bytes only.", systemImage: "info.circle")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {

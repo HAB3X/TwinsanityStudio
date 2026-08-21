@@ -114,7 +114,7 @@ struct MemoryCardInspectorWindow: View {
     }
 
     private func dateString(_ timestamp: MemoryCardTimestamp) -> String {
-        guard let date = timestamp.date else { return "—" }
+        guard let date = timestamp.date else { return "N/A" }
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .medium

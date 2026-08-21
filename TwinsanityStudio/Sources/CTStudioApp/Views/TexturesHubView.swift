@@ -88,7 +88,7 @@ struct TexturesHubView: View {
         ) else { return }
         do {
             let layout = try TextureAtlasPacker.exportAtlas(textures, to: url)
-            workspace.statusMessage = "Saved \(url.lastPathComponent) — \(layout.atlasWidth)×\(layout.atlasHeight), \(layout.placements.count) texture(s) packed."
+            workspace.statusMessage = "Saved \(url.lastPathComponent): \(layout.atlasWidth)×\(layout.atlasHeight), \(layout.placements.count) texture(s) packed."
             isBatchSelectionMode = false
             selectedIDs.removeAll()
         } catch {
@@ -111,7 +111,7 @@ struct TexturesHubView: View {
                 systemImage: "photo.stack",
                 description: Text(workspace.isScanning
                     ? "Textures will appear here as the archive scan finds them."
-                    : "Load a .BH archive or a .RM2/.SM2 file — scanning starts automatically.")
+                    : "Load a .BH archive or a .RM2/.SM2 file. Scanning starts automatically.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if filteredEntries.isEmpty {
@@ -259,7 +259,7 @@ private struct TextureHubDetailView: View {
                 Button("Export PNG…") { export() }
             }
             if parentLookupSucceeded == false {
-                Label("Nothing currently loaded references this texture — it may be orphaned, or its referencing file hasn't been parsed this session.", systemImage: "questionmark.circle")
+                Label("Nothing currently loaded references this texture. It may be orphaned, or its referencing file hasn't been parsed this session.", systemImage: "questionmark.circle")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }

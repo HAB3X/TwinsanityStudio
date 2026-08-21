@@ -47,7 +47,7 @@ struct HardwareProfilerHUDView: View {
                 budgetBar(label: "Xbox Unified RAM (64 MB)", used: gpuMemoryBytes, budget: Self.xboxUnifiedRAMBytes)
             }
 
-            Text("GPU memory vs. each console's real, documented capacity — not a guessed polygon-throughput budget, since no verified per-game figure for that exists in this build's reference material.")
+            Text("GPU memory vs. each console's real, documented capacity. Not a guessed polygon-throughput budget, since no verified per-game figure for that exists in this build's reference material.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

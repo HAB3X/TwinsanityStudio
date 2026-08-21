@@ -83,7 +83,7 @@ struct CommandPaletteView: View {
             results.append(PaletteResult(
                 id: model.id,
                 title: model.displayName,
-                subtitle: model.skeleton != nil ? "Rigged model — Models Hub" : "Model — Models Hub",
+                subtitle: model.skeleton != nil ? "Rigged model · Models Hub" : "Model · Models Hub",
                 systemImage: model.skeleton != nil ? "figure.stand" : "cube.fill",
                 action: { workspace.modelViewerAsset = model; dismiss() }
             ))

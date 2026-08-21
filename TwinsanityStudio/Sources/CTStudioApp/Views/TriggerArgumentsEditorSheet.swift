@@ -33,7 +33,7 @@ struct TriggerArgumentsEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Trigger Arguments").font(.title3.bold())
-            Text("Raw values only — this build has no verified name for what any of these four arguments mean, so these are the real on-disk uint16 values, not invented field names.")
+            Text("Raw values only. This build has no verified name for what any of these four arguments mean, so these are the real on-disk uint16 values, not invented field names.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 

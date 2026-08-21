@@ -30,7 +30,7 @@ struct GameLauncherView: View {
                 Spacer()
                 Button("Close") { dismiss() }
             }
-            Text("Patches a real, already-bootable PS2 disc image and boots it in PCSX2. Every byte this doesn't need to change is copied straight through from the disc image below — the original file is never modified.")
+            Text("Patches a real, already-bootable PS2 disc image and boots it in PCSX2. Every byte this doesn't need to change is copied straight through from the disc image below. The original file is never modified.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -67,7 +67,7 @@ struct GameLauncherView: View {
                 .padding(8)
                 .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
             } else {
-                Text("Boots the disc image above exactly as it is — no in-session edits are folded in automatically. To test a specific level's edits, use that level's own \"Quick Launch\" button in the Level Viewer instead.")
+                Text("Boots the disc image above exactly as it is. No in-session edits are folded in automatically. To test a specific level's edits, use that level's own \"Quick Launch\" button in the Level Viewer instead.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -102,7 +102,7 @@ struct GameLauncherView: View {
         if let isoType = UTType(filenameExtension: "iso") {
             panel.allowedContentTypes = [isoType]
         }
-        panel.message = "Choose a real, already-bootable PS2 disc image (.iso) — a raw .bin/.cue pair isn't supported for launching."
+        panel.message = "Choose a real, already-bootable PS2 disc image (.iso). A raw .bin/.cue pair isn't supported for launching."
         panel.prompt = "Choose"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         workspace.discImageURL = url

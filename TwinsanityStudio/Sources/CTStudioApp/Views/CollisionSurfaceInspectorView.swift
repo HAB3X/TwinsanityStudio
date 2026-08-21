@@ -38,7 +38,7 @@ struct CollisionSurfaceInspectorView: View {
                 LabeledContent("UnkBoundingBox 2", value: String(format: "%.2f, %.2f, %.2f, %.2f", surface.unkBoundingBox2.x, surface.unkBoundingBox2.y, surface.unkBoundingBox2.z, surface.unkBoundingBox2.w))
             }
             Section {
-                Text("Field names beyond Surface ID and the sound/particle slots keep the reference tool's own \"Unk\"-prefixed naming — the reference tool itself never determined what these physics floats or bounding boxes do.")
+                Text("Field names beyond Surface ID and the sound/particle slots keep the reference tool's own \"Unk\"-prefixed naming. The reference tool itself never determined what these physics floats or bounding boxes do.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

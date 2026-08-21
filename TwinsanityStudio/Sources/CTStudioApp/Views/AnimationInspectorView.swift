@@ -55,7 +55,7 @@ struct AnimationInspectorView: View {
                         .disabled(isSaving || working.body.frames.count == animation.body.frames.count && working.facial.frames.count == animation.facial.frames.count)
                     Spacer()
                 }
-                Text("Add/Delete Frame are real structural edits (this record's on-disk size changes) — \"Save Edited Copy…\" writes them, everything else here stays read-only.")
+                Text("Add/Delete Frame are real structural edits (this record's on-disk size changes). \"Save Edited Copy…\" writes them; everything else here stays read-only.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 if let errorMessage {

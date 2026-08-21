@@ -52,7 +52,7 @@ struct ArchiveRepackagerView: View {
                 Spacer()
                 Button("Close") { dismiss() }
             }
-            Text("Replace one or more entries in a .BH/.BD archive pair and write a brand-new copy — every unmodified entry streams straight through from the original .BD, unchanged. The source archive is never modified.")
+            Text("Replace one or more entries in a .BH/.BD archive pair and write a brand-new copy. Every unmodified entry streams straight through from the original .BD, unchanged. The source archive is never modified.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
@@ -144,7 +144,7 @@ struct ArchiveRepackagerView: View {
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "Choose a folder to extract every entry of \(index.bhURL.deletingPathExtension().lastPathComponent) into — subfolder structure embedded in entry names is recreated."
+        panel.message = "Choose a folder to extract every entry of \(index.bhURL.deletingPathExtension().lastPathComponent) into. Subfolder structure embedded in entry names is recreated."
         panel.prompt = "Extract"
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         isExtracting = true
@@ -208,7 +208,7 @@ struct ArchiveRepackagerView: View {
         let suggestedName = index.bhURL.deletingPathExtension().lastPathComponent + "_modified"
         guard let outputBH = ExportPanel.chooseSaveLocation(
             suggestedName: "\(suggestedName).BH",
-            message: "Save the new archive's .BH index — a matching .BD is created alongside it. The original archive is never modified."
+            message: "Save the new archive's .BH index. A matching .BD is created alongside it. The original archive is never modified."
         ) else { return }
 
         // Capture every value the background work needs *before* starting

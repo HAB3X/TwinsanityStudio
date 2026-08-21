@@ -25,7 +25,7 @@ struct IDEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Change ID").font(.title3.bold())
-            Text("Reassigns this record's ID within its containing section — the record's own bytes and position are untouched, only the index-table entry's ID changes. Nothing else in the file that references the old ID by value (an object placement, a trigger's instance list, a script slot, ...) is updated — same real, narrow behavior the reference editor's own ID Editor has.")
+            Text("Reassigns this record's ID within its containing section. The record's own bytes and position are untouched; only the index-table entry's ID changes. Nothing else in the file that references the old ID by value (an object placement, a trigger's instance list, a script slot, ...) is updated. This is the same real, narrow behavior the reference editor's own ID Editor has.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 

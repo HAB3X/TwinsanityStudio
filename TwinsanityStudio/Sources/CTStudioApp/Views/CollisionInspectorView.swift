@@ -18,7 +18,7 @@ struct CollisionInspectorView: View {
                 ContentUnavailableView(
                     "No Collision Geometry",
                     systemImage: "square.grid.3x1.below.line.grid.1x2",
-                    description: Text("This record decoded but has no vertices/triangles — the reference tool treats a short ColData record as an intentionally empty placeholder.")
+                    description: Text("This record decoded but has no vertices/triangles. The reference tool treats a short ColData record as an intentionally empty placeholder.")
                 )
             } else {
                 Form {

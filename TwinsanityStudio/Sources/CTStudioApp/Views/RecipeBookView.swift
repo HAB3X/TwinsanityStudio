@@ -92,7 +92,7 @@ struct RecipeBookView: View {
                 Spacer()
                 Button("Close") { dismiss() }
             }
-            Text("Reassign which real object each placement resolves to. Every choice below is a real objectID already used somewhere in this chunk — nothing here is invented. Applying writes an edited copy of the file; the original is never modified.")
+            Text("Reassign which real object each placement resolves to. Every choice below is a real objectID already used somewhere in this chunk, nothing here is invented. Applying writes an edited copy of the file; the original is never modified.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             TextField("Search placements…", text: $searchText)
@@ -162,7 +162,7 @@ struct RecipeBookView: View {
     private var gameplayModsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Gameplay Mods").font(.headline).padding(.horizontal).padding(.top, 8)
-            Text("Verified toggles ported from CrateModLoader's own Twinsanity mod list — real field patches, not invented ones. See each mod's description for exactly what it does.")
+            Text("Verified toggles ported from CrateModLoader's own Twinsanity mod list. These are real field patches, not invented ones. See each mod's description for exactly what it does.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
@@ -301,7 +301,7 @@ struct RecipeBookView: View {
     private var triggerPresetsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Trigger Presets").font(.headline).padding(.horizontal).padding(.top, 8)
-            Text("Groups of triggers that currently share the exact same 4 argument values — change one and apply it to the whole group at once.")
+            Text("Groups of triggers that currently share the exact same 4 argument values. Change one and apply it to the whole group at once.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)

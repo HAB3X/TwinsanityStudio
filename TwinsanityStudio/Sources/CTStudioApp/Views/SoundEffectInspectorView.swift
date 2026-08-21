@@ -145,7 +145,7 @@ struct SoundEffectInspectorView: View {
             }
 
             if sound.pcmSamples.isEmpty {
-                Label("Decoded to zero samples — either genuinely empty, or this record's FreqFac wasn't a recognized sample rate.", systemImage: "exclamationmark.triangle")
+                Label("Decoded to zero samples. Either genuinely empty, or this record's FreqFac wasn't a recognized sample rate.", systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -160,7 +160,7 @@ struct SoundEffectInspectorView: View {
                     Text(String(format: "%.2fs – %.2fs of %.2fs", loopStartFraction * sound.durationSeconds, loopEndFraction * sound.durationSeconds, sound.durationSeconds))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
-                    Text("A real, tool-side playback loop for testing where a *replacement* clip should loop before committing to it — this format has no decoded loop-point metadata this build has found, so this isn't a claim about the original game's own loop points.")
+                    Text("A real, tool-side playback loop for testing where a *replacement* clip should loop before committing to it. This format has no decoded loop-point metadata this build has found, so this isn't a claim about the original game's own loop points.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -178,7 +178,7 @@ struct SoundEffectInspectorView: View {
                     Spacer()
                     if isImporting { ProgressView().controlSize(.small) }
                 }
-                Text("\"Sound Import\": re-encodes an audio file you pick to this sound's own \(sound.sampleRateHz) Hz mono ADPCM and saves an edited copy — the original file on disk is not modified. The replacement must encode to no more bytes than the original slot had room for; a longer clip is refused rather than truncated.")
+                Text("\"Sound Import\": re-encodes an audio file you pick to this sound's own \(sound.sampleRateHz) Hz mono ADPCM and saves an edited copy. The original file on disk is not modified. The replacement must encode to no more bytes than the original slot had room for; a longer clip is refused rather than truncated.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 if let importError {
@@ -233,7 +233,7 @@ struct SoundEffectInspectorView: View {
         // attempt construction for zero-sample audio removes that path
         // entirely rather than hoping `try?` catches it.
         guard !sound.pcmSamples.isEmpty else {
-            workspace.lastError = "This sound decoded to zero samples — nothing to play."
+            workspace.lastError = "This sound decoded to zero samples. Nothing to play."
             return
         }
         let wav = wavData()
@@ -258,7 +258,7 @@ struct SoundEffectInspectorView: View {
         let started = newPlayer.play()
         AppLog.audio.debug("Audio play command sent — accepted=\(started)")
         if !started {
-            workspace.lastError = "AVAudioPlayer.play() returned false — playback didn't start (check system output device/volume)."
+            workspace.lastError = "AVAudioPlayer.play() returned false. Playback didn't start (check system output device/volume)."
         }
         isPlaying = started
         if started, loopPreviewEnabled {
@@ -326,7 +326,7 @@ struct SoundEffectInspectorView: View {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowedContentTypes = [.audio]
-        panel.message = "Choose a replacement audio file. It's resampled to this sound's exact \(sound.sampleRateHz) Hz mono — the on-disk record's sample rate can't change."
+        panel.message = "Choose a replacement audio file. It's resampled to this sound's exact \(sound.sampleRateHz) Hz mono; the on-disk record's sample rate can't change."
         guard panel.runModal() == .OK, let url = panel.urls.first else { return }
 
         importError = nil
@@ -357,7 +357,7 @@ struct SoundEffectInspectorView: View {
 
     private enum AudioImportError: LocalizedError {
         case conversionFailed
-        var errorDescription: String? { "Couldn't decode or resample that file — check it's a real audio file." }
+        var errorDescription: String? { "Couldn't decode or resample that file. Check that it's a valid audio file." }
     }
 
     /// Reads `url` and converts it to 16-bit mono PCM at `targetSampleRateHz`,

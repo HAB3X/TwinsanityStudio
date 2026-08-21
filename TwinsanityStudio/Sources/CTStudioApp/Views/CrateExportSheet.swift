@@ -22,7 +22,7 @@ struct CrateExportSheet: View {
 
     init(
         suggestedName: String,
-        caption: String = "Packages the edited file into a real CrateModLoader-installable .crate (a modcrateinfo.txt manifest + a layer0 folder containing the edited file, zipped). The in-crate file name defaults to the original file's own name — this build doesn't track its exact in-archive install path, so double-check the destination subfolder after installing.",
+        caption: String = "Packages the edited file into a real CrateModLoader-installable .crate (a modcrateinfo.txt manifest + a layer0 folder containing the edited file, zipped). The in-crate file name defaults to the original file's own name. This build doesn't track its exact in-archive install path, so double-check the destination subfolder after installing.",
         onExport: @escaping (CrateMetadata, URL) -> Void
     ) {
         self.suggestedName = suggestedName

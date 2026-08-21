@@ -26,7 +26,7 @@ struct InstanceFlagsEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Instance Flags").font(.title3.bold())
-            Text("Real, verified per-bit names from the reference tool's own InstanceFlagsEditor. A handful of bits (and every \"Bit N\" label below) were never named by the reference tool either — shown as their raw bit number here too, not an invented label.")
+            Text("Real, verified per-bit names from the reference tool's own InstanceFlagsEditor. A handful of bits (and every \"Bit N\" label below) were never named by the reference tool either, so they're shown as their raw bit number here too, not an invented label.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 

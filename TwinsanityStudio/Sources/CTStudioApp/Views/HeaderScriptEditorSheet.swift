@@ -37,7 +37,7 @@ struct HeaderScriptEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Header Script Participants").font(.title3.bold())
-            Text("Real write-back — each entry patches straight into a copy of this file. mainScriptIndex is 1-based (the real script index is mainScriptIndex - 1).")
+            Text("Real write-back: each entry patches straight into a copy of this file. mainScriptIndex is 1-based (the real script index is mainScriptIndex - 1).")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -87,7 +87,7 @@ struct HeaderScriptEditorSheet: View {
             return
         }
         guard let unkInt2 = Self.parseUInt32(unkInt2Texts[index]) else {
-            errorMessage = "Entry \(index)'s unkInt2 (\"\(unkInt2Texts[index])\") isn't a valid 32-bit value — use plain decimal or 0x-prefixed hex."
+            errorMessage = "Entry \(index)'s unkInt2 (\"\(unkInt2Texts[index])\") isn't a valid 32-bit value. Use plain decimal or 0x-prefixed hex."
             return
         }
         errorMessage = nil

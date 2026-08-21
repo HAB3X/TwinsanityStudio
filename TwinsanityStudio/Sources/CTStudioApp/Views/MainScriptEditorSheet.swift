@@ -103,7 +103,7 @@ struct MainScriptEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Main Script — \(editableMain.name.isEmpty ? "<unnamed>" : editableMain.name)").font(.title3.bold())
+                Text("Main Script: \(editableMain.name.isEmpty ? "<unnamed>" : editableMain.name)").font(.title3.bold())
                 Text("Real write-back: redirecting a state's script/slot, editing a command's arguments, or adding/removing a state/body/command/condition, each saves its own edited copy of this file.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -332,7 +332,7 @@ struct MainScriptEditorSheet: View {
                     Button("Edit Arguments…") { editingCommand = command }
                         .controlSize(.small)
                         .disabled(!workspace.canSaveEdits(for: node) || command.fileOffset == 0)
-                        .help(command.fileOffset == 0 ? "Save, then reopen the saved file, before editing this newly-added command's arguments — it has no real on-disk offset yet." : "")
+                        .help(command.fileOffset == 0 ? "Save, then reopen the saved file, before editing this newly-added command's arguments. It has no on-disk offset yet." : "")
                     Button("Delete", role: .destructive) { deleteCommand(stateIndex: stateIndex, bodyIndex: index, commandIndex: commandIndex) }
                         .controlSize(.small)
                         .disabled(!workspace.canSaveEdits(for: node))

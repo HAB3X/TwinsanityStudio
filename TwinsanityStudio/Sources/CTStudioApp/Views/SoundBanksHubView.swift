@@ -164,7 +164,7 @@ struct SoundBanksHubView: View {
                                 Spacer()
                                 if isRepacking { ProgressView().controlSize(.small) }
                             }
-                            Text("Re-encodes a replacement audio file to this entry's own \(sound.sampleRateHz) Hz mono ADPCM, then rebuilds and saves the *whole* bank (.MH + .MB) as an edited copy — this format packs every entry's audio tightly end-to-end, so one entry changing size means every entry after it needs its offset corrected. The original bank files on disk are not modified.")
+                            Text("Re-encodes a replacement audio file to this entry's own \(sound.sampleRateHz) Hz mono ADPCM, then rebuilds and saves the *whole* bank (.MH + .MB) as an edited copy. This format packs every entry's audio tightly end-to-end, so one entry changing size means every entry after it needs its offset corrected. The original bank files on disk are not modified.")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                             if let repackError {
@@ -186,7 +186,7 @@ struct SoundBanksHubView: View {
                     systemImage: icon(for: entry),
                     description: Text(entry.kind == .reserved
                         ? "This slot has no audio data."
-                        : "This slot's real metadata (name, size, sample rate) was read, but its ADPCM bytes decoded to zero samples — likely a placeholder or corrupt slot, not a parser gap.")
+                        : "This slot's real metadata (name, size, sample rate) was read, but its ADPCM bytes decoded to zero samples. Likely a placeholder or corrupt slot, not a parser gap.")
                 )
             }
         } else {
@@ -216,7 +216,7 @@ struct SoundBanksHubView: View {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowedContentTypes = [.audio]
-        panel.message = "Choose a replacement audio file. It's resampled to this entry's exact \(originalSound.sampleRateHz) Hz mono — the on-disk sample rate can't change."
+        panel.message = "Choose a replacement audio file. It's resampled to this entry's exact \(originalSound.sampleRateHz) Hz mono; the on-disk sample rate can't change."
         guard panel.runModal() == .OK, let url = panel.urls.first else { return }
 
         repackError = nil

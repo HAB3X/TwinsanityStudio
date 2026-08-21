@@ -42,7 +42,7 @@ struct SceneryInspectorView: View {
             .formStyle(.grouped)
 
             if placements.isEmpty {
-                ContentUnavailableView("No Placements", systemImage: "map", description: Text("This record decoded but has no scenery tree — see its own Chunk Name/header fields above."))
+                ContentUnavailableView("No Placements", systemImage: "map", description: Text("This record decoded but has no scenery tree. See its own Chunk Name/header fields above."))
             } else {
                 Button {
                     isResolving = true
@@ -88,7 +88,7 @@ struct DynamicSceneryInspectorView: View {
                 }
             }
             .formStyle(.grouped)
-            Text("Resting position only — per-frame motion curves aren't modeled yet (see DynamicSceneryDataParser).")
+            Text("Resting position only. Per-frame motion curves aren't modeled yet (see DynamicSceneryDataParser).")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

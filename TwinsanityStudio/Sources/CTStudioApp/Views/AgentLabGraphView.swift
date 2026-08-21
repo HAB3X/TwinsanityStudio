@@ -96,11 +96,11 @@ struct AgentLabGraphView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("AgentLab Graph — \(sectionNode.displayName)").font(.headline)
+                Text("AgentLab Graph: \(sectionNode.displayName)").font(.headline)
                 Spacer()
                 Button("Close") { dismiss() }
             }
-            Text("\(agentNodes.count) real CustomAgent record(s) from this file, each decoded from its actual on-disk bytecode (see this view's own doc comment for the verified reference source). Drag a card to rearrange it; drag from a card's connector dot (bottom-right) to another card to link them — those links are your own organizational notes, not decoded engine data.")
+            Text("\(agentNodes.count) real CustomAgent record(s) from this file, each decoded from its actual on-disk bytecode (see this view's own doc comment for the verified reference source). Drag a card to rearrange it; drag from a card's connector dot (bottom-right) to another card to link them. Those links are your own organizational notes, not decoded engine data.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -269,7 +269,7 @@ struct AgentLabGraphView: View {
     }
 
     private func cardSummary(for node: ChunkNode) -> String {
-        guard let record = decodedRecord(for: node) else { return "(couldn't decode — see hex)" }
+        guard let record = decodedRecord(for: node) else { return "(couldn't decode, see hex)" }
         let allCommands = record.entries.flatMap(\.commands) + record.finalCommands
         guard let first = allCommands.first else { return "\(record.entries.count) slot(s), no commands" }
         let firstLabel = first.commandName ?? "#\(first.commandID)"
@@ -289,7 +289,7 @@ struct AgentLabGraphView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(Array(record.entries.enumerated()), id: \.offset) { index, entry in
                             VStack(alignment: .leading, spacing: 3) {
-                                Text("Slot \(index) — script ID \(entry.scriptID)").font(.caption.bold())
+                                Text("Slot \(index): script ID \(entry.scriptID)").font(.caption.bold())
                                 if entry.commands.isEmpty {
                                     Text("(no commands)").font(.caption2).foregroundStyle(.secondary)
                                 } else {
@@ -307,7 +307,7 @@ struct AgentLabGraphView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else {
-                Text("Couldn't decode this record's bytecode — see raw bytes in the hex editor.")
+                Text("Couldn't decode this record's bytecode. See raw bytes in the hex editor.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

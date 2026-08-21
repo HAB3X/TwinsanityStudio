@@ -119,7 +119,7 @@ struct HexViewerWindow: View {
             }
             Spacer()
             if !workspace.canSaveEdits(for: node) {
-                Text("Read-only view — this record's file is archive-packed or wasn't opened standalone, so there's no write path back to it yet.")
+                Text("Read-only view. This record's file is archive-packed or wasn't opened standalone, so there's no write path back to it yet.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: 260)

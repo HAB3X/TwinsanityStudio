@@ -165,7 +165,7 @@ struct ContentView: View {
                     } label: {
                         Label("Open as Monkey Ball…", systemImage: "circle.grid.2x2")
                     }
-                    .help("Opens a .RM2/.SM2 as a Super Monkey Ball Adventure build — the same shared \"nu2\" engine container format, but with real, distinct Instance/Code/Graphics section layouts this build otherwise never reaches.")
+                    .help("Opens a .RM2/.SM2 as a Super Monkey Ball Adventure build. This is the same shared \"nu2\" engine container format, but with real, distinct Instance/Code/Graphics section layouts this build otherwise never reaches.")
                     Divider()
                     Button {
                         wocWorkspace.isLevelsHubPresented = true
@@ -216,7 +216,7 @@ struct ContentView: View {
                         Image(systemName: "xmark.circle.fill")
                     }
                     .buttonStyle(.plain)
-                    .help("Cancel scanning — whatever's already been parsed stays loaded.")
+                    .help("Cancel scanning. Whatever's already been parsed stays loaded.")
                 } else if workspace.isLoading || workspace.isScanning || workspace.isLoadingSoundBank || workspace.isSaving {
                     ProgressView().controlSize(.small)
                 }
@@ -414,7 +414,7 @@ struct ContentView: View {
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.message = "Choose a disc image: .iso, or .bin/.cue (pick either file — its match is found automatically alongside it)."
+        panel.message = "Choose a disc image: .iso, or .bin/.cue (pick either file; its match is found automatically alongside it)."
         if panel.runModal() == .OK, let url = panel.urls.first {
             workspace.mountDiscImage(url: url)
         }

@@ -66,7 +66,7 @@ struct LodModelEditorSheet: View {
                     Button("Add LOD Slot") { lodModelIDsText.append("0") }
                         .disabled(lodModelIDsText.count >= Self.maxSlots)
                     if lodModelIDsText.count >= Self.maxSlots {
-                        Text("Capped at \(Self.maxSlots) slots — matches the reference editor's own limit (LODDistance is always exactly 4 real slots on disk).")
+                        Text("Capped at \(Self.maxSlots) slots. Matches the reference editor's own limit (LODDistance is always exactly 4 real slots on disk).")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }

@@ -29,7 +29,7 @@ struct TextureInspectorView: View {
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
             } else {
                 ContentUnavailableView("Format Not Decoded", systemImage: "photo.badge.exclamationmark",
-                    description: Text("\(texture.pixelFormat.rawValue.uppercased()) isn't fully decoded by this build — only the raw record is available."))
+                    description: Text("\(texture.pixelFormat.rawValue.uppercased()) isn't fully decoded by this build. Only the raw record is available."))
                     .frame(height: 200)
             }
 
@@ -91,8 +91,8 @@ struct TextureInspectorView: View {
                 if isReplacingTexture { ProgressView().controlSize(.small) }
             }
             Text(Self.isReplaceable(texture.pixelFormat)
-                ? "\"Asset Swap & Quick-Test: Recipe Book\" (blueprint 6.4) texture replace: resamples an image you pick to this texture's exact \(texture.width) × \(texture.height) and re-encodes it into a real \(texture.pixelFormat.rawValue.uppercased()) record, then saves an edited copy — the original file on disk is not modified."
-                : "Only PSMCT32 (PS2 raw RGBA) and raw-uncompressed TextureX (Xbox) textures can be replaced — this is \(texture.pixelFormat.rawValue.uppercased()), which has no verified encoder yet (re-compressing to DXT5, and re-swizzling/re-quantizing to a GS palette, are real, separate work this build doesn't guess at).")
+                ? "\"Asset Swap & Quick-Test: Recipe Book\" (blueprint 6.4) texture replace: resamples an image you pick to this texture's exact \(texture.width) × \(texture.height) and re-encodes it into a real \(texture.pixelFormat.rawValue.uppercased()) record, then saves an edited copy. The original file on disk is not modified."
+                : "Only PSMCT32 (PS2 raw RGBA) and raw-uncompressed TextureX (Xbox) textures can be replaced. This is \(texture.pixelFormat.rawValue.uppercased()), which has no verified encoder yet (re-compressing to DXT5, and re-swizzling/re-quantizing to a GS palette, are real, separate work this build doesn't guess at).")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             if let replaceError {
@@ -114,7 +114,7 @@ struct TextureInspectorView: View {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowedContentTypes = [.image]
-        panel.message = "Choose a replacement image. It's resampled to this texture's exact \(texture.width) × \(texture.height) — the on-disk record can't change size."
+        panel.message = "Choose a replacement image. It's resampled to this texture's exact \(texture.width) × \(texture.height); the on-disk record can't change size."
         guard panel.runModal() == .OK, let url = panel.urls.first else { return }
 
         replaceError = nil
@@ -126,7 +126,7 @@ struct TextureInspectorView: View {
         }
         let replacement = TextureAsset(id: texture.id, width: texture.width, height: texture.height, pixelFormat: texture.pixelFormat, rgba: resampled)
         guard let originalRecordBytes = workspace.rawBytes(for: node) else {
-            replaceError = "Couldn't read this texture's original on-disk bytes — this record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
+            replaceError = "Couldn't read this texture's original on-disk bytes. This record's file isn't a standalone-opened .RM2/.SM2 (archive-packed files aren't supported yet)."
             return
         }
         do {
@@ -210,7 +210,7 @@ struct TextureInspectorView: View {
                     .background(checkerboard)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
             }
-            Text("Upscaled: \(upscaled.width) × \(upscaled.height) (from \(texture.width) × \(texture.height)) — real output from the model you selected, not decoded game data.")
+            Text("Upscaled: \(upscaled.width) × \(upscaled.height) (from \(texture.width) × \(texture.height)). This is output from the model you selected, not decoded game data.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Button {

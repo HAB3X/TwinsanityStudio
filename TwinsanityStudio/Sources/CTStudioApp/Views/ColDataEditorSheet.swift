@@ -51,7 +51,7 @@ struct ColDataEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Edit ColData #\(original.id)").font(.title3.bold())
-            Text("Triggers are editable. Vertices, triangles, and groups are read-only — editing them would silently corrupt the surface-ID math. Importing an OBJ mesh below replaces all of it at once instead.")
+            Text("Triggers are editable. Vertices, triangles, and groups are read-only; editing them would silently corrupt the surface-ID math. Importing an OBJ mesh below replaces all of it at once instead.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -86,7 +86,7 @@ struct ColDataEditorSheet: View {
     private var importSection: some View {
         Section("Import Collision Mesh from OBJ") {
             Stepper("Max Polys Per Group: \(Int(maxPolysPerGroup))", value: $maxPolysPerGroup, in: 1...4096)
-            Text("Applied when a file is added below — changing this afterward doesn't retroactively regroup already-staged files, matching the reference tool's own behavior.")
+            Text("Applied when a file is added below. Changing this afterward doesn't retroactively regroup already-staged files, matching the reference tool's own behavior.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Button("Add OBJ File(s)…") { presentAddOBJPanel() }

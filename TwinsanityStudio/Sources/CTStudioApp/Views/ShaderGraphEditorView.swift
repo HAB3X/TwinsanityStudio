@@ -233,7 +233,7 @@ struct ShaderGraphEditorView: View {
                             }
                         ))
                     default:
-                        Text("This node kind has no editable value — wire real inputs into it from the canvas.")
+                        Text("This node kind has no editable value. Wire inputs into it from the canvas.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -266,7 +266,7 @@ struct ShaderGraphEditorView: View {
             switch renderer.applyShaderGraph(mslFragmentSource: mslSource, functionName: functionName) {
             case .success:
                 compileSucceeded = true
-                compileMessage = "Compiled and applied — close this editor to see the Model Viewer's viewport using this graph."
+                compileMessage = "Compiled and applied. Close this editor to see the Model Viewer's viewport using this graph."
             case .failure(let error):
                 compileSucceeded = false
                 compileMessage = "Metal rejected the compiled shader: \(error)"

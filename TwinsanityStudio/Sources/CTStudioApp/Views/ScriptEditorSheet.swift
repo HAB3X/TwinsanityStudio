@@ -52,7 +52,7 @@ struct ScriptEditorSheet: View {
                     }
                     if !script.trailingBytes.isEmpty {
                         LabeledContent("Trailing Bytes") {
-                            Text("\(script.trailingBytes.count) (real — see doc comment)")
+                            Text("\(script.trailingBytes.count) (real, see doc comment)")
                         }
                     }
                 }

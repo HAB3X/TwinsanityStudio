@@ -32,7 +32,7 @@ struct LodModelInspectorView: View {
                 }
             }
             Section {
-                Text("This viewer resolves scenery placements through the first of these IDs that actually has a real RigidModel — not a distance-based LOD selection.")
+                Text("This viewer resolves scenery placements through the first of these IDs that actually has a real RigidModel, not a distance-based LOD selection.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

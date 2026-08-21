@@ -45,7 +45,7 @@ struct ExecutablePatcherView: View {
                 Spacer()
                 Button("Close") { dismiss() }
             }
-            Text("Real, verified byte-offset patches ported from CrateModLoader's own Twinsanity mods — not this project's own reverse engineering. Every action here saves an edited copy; the original executable is never modified.")
+            Text("Real, verified byte-offset patches ported from CrateModLoader's own Twinsanity mods, not this project's own reverse engineering. Every action here saves an edited copy; the original executable is never modified.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Button("Open Executable…") { openExecutable() }
@@ -80,7 +80,7 @@ struct ExecutablePatcherView: View {
     private var revisionPicker: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Executable Build").font(.headline)
-            Text("Pick the exact build this file is — the four fields below live at different byte offsets in each one. PS2 NTSC-U is auto-detected by probing a real byte CrateModLoader itself uses to tell the two prints apart.")
+            Text("Pick the exact build this file is. The four fields below live at different byte offsets in each one. PS2 NTSC-U is auto-detected by probing a real byte CrateModLoader itself uses to tell the two prints apart.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Picker("", selection: Binding(
@@ -105,7 +105,7 @@ struct ExecutablePatcherView: View {
         if revision.archiveField != nil {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Game Archive").font(.headline)
-                Text("The boot archive filename (the .BD/.BH pair) the executable loads at startup — the reference editor's \"Patch Game Archive\" field.")
+                Text("The boot archive filename (the .BD/.BH pair) the executable loads at startup. This is the reference editor's \"Patch Game Archive\" field.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 HStack {
@@ -118,7 +118,7 @@ struct ExecutablePatcherView: View {
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Game Archive").font(.headline)
-                Text("No verified offset exists for \(revision.displayName) — the reference tool never shipped this field for Xbox builds.")
+                Text("No verified offset exists for \(revision.displayName). The reference tool never shipped this field for Xbox builds.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -158,7 +158,7 @@ struct ExecutablePatcherView: View {
     private func spawnSwapSection(revision: GameExecutableRevision) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Spawn Pointers").font(.headline)
-            Text("Two real 4-byte pointers the game reads to decide where to boot into and where to load for credits — swapped or copied directly, not decoded as text.")
+            Text("Two real 4-byte pointers the game reads to decide where to boot into and where to load for credits. Swapped or copied directly, not decoded as text.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             HStack {
@@ -196,7 +196,7 @@ struct ExecutablePatcherView: View {
                 // Only a hint — the probe byte only disambiguates the two
                 // NTSC-U builds; it says nothing about PAL/NTSC-J/Xbox, so
                 // this never silently guesses one of those instead.
-                statusMessage += " Detected \(detected.displayName) via CrateModLoader's own probe byte — verify before applying."
+                statusMessage += " Detected \(detected.displayName) via CrateModLoader's own probe byte. Verify before applying."
             }
         } catch {
             errorMessage = "Couldn't read \(url.lastPathComponent): \(error.localizedDescription)"

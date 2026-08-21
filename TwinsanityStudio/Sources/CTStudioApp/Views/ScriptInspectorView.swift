@@ -21,7 +21,7 @@ struct ScriptInspectorView: View {
                 LabeledContent("Priority (mask)", value: "\(script.mask)")
                 LabeledContent("Flag", value: script.flag == 0 ? "0 (MainScript)" : "\(script.flag) (HeaderScript)")
                 if !script.trailingBytes.isEmpty {
-                    LabeledContent("Trailing Bytes", value: "\(script.trailingBytes.count) (real — see doc comment)")
+                    LabeledContent("Trailing Bytes", value: "\(script.trailingBytes.count) (real, see doc comment)")
                 }
                 if workspace.canSaveEdits(for: node) {
                     Button("Edit…") { isEditing = true }
@@ -78,7 +78,7 @@ private struct MainScriptDetail: View {
                     }
                 }
                 ForEach(Array(state.bodies.enumerated()), id: \.offset) { bodyIndex, body in
-                    DisclosureGroup("Body \(bodyIndex) — \(body.commands.count) command(s)") {
+                    DisclosureGroup("Body \(bodyIndex): \(body.commands.count) command(s)") {
                         LabeledContent("Enabled", value: body.isEnabled ? "yes" : "no")
                         if let listIndex = body.scriptStateListIndex {
                             LabeledContent("State List Index", value: "\(listIndex)")

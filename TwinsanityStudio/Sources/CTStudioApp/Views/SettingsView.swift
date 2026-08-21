@@ -53,7 +53,7 @@ private struct GeneralSettingsTab: View {
                         Button("Clear") { workspace.masterDirectoryURL = nil }
                     }
                 }
-                Text("The folder Twinsanity Studio treats as your game files' home — surfaced as a one-click \"Open Master Directory\" option whenever the workspace is empty.")
+                Text("The folder Twinsanity Studio treats as your game files' home. Shown as a one-click \"Open Master Directory\" option whenever the workspace is empty.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {
@@ -112,7 +112,7 @@ private struct AppearanceSettingsTab: View {
                     }
                 }
                 .padding(.vertical, 4)
-                Text("Tints buttons and controls throughout the app. This is an in-app tint, not a change to your Mac's system-wide accent color — only System Settings controls that.")
+                Text("Tints buttons and controls throughout the app. This is an in-app tint, not a change to your Mac's system-wide accent color. Only System Settings controls that.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {

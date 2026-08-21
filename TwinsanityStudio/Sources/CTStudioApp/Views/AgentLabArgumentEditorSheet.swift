@@ -38,7 +38,7 @@ struct AgentLabArgumentEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(command.commandName ?? "Command #\(command.commandID)").font(.title3.bold())
-            Text("Editing the real on-disk uint32 arguments — this build doesn't have a verified field-name mapping for every command (see AgentLabActionDecoder for the ones it does), so these are raw values, not invented ones. Enter plain decimal or 0x-prefixed hex; a leading \"-\" is read as a signed 32-bit value and stored as its unsigned bit pattern.")
+            Text("Editing the real on-disk uint32 arguments. This build doesn't have a verified field-name mapping for every command (see AgentLabActionDecoder for the ones it does), so these are raw values, not invented ones. Enter plain decimal or 0x-prefixed hex; a leading \"-\" is read as a signed 32-bit value and stored as its unsigned bit pattern.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -75,7 +75,7 @@ struct AgentLabArgumentEditorSheet: View {
         parsed.reserveCapacity(argumentTexts.count)
         for (index, text) in argumentTexts.enumerated() {
             guard let value = Self.parseUInt32(text) else {
-                errorMessage = "Argument \(index) (\"\(text)\") isn't a valid 32-bit value — use plain decimal or 0x-prefixed hex."
+                errorMessage = "Argument \(index) (\"\(text)\") isn't a valid 32-bit value. Use plain decimal or 0x-prefixed hex."
                 return
             }
             parsed.append(value)

@@ -161,7 +161,7 @@ struct SidebarView: View {
         let nodes = batchSelectedIDs.compactMap { findNode(id: $0, in: workspace.rootNodes) }
         let resolved = nodes.compactMap { workspace.resolveComposite(for: $0) }
         let skipped = nodes.count - resolved.count
-        guard !resolved.isEmpty, let directory = ExportPanel.chooseFolder(message: "Choose a folder to export \(resolved.count) selected object(s) into — each gets its own subfolder.") else { return }
+        guard !resolved.isEmpty, let directory = ExportPanel.chooseFolder(message: "Choose a folder to export \(resolved.count) selected object(s) into. Each gets its own subfolder.") else { return }
         isBatchSelectionMode = false
         batchSelectedIDs.removeAll()
         Task {
@@ -177,7 +177,7 @@ struct SidebarView: View {
             Image(systemName: "line.3.horizontal.decrease.circle")
                 .font(.system(size: 32))
                 .foregroundStyle(.secondary)
-            Text(workspace.hasUnscannedArchives ? "No matches yet — try Scan Archive above" : "No matches")
+            Text(workspace.hasUnscannedArchives ? "No matches yet. Try Scan Archive above." : "No matches")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -311,7 +311,7 @@ private struct SidebarRow: View {
     private static let customAgentSectionTypes: Set<SectionType> = [.customAgent, .customAgentX, .customAgentDemo]
 
     private func exportGroup(_ asset: ResolvedModelAsset) {
-        guard let directory = ExportPanel.chooseFolder(message: "Choose a folder to export this composite object — mesh, textures, and animations — into.") else { return }
+        guard let directory = ExportPanel.chooseFolder(message: "Choose a folder to export this composite object (mesh, textures, and animations) into.") else { return }
         workspace.exportCompleteAsset(asset, to: directory)
     }
 
