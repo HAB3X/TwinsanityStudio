@@ -3,6 +3,7 @@ import MetalKit
 import CoreGraphics
 import QuartzCore
 import simd
+import CTCore
 import CTModels
 import CTParsers
 
@@ -2601,7 +2602,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         // two matters: the first points at `AssetResolver`, the second at
         // `buildGPUSubmeshes`.
         if failedBuildCount > 0 {
-            print("DIAG: stitchChunk — \(failedBuildCount) of \(placements.count) resolved placements built zero GPU submeshes, dropped before rendering")
+            AppLog.rendering.debug("stitchChunk — \(failedBuildCount) of \(placements.count) resolved placements built zero GPU submeshes, dropped before rendering")
         }
         return added
     }

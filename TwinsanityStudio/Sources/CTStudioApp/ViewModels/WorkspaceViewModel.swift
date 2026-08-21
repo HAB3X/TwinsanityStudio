@@ -457,6 +457,53 @@ public final class WorkspaceViewModel: ObservableObject {
     /// scanned file, populated alongside `modelsHub` the same way.
     @Published public var texturesHub: [TextureHubEntry] = []
     @Published public var isTexturesHubPresented = false
+    /// "Cross-Engine Texture Variant": every real, decoded texture from a
+    /// user-loaded Wrath of Cortex `.GSC` level (typically `CRATES.GSC`),
+    /// offered as a candidate texture override for a Twinsanity crate's
+    /// own real, working UVs — see `ResolvedModelAsset.
+    /// applyingTextureOverride(_:)`'s own doc comment for why this
+    /// sidesteps WoC's still-undecoded per-vertex UV data entirely
+    /// (Twinsanity's own UVs do the wrapping; only the pixel data comes
+    /// from WoC). Empty until the user explicitly loads a `.GSC` file —
+    /// this build never guesses which WoC texture "is" a given crate
+    /// type, since that correspondence isn't decoded data, just a real
+    /// picker over real, honestly-labeled textures.
+    @Published public var wocCrateTextureLibrary: [TextureHubEntry] = []
+
+    /// Loads every real, decoded texture from a real Wrath of Cortex
+    /// `.GSC` file (RNC-decompressed if needed, same real pipeline
+    /// `WOCLevelLoader.load` already uses for the sidebar's WoC level
+    /// tree) into `wocCrateTextureLibrary`. Appends to (doesn't replace)
+    /// any textures already loaded from a previous file, de-duplicated by
+    /// real pixel content so loading the same file twice — or two files
+    /// that happen to share a texture — doesn't create visible
+    /// duplicates in the picker.
+    public func loadWOCCrateTextureLibrary(from url: URL) {
+        do {
+            let raw = try Data(contentsOf: url)
+            let bytes = [UInt8](raw)
+            let containerBytes = RNCDecompressor.isRNCStream(bytes) ? Data(try RNCDecompressor.decompress(bytes, verifyCRC: true)) : raw
+            let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+            let gscURL = tempDir.appendingPathComponent(url.deletingPathExtension().lastPathComponent).appendingPathExtension("GSC")
+            try containerBytes.write(to: gscURL)
+            let asset = try WOCLevelLoader.load(gscURL: gscURL, name: url.deletingPathExtension().lastPathComponent)
+
+            var existingHashes = Set(wocCrateTextureLibrary.map { Data($0.texture.rgba).hashValue })
+            var added = 0
+            for decoded in asset.textures where !decoded.rgba.isEmpty {
+                let hash = Data(decoded.rgba).hashValue
+                guard !existingHashes.contains(hash) else { continue }
+                existingHashes.insert(hash)
+                let texture = TextureAsset(id: UInt32(decoded.id), width: decoded.width, height: decoded.height, pixelFormat: .rawRGBA, rgba: decoded.rgba)
+                wocCrateTextureLibrary.append(TextureHubEntry(sourceLabel: "\(url.lastPathComponent) — texture #\(decoded.id)", texture: texture))
+                added += 1
+            }
+            statusMessage = "Loaded \(added) new real WoC texture(s) from \(url.lastPathComponent) (\(wocCrateTextureLibrary.count) total in the library)."
+        } catch {
+            lastError = "Couldn't load WoC textures from \(url.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
     /// "Visual Levels Hub" — every decoded `SceneryData` record (one per
     /// level file that actually has an assembled scenery tree) across every
     /// parsed file, populated alongside `modelsHub`/`texturesHub`. See
@@ -869,7 +916,7 @@ public final class WorkspaceViewModel: ObservableObject {
             do {
                 let data = try Data(contentsOf: url, options: .mappedIfSafe)
                 let node = try Self.mainTreeDriver(forExtension: url.pathExtension).parseChunkFile(data: data, fileKind: fileKind, fileName: url.lastPathComponent)
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.rawFileBytesByRootID[node.id] = data
                     self.rootNodes.append(node)
@@ -878,7 +925,7 @@ public final class WorkspaceViewModel: ObservableObject {
                     self.addRecentFile(url)
                 }
             } catch {
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     self?.isLoading = false
                     self?.lastError = "\(url.lastPathComponent): \(error)"
                 }
@@ -1248,7 +1295,7 @@ public final class WorkspaceViewModel: ObservableObject {
                         // without paying that cost per file.
                         if completedCount.isMultiple(of: 5) || completedCount == totalCandidates {
                             let progress = (completedCount, totalCandidates)
-                            await MainActor.run { self?.scanProgress = progress }
+                            await MainActor.run { [weak self] in self?.scanProgress = progress }
                         }
                         if let result { collected.append(result) }
                         addNext()
@@ -3452,11 +3499,11 @@ public final class WorkspaceViewModel: ObservableObject {
 
         let entry = match.1
         let index = match.0
-        guard let node = await Task.detached(priority: .userInitiated) { () -> ChunkNode? in
+        guard let node = await Task.detached(priority: .userInitiated, operation: { () -> ChunkNode? in
             guard let data = try? BDArchiveParser.readEntryData(entry, index: index) else { return nil }
             return try? Self.mainTreeDriver(forExtension: (entry.name as NSString).pathExtension)
                 .parseChunkFile(data: data, fileKind: .sm2, fileName: entry.name)
-        }.value else {
+        }).value else {
             lastError = "Failed to parse \(entry.name)."
             return false
         }
@@ -3506,7 +3553,7 @@ public final class WorkspaceViewModel: ObservableObject {
             // is what actually lets a real drop be diagnosed instead of
             // guessed at.
             if droppedCount > 0 {
-                print("DIAG: Chunk stitch \(match.1.name) — \(droppedCount) of \(scenery.placements.count) scenery placements failed to resolve (missing transform or unresolvable modelID), dropped before rendering")
+                AppLog.rendering.debug("Chunk stitch \(match.1.name) — \(droppedCount) of \(scenery.placements.count) scenery placements failed to resolve (missing transform or unresolvable modelID), dropped before rendering")
             }
             return (match.1.name, results)
         }.value

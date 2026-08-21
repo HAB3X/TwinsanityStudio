@@ -98,7 +98,7 @@ public final class WOCWorkspace: ObservableObject {
         let capturedRoot = rootURL
         Task.detached { [weak self] in
             let found = Self.scan(rootURL: capturedRoot)
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 guard let self, self.rootURL == capturedRoot else { return }
                 self.levels = found
                 self.isScanning = false

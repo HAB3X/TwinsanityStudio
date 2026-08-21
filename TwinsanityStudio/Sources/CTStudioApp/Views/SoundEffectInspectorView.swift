@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import CTCore
 import CTModels
 import CTParsers
 
@@ -236,7 +237,7 @@ struct SoundEffectInspectorView: View {
             return
         }
         let wav = wavData()
-        print("DIAG: Audio selected \"\(displayName)\" — \(sound.pcmSamples.count) samples @ \(sound.sampleRateHz) Hz\(sound.rightChannelSamples != nil ? " (stereo)" : ""), \(wav.count) byte WAV container")
+        AppLog.audio.debug("Audio selected \"\(displayName)\" — \(sound.pcmSamples.count) samples @ \(sound.sampleRateHz) Hz\(sound.rightChannelSamples != nil ? " (stereo)" : ""), \(wav.count) byte WAV container")
         let newPlayer: AVAudioPlayer
         do {
             // `try?` here used to swallow the real reason construction
@@ -244,18 +245,18 @@ struct SoundEffectInspectorView: View {
             // it for real instead of a generic "couldn't create a player."
             newPlayer = try AVAudioPlayer(data: wav)
         } catch {
-            print("DIAG: AVAudioPlayer(data:) threw: \(error)")
+            AppLog.audio.error("AVAudioPlayer(data:) threw: \(error)")
             workspace.lastError = "Couldn't create an audio player for this sound: \(error.localizedDescription)"
             return
         }
-        print("DIAG: Audio buffer loaded — format=\(newPlayer.format), duration=\(newPlayer.duration)s, channels=\(newPlayer.numberOfChannels)")
+        AppLog.audio.debug("Audio buffer loaded — format=\(newPlayer.format), duration=\(newPlayer.duration)s, channels=\(newPlayer.numberOfChannels)")
         let delegate = PlaybackEndDelegate { isPlaying = false }
         newPlayer.delegate = delegate
         playerDelegate = delegate
         player = newPlayer
         newPlayer.prepareToPlay()
         let started = newPlayer.play()
-        print("DIAG: Audio play command sent — accepted=\(started)")
+        AppLog.audio.debug("Audio play command sent — accepted=\(started)")
         if !started {
             workspace.lastError = "AVAudioPlayer.play() returned false — playback didn't start (check system output device/volume)."
         }
