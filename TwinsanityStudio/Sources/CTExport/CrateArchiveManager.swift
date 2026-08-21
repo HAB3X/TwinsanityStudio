@@ -1,15 +1,27 @@
 import Foundation
+import CTModels
 
 public enum CrateArchiveError: Error, LocalizedError, Equatable {
     case unzipToolUnavailable
     case unzipFailed(Int32)
     case manifestMissing
+    /// "Crate Region Gating" (`VerifyModCrates`, `CrateModAPI/ModCrates.cs`
+    /// — see `ModManifest.declaredRegion`'s own doc comment for the exact
+    /// citation): the crate names a region (`modcratesettings.txt`'s
+    /// `GameRegion` key) that doesn't match the disc region this workspace
+    /// last detected off a real, mounted `SYSTEM.CNF`. Installing anyway
+    /// would silently corrupt the result — executable byte offsets differ
+    /// by region (see `GameExecutableRevision`'s own doc comment) — so this
+    /// blocks the install rather than just warning.
+    case regionMismatch(declared: GameRegion, detected: GameRegion)
 
     public var errorDescription: String? {
         switch self {
         case .unzipToolUnavailable: return "The system unzip tool (/usr/bin/unzip) isn't available on this Mac."
         case .unzipFailed(let code): return "unzip exited with status \(code)."
         case .manifestMissing: return "This archive has no modcrateinfo.txt at its root — it isn't a CrateModLoader .crate package."
+        case .regionMismatch(let declared, let detected):
+            return "This crate is built for \(declared.displayName), but the currently detected disc is \(detected.displayName) — installing it would corrupt the result, since executable byte offsets differ by region."
         }
     }
 }
@@ -93,6 +105,33 @@ public enum CrateArchiveManager {
             .filter { $0.hasPrefix(prefix) && !$0.hasSuffix("/") }
             .map { String($0.dropFirst(prefix.count)) }
             .sorted()
+    }
+
+    /// "Crate Region Gating" — the real install-time counterpart to
+    /// `ModCrateInspectorView`'s passive `regionMismatchWarning` label:
+    /// throws `.regionMismatch` rather than just displaying text, so a
+    /// caller on the actual install path (`extractLayer`/`extractAll`, or
+    /// any future real "apply to disc" flow) can refuse to proceed instead
+    /// of only warning about it. Silent — returns normally — whenever
+    /// either side has nothing to compare (`manifest.declaredRegion ==
+    /// nil`, the common case most crates fall into per that property's own
+    /// doc comment, or `detectedRegion` is `nil`/`.unknown`): this mirrors
+    /// this codebase's existing "`nil` means nothing to compare, never a
+    /// silent assumption of compatibility *or* incompatibility" rule, not
+    /// CrateModLoader's own stricter `VerifyModCrates` (which deactivates
+    /// any crate lacking a `GameRegion` setting at all) — Crash Twinsanity's
+    /// own `Modder_Twins` never opts into that stricter check in the real
+    /// source (`Modder.ModCrateRegionCheck` defaults `false` and only
+    /// `Modder_Crash1`/`2`/`3` override it `true`), so there is no real,
+    /// verified Twinsanity behavior this project would be contradicting by
+    /// staying permissive when a crate simply doesn't declare a region.
+    public static func verifyRegionCompatibility(manifest: ModManifest, detectedRegion: GameRegion?) throws {
+        guard let declared = manifest.declaredRegion,
+              let detected = detectedRegion,
+              detected != .unknown,
+              declared != detected
+        else { return }
+        throw CrateArchiveError.regionMismatch(declared: declared, detected: detected)
     }
 
     /// Extracts one `layer<N>/` folder's contents into `destinationURL`,

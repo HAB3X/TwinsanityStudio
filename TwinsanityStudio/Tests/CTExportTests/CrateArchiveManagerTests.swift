@@ -165,4 +165,43 @@ final class CrateArchiveManagerTests: XCTestCase {
         let unrecognized = ModManifest(name: "x", description: "", author: "", version: "1.0", targetGame: "", modLoaderVersion: "", layerIndices: [], settings: ["GameRegion": "Mars"], hasIcon: false)
         XCTAssertNil(unrecognized.declaredRegion)
     }
+
+    /// "Crate Region Gating" (install-time enforcement, `VerifyModCrates` —
+    /// see `CrateArchiveError.regionMismatch`'s own doc comment): a crate
+    /// declaring one region must be refused against a disc detected as a
+    /// different region, not silently allowed through to `extractLayer`/
+    /// `extractAll` where a mismatched executable byte offset would corrupt
+    /// the result.
+    func testVerifyRegionCompatibilityThrowsOnMismatch() {
+        let palCrate = ModManifest(name: "x", description: "", author: "", version: "1.0", targetGame: "", modLoaderVersion: "", layerIndices: [], settings: ["GameRegion": "PAL"], hasIcon: false)
+        XCTAssertThrowsError(try CrateArchiveManager.verifyRegionCompatibility(manifest: palCrate, detectedRegion: .ntscU)) { error in
+            guard case CrateArchiveError.regionMismatch(let declared, let detected) = error else {
+                return XCTFail("Expected .regionMismatch, got \(error)")
+            }
+            XCTAssertEqual(declared, .pal)
+            XCTAssertEqual(detected, .ntscU)
+        }
+    }
+
+    /// The matching-region counterpart — must pass through cleanly, not
+    /// throw, when the crate's declared region and the detected disc
+    /// region agree.
+    func testVerifyRegionCompatibilityPassesOnMatch() throws {
+        let palCrate = ModManifest(name: "x", description: "", author: "", version: "1.0", targetGame: "", modLoaderVersion: "", layerIndices: [], settings: ["GameRegion": "PAL"], hasIcon: false)
+        XCTAssertNoThrow(try CrateArchiveManager.verifyRegionCompatibility(manifest: palCrate, detectedRegion: .pal))
+    }
+
+    /// "Nothing to compare" must stay permissive on either side — a crate
+    /// that declares no region (the common case) or a workspace that
+    /// hasn't detected a disc region yet (`nil`) or detected an
+    /// unrecognized one (`.unknown`) is never treated as a mismatch.
+    func testVerifyRegionCompatibilityPassesWhenNothingToCompare() throws {
+        let undeclaredCrate = ModManifest(name: "x", description: "", author: "", version: "1.0", targetGame: "", modLoaderVersion: "", layerIndices: [], settings: [:], hasIcon: false)
+        XCTAssertNoThrow(try CrateArchiveManager.verifyRegionCompatibility(manifest: undeclaredCrate, detectedRegion: .pal))
+        XCTAssertNoThrow(try CrateArchiveManager.verifyRegionCompatibility(manifest: undeclaredCrate, detectedRegion: nil))
+
+        let palCrate = ModManifest(name: "x", description: "", author: "", version: "1.0", targetGame: "", modLoaderVersion: "", layerIndices: [], settings: ["GameRegion": "PAL"], hasIcon: false)
+        XCTAssertNoThrow(try CrateArchiveManager.verifyRegionCompatibility(manifest: palCrate, detectedRegion: nil))
+        XCTAssertNoThrow(try CrateArchiveManager.verifyRegionCompatibility(manifest: palCrate, detectedRegion: .unknown))
+    }
 }

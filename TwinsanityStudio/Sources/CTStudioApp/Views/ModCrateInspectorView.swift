@@ -183,7 +183,7 @@ struct ModCrateInspectorView: View {
               let detected = workspace.detectedRegion?.region,
               detected != .unknown, declared != detected
         else { return nil }
-        return "Declared for \(declared.displayName) — this workspace's currently detected disc is \(detected.displayName)."
+        return "Declared for \(declared.displayName), but this workspace's currently detected disc is \(detected.displayName)."
     }
 
     /// "Mod Crate Conflict Detection": every `(layer, relative path)` pair
@@ -214,7 +214,7 @@ struct ModCrateInspectorView: View {
                 .font(.headline)
                 .foregroundStyle(.orange)
             ForEach(conflicts, id: \.relativePath) { conflict in
-                Text("layer\(conflict.layerIndex)/\(conflict.relativePath) — \(conflict.crateNames.joined(separator: ", "))")
+                Text("layer\(conflict.layerIndex)/\(conflict.relativePath): \(conflict.crateNames.joined(separator: ", "))")
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
@@ -315,8 +315,9 @@ struct ModCrateInspectorView: View {
     }
 
     private func extractLayer(_ layerIndex: Int, from crate: LoadedCrate) {
-        guard let destination = ExportPanel.chooseFolder(message: "Choose where to extract layer\(layerIndex) — files land at the same relative paths a game install would see.") else { return }
+        guard let destination = ExportPanel.chooseFolder(message: "Choose where to extract layer\(layerIndex). Files land at the same relative paths a game install would see.") else { return }
         do {
+            try CrateArchiveManager.verifyRegionCompatibility(manifest: crate.manifest, detectedRegion: workspace.detectedRegion?.region)
             try CrateArchiveManager.extractLayer(layerIndex, from: crate.url, to: destination, nestedPath: crate.manifest.nestedPath)
         } catch {
             errorMessage = error.localizedDescription
@@ -326,6 +327,7 @@ struct ModCrateInspectorView: View {
     private func extractAll(from crate: LoadedCrate) {
         guard let destination = ExportPanel.chooseFolder(message: "Choose where to extract the entire crate.") else { return }
         do {
+            try CrateArchiveManager.verifyRegionCompatibility(manifest: crate.manifest, detectedRegion: workspace.detectedRegion?.region)
             try CrateArchiveManager.extractAll(from: crate.url, to: destination)
         } catch {
             errorMessage = error.localizedDescription
