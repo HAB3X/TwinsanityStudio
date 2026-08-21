@@ -14,6 +14,13 @@ struct ContentView: View {
     @SceneStorage("columnVisibilityRaw") private var columnVisibilityRaw: Int = 0
     @State private var isTargetedForDrop = false
     @State private var isConsoleExpanded = false
+    /// "Embedded Library Panel" (Complete UI Overhaul, Part 2): `nil` means
+    /// the detail column shows the normal `ViewportPanel` for whatever's
+    /// selected in the sidebar, exactly as before. Non-`nil` docks
+    /// `DockedLibraryPanelView` there instead — see that type's own doc
+    /// comment for why only the Textures/Chunks hubs and WoC settings (not
+    /// the GPU-heavy Model/Collision/Level viewers) are embedded this way.
+    @State private var dockedLibraryPanel: DockedLibraryPanel?
 
     private var columnVisibility: Binding<NavigationSplitViewVisibility> {
         Binding(
@@ -46,7 +53,11 @@ struct ContentView: View {
                 InspectorView(node: workspace.selectedNode)
                     .navigationSplitViewColumnWidth(min: 360, ideal: 480)
             } detail: {
-                ViewportPanel(node: workspace.selectedNode)
+                if dockedLibraryPanel != nil {
+                    DockedLibraryPanelView(panel: $dockedLibraryPanel)
+                } else {
+                    ViewportPanel(node: workspace.selectedNode)
+                }
             }
             Divider()
             EngineConsoleView(isExpanded: $isConsoleExpanded)
@@ -184,6 +195,29 @@ struct ContentView: View {
                         Label("Wrath of Cortex Characters", systemImage: "person.fill")
                     }
                     .disabled(wocWorkspace.characterArchiveURL == nil)
+                    Divider()
+                    // "Embedded Library Panel": these dock the same
+                    // Textures/Chunk hubs (plus WoC settings) directly in
+                    // the main workspace's detail column instead of opening
+                    // a popup — see `DockedLibraryPanelView`'s doc comment.
+                    // The popup entries above are unchanged and still work.
+                    Button {
+                        dockedLibraryPanel = .textures
+                    } label: {
+                        Label("Textures Hub (Embedded)", systemImage: "photo.stack")
+                    }
+                    .disabled(workspace.texturesHub.isEmpty && !workspace.isScanning)
+                    Button {
+                        dockedLibraryPanel = .chunks
+                    } label: {
+                        Label("Chunk Hub (Embedded)", systemImage: "map")
+                    }
+                    .disabled(workspace.levelsHub.isEmpty && !workspace.isScanning)
+                    Button {
+                        dockedLibraryPanel = .wocSettings
+                    } label: {
+                        Label("Wrath of Cortex Settings (Embedded)", systemImage: "gearshape")
+                    }
                 } label: {
                     Label("Library", systemImage: "books.vertical.fill")
                 }

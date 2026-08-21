@@ -9,6 +9,14 @@ import CTExport
 struct TexturesHubView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.dismiss) private var dismiss
+    /// "Embedded Library Panel": when this view is hosted inline in
+    /// `DockedLibraryPanelView` rather than presented via `.sheet()`, there
+    /// is no enclosing presentation for `\.dismiss` to act on (it's a silent
+    /// no-op outside one) — passing a real close action here lets the same
+    /// "Close" button and post-selection dismissal both actually close the
+    /// docked panel instead. `nil` (the default) preserves the original
+    /// `.sheet()` behavior byte-for-byte.
+    var onClose: (() -> Void)? = nil
     @State private var searchText = ""
     @State private var selected: TextureHubEntry?
     /// "Offline Texture Atlas Packer" (roadmap 12.3) — batch selection,
@@ -67,9 +75,13 @@ struct TexturesHubView: View {
                 Button("Select…") { isBatchSelectionMode = true }
                     .disabled(workspace.texturesHub.isEmpty)
             }
-            Button("Close") { dismiss() }
+            Button("Close") { close() }
         }
         .padding()
+    }
+
+    private func close() {
+        if let onClose { onClose() } else { dismiss() }
     }
 
     /// "Offline Texture Atlas Packer" (roadmap 12.3): packs every selected

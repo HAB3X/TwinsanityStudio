@@ -20,6 +20,10 @@ import CTModels
 struct LevelsHubView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.dismiss) private var dismiss
+    /// "Embedded Library Panel": see `TexturesHubView.onClose`'s doc
+    /// comment — same reasoning, same default-preserving shape, for the
+    /// Chunk Hub's own docked-panel embedding.
+    var onClose: (() -> Void)? = nil
     @State private var searchText = ""
     @State private var loadingEntryID: LevelHubEntry.ID?
 
@@ -49,9 +53,13 @@ struct LevelsHubView: View {
                 ProgressView().controlSize(.small)
                 Text("Scanning…").font(.caption).foregroundStyle(.secondary)
             }
-            Button("Close") { dismiss() }
+            Button("Close") { close() }
         }
         .padding()
+    }
+
+    private func close() {
+        if let onClose { onClose() } else { dismiss() }
     }
 
     private var controls: some View {
@@ -94,7 +102,7 @@ struct LevelsHubView: View {
         Task {
             await workspace.openLevelViewer(for: entry.scenery, node: entry.node)
             loadingEntryID = nil
-            dismiss()
+            close()
         }
     }
 

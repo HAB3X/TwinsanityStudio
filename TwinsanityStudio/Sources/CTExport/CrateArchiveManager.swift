@@ -94,6 +94,22 @@ public enum CrateArchiveManager {
         )
     }
 
+    /// Extracts one arbitrary member's raw bytes from the archive —
+    /// `readManifest`'s own `modcrateinfo.txt`/`modcratesettings.txt`
+    /// extraction generalized to any member path, for callers that need a
+    /// specific file out of a crate without extracting the whole archive
+    /// (e.g. a `modassets/` bundled asset — see `ModAssetTexture`'s own
+    /// doc comment, and `CrateTextureOverrideInstaller`, which is what
+    /// actually reads a bundled texture back out this way).
+    public static func extractedFileData(_ memberPath: String, from crateURL: URL) throws -> Data {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TwinsanityStudioCrateAssetRead-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try runUnzip(["-o", "-q", crateURL.path, memberPath, "-d", tempDir.path])
+        return try Data(contentsOf: tempDir.appendingPathComponent(memberPath))
+    }
+
     /// The real files inside one `layer<N>/` folder, relative to that
     /// layer's own root (directory entries excluded). `nestedPath` offsets
     /// the lookup the same way `readManifest` does — pass

@@ -3187,6 +3187,45 @@ public final class WorkspaceViewModel: ObservableObject {
         }
     }
 
+    /// "Cross-Engine Texture Variant" crate export (see `CompositePreviewView
+    /// `'s picker, and `ResolvedModelAsset.applyingTextureOverride`'s own doc
+    /// comment for what the preview itself does): bundles `overrideTexture`
+    /// as a real `modassets/` file (`ModAssetTexture`), with one real
+    /// `TextureOverride_<textureID>` settings key
+    /// (`CrateTextureOverrideInstaller.settingsKey(forTextureID:)`) per
+    /// unique real, on-disk texture ID `asset.submeshMaterials` references —
+    /// so installing this crate (`CrateTextureOverrideInstaller.install`)
+    /// can find every texture record the preview was overriding and patch
+    /// each one with the same bundled pixels. This crate carries no
+    /// `layer0/` file at all — unlike `exportAsCrate`/
+    /// `exportCompleteAssetAsCrate`, its only real content is the settings
+    /// + bundled asset, since a texture override doesn't replace a whole
+    /// file, it patches one record inside an archive at install time.
+    public func exportCrossEngineTextureOverrideAsCrate(asset: ResolvedModelAsset, overrideTexture: TextureAsset, metadata: CrateMetadata, to crateURL: URL) {
+        let textureIDs = Set(asset.submeshMaterials.compactMap(\.textureID)).sorted()
+        guard !textureIDs.isEmpty else {
+            lastError = "This object has no real, on-disk texture ID to override — nothing to bundle into a crate."
+            return
+        }
+        let assetFileName = "texture_override.tstex"
+        var settings: [String: String] = [:]
+        for textureID in textureIDs {
+            settings[CrateTextureOverrideInstaller.settingsKey(forTextureID: textureID)] = "crate:modassets/\(assetFileName)"
+        }
+        do {
+            try CrateExporter.export(
+                files: [],
+                metadata: metadata,
+                settings: settings,
+                modAssets: [(relativePath: assetFileName, data: ModAssetTexture.serialize(overrideTexture))],
+                to: crateURL
+            )
+            statusMessage = "Exported texture override crate (\(textureIDs.count) texture record(s)) to \(crateURL.lastPathComponent)."
+        } catch {
+            lastError = "Crate export failed: \(error)"
+        }
+    }
+
     // MARK: - Linked asset resolution / Model Viewer
 
     /// Resolves `node` (a `RigidModel` or a `GraphicsInfo` skeleton) into a

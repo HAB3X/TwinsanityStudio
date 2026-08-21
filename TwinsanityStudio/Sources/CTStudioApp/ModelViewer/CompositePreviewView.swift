@@ -28,6 +28,13 @@ struct CompositePreviewView: View {
     /// UVs. See `ResolvedModelAsset.applyingTextureOverride(_:)`'s doc
     /// comment for exactly what this does and doesn't touch.
     @State private var wocOverrideTextureID: UUID?
+    /// "Cross-Engine Texture Variant" crate export — presents
+    /// `CrateExportSheet` for `workspace.
+    /// exportCrossEngineTextureOverrideAsCrate`, the same "bundle a real
+    /// override into an installable .crate" flow `ModelViewerWindow`'s own
+    /// "Export as Group…" dependency crate already uses for a whole asset,
+    /// applied here to just the currently-previewed override texture.
+    @State private var isTextureOverrideCrateSheetPresented = false
 
     private var wocOverrideTexture: TextureAsset? {
         guard let wocOverrideTextureID else { return nil }
@@ -94,6 +101,16 @@ struct CompositePreviewView: View {
             renderer = ModelViewerRenderer(asset: effectiveAsset)
         }
         .onDisappear { stopSandboxPlayback() }
+        .sheet(isPresented: $isTextureOverrideCrateSheetPresented) {
+            if let wocOverrideTexture {
+                CrateExportSheet(
+                    suggestedName: "\(asset.displayName) WoC Texture Override",
+                    caption: "Bundles this WoC texture override into a real CrateModLoader-installable .crate — installing it patches every real texture record this object's submeshes reference, without touching mesh geometry, collision, or entity/trigger data."
+                ) { metadata, url in
+                    workspace.exportCrossEngineTextureOverrideAsCrate(asset: asset, overrideTexture: wocOverrideTexture, metadata: metadata, to: url)
+                }
+            }
+        }
     }
 
     /// "Cross-Engine Texture Variant": lets the user preview one of this
@@ -143,6 +160,12 @@ struct CompositePreviewView: View {
                     Text("Previewing a real WoC texture on this object's own UVs — a real, disk-untouched visual override. Geometry, collision, and entity behavior are unaffected. Pick \"Original\" to revert.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    Button {
+                        isTextureOverrideCrateSheetPresented = true
+                    } label: {
+                        Label("Export as Mod Crate…", systemImage: "shippingbox")
+                    }
+                    .disabled(wocOverrideTexture == nil)
                 }
             }
         }
