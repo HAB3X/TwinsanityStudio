@@ -99,10 +99,49 @@ final class TwinsPTCParserTests: XCTestCase {
         data.append(try makeEntryBytes(texID: 2, matID: 2))
         data.append(try makeEntryBytes(texID: 3, matID: 3))
 
-        let sheet = try TwinsPTCParser.parsePSM(data, sourceLabel: "TEST")
+        let sheet = try TwinsPTCParser.parsePSM(data, sourceLabel: "TEST", sourceURL: URL(fileURLWithPath: "/tmp/test.psm"))
         XCTAssertEqual(sheet.sourceLabel, "TEST")
         XCTAssertEqual(sheet.entries.count, 3)
         XCTAssertEqual(sheet.entries.map(\.texID), [1, 2, 3])
+        XCTAssertEqual(sheet.sourceURL.path, "/tmp/test.psm")
+    }
+
+    /// "PSM Editor" write-back: `textureFileOffset`/`textureRecordByteLength`
+    /// must point at exactly the bytes `TextureWriter.replacingPixelData`
+    /// needs as `inOriginalRecordBytes` -- verified two ways, matching
+    /// `WorldPlacementParserTests`' own offset-verification pattern: (1)
+    /// slicing the full entry's own bytes at the captured range reproduces
+    /// the real embedded Texture record's bytes exactly, and (2) re-parsing
+    /// after a real `TextureWriter.replacingPixelData` patch at that range
+    /// reproduces the replacement pixels, proving the whole "PSM Editor"
+    /// patch-in-place flow (the same one `PTCSheetsHubView.
+    /// presentReplaceImagePanel` performs) is correct end to end.
+    func testTextureFileOffsetAndByteLengthRoundTripThroughPatch() throws {
+        var full = try makeEntryBytes(texID: 5, matID: 6)
+        full.append(try makeEntryBytes(texID: 7, matID: 8)) // a second entry, to prove the range doesn't overrun into it
+
+        var cursor = BinaryCursor(data: full)
+        let firstEntry = try TwinsPTCParser.parseEntry(&cursor)
+        let textureBytes = try makeTinyTexture()
+        XCTAssertEqual(firstEntry.textureFileOffset, 8, "right after the 4-byte texID + 4-byte matID")
+        XCTAssertEqual(firstEntry.textureRecordByteLength, textureBytes.count)
+
+        let slicedRange = full.subdata(in: firstEntry.textureFileOffset..<(firstEntry.textureFileOffset + firstEntry.textureRecordByteLength))
+        XCTAssertEqual(slicedRange, textureBytes, "textureFileOffset/textureRecordByteLength must point at exactly the embedded Texture record's own real bytes")
+
+        let replacement = TextureAsset(id: firstEntry.texture.id, width: 1, height: 1, pixelFormat: .psmct32, rgba: [10, 20, 30, 254])
+        let patchedRecordBytes = try TextureWriter.replacingPixelData(of: replacement, inOriginalRecordBytes: slicedRange)
+        var patchedFull = full
+        patchedFull.replaceSubrange(firstEntry.textureFileOffset..<(firstEntry.textureFileOffset + firstEntry.textureRecordByteLength), with: patchedRecordBytes)
+        XCTAssertEqual(patchedFull.count, full.count, "a patch must never change the file's total size")
+
+        var reparseCursor = BinaryCursor(data: patchedFull)
+        let reparsedFirst = try TwinsPTCParser.parseEntry(&reparseCursor)
+        XCTAssertEqual(reparsedFirst.texID, 5)
+        XCTAssertEqual(reparsedFirst.texture.rgba, [10, 20, 30, 254])
+        let reparsedSecond = try TwinsPTCParser.parseEntry(&reparseCursor)
+        XCTAssertEqual(reparsedSecond.texID, 7, "the second entry must be completely untouched by the first entry's patch")
+        XCTAssertEqual(reparseCursor.position, patchedFull.count)
     }
 
     func testParsePSFDecodesPagesThenVectorsAndUnkInt() throws {

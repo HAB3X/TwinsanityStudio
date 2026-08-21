@@ -1195,10 +1195,10 @@ public final class WorkspaceViewModel: ObservableObject {
                 switch file.url.pathExtension.uppercased() {
                 case "PTC":
                     let entry = try TwinsPTCParser.parsePTCFile(data)
-                    ptcSheets.append(TwinsPSMAsset(sourceLabel: baseName, entries: [entry]))
+                    ptcSheets.append(TwinsPSMAsset(sourceLabel: baseName, entries: [entry], sourceURL: file.url))
                     statusMessage = "Loaded \(file.url.lastPathComponent) — 1 entry."
                 case "PSM":
-                    let sheet = try TwinsPTCParser.parsePSM(data, sourceLabel: baseName)
+                    let sheet = try TwinsPTCParser.parsePSM(data, sourceLabel: baseName, sourceURL: file.url)
                     ptcSheets.append(sheet)
                     statusMessage = "Loaded \(file.url.lastPathComponent) — \(sheet.entries.count) entries."
                 case "PSF":

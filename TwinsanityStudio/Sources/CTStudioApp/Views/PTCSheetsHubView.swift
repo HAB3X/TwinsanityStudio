@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import CTModels
+import CTParsers
 import CTExport
 
 /// "Font & Particle Sheets": browses every standalone `.ptc`/`.psm`/`.psf`
@@ -8,20 +9,31 @@ import CTExport
 /// editor's `PTCViewer` (prev/next entry navigation, PNG export) plus the
 /// read side of `PSMWorker`'s atlas browsing. Real decode (embedded
 /// Texture+Material pairs via `TwinsPTCParser`) and real PNG export
-/// (`TextureExporter`, the same path `TextureInspectorView` uses) — no
-/// write-back: the reference's own texture *importer* is dead code
-/// (`TextureImport.cs`'s `btnImport_Click` throws `NotImplementedException`
-/// on its first line — see `TextureInspectorView`'s own "Replace with
-/// Image…" for why this project already exceeds that baseline for
-/// chunk-tree textures), and building a from-scratch PS2 texture *encoder*
-/// (swizzle + palette generation) to support importing into a `.ptc`/
-/// `.psm`/`.psf` entry is real, separate, higher-risk work this pass
-/// doesn't attempt.
+/// (`TextureExporter`, the same path `TextureInspectorView` uses).
+///
+/// "PSM Editor": write-back for `.ptc`/`.psm` entries (not `.psf` font
+/// pages yet) now exists too, reusing the exact same encoders
+/// `TextureInspectorView`'s "Replace with Image…" already uses
+/// (`TextureWriter`/`TextureXWriter`) — the reference's own texture
+/// *importer* really was dead code (`TextureImport.cs`'s `btnImport_Click`
+/// throws `NotImplementedException` on its first line), but the "from-
+/// scratch PS2 texture encoder" this used to say was separate, higher-risk
+/// work is exactly what `TextureWriter`'s PSMCT32/PSMT8 encode paths
+/// already are — this just wires the same solved lower-level pieces into
+/// this container format's own byte layout (`TwinsPTCEntry.
+/// textureFileOffset`/`textureRecordByteLength`), no new binary format
+/// reverse-engineering needed. `.psm`'s own on-disk shape has no header at
+/// all to write (entries are just packed back-to-back, per `TwinsPTCParser
+/// .parsePSM`'s own doc comment), so a patch here is exactly the same
+/// "replace this one record's bytes in place, save as a new file"
+/// operation `TextureInspectorView` already does for chunk-tree textures.
 struct PTCSheetsHubView: View {
     @EnvironmentObject private var workspace: WorkspaceViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var selectedSheetID: String?
     @State private var selectedEntryID: UInt32?
+    @State private var isReplacingTexture = false
+    @State private var replaceError: String?
 
     private enum SheetRef: Identifiable, Hashable {
         case psm(String)
@@ -106,6 +118,15 @@ struct PTCSheetsHubView: View {
         return []
     }
 
+    /// `nil` when the current selection is a `.psf` font sheet (font pages
+    /// aren't write-back-enabled yet, see this view's own doc comment) --
+    /// only a real `.ptc`/`.psm` sheet carries the `sourceURL` a patch
+    /// needs to re-read fresh bytes from.
+    private var selectedPSMAsset: TwinsPSMAsset? {
+        guard let selectedSheetID else { return nil }
+        return workspace.ptcSheets.first { SheetRef.psm($0.sourceLabel).id == selectedSheetID }
+    }
+
     @ViewBuilder
     private var entryList: some View {
         List(selectedEntries, selection: $selectedEntryID) { entry in
@@ -151,16 +172,98 @@ struct PTCSheetsHubView: View {
                         }
                     }
                     .formStyle(.grouped)
-                    Button {
-                        exportPNG(entry.texture)
-                    } label: {
-                        Label("Export PNG…", systemImage: "square.and.arrow.up")
+                    HStack {
+                        Button {
+                            exportPNG(entry.texture)
+                        } label: {
+                            Label("Export PNG…", systemImage: "square.and.arrow.up")
+                        }
+                        if let selectedPSMAsset {
+                            Button {
+                                presentReplaceImagePanel(entry: entry, in: selectedPSMAsset)
+                            } label: {
+                                Label(isReplacingTexture ? "Replacing…" : "Replace with Image…", systemImage: "photo.badge.plus")
+                            }
+                            .disabled(!TextureInspectorView.isReplaceable(entry.texture.pixelFormat) || isReplacingTexture)
+                        }
+                        Spacer()
+                        if isReplacingTexture { ProgressView().controlSize(.small) }
+                    }
+                    if selectedPSMAsset != nil {
+                        Text(TextureInspectorView.isReplaceable(entry.texture.pixelFormat)
+                            ? "Resamples an image you pick to this entry's exact \(entry.texture.width) × \(entry.texture.height) and re-encodes it into a real \(entry.texture.pixelFormat.rawValue.uppercased()) record, patched into a saved copy of this \(selectedPSMAsset?.sourceURL.pathExtension.uppercased() ?? "PSM") file. The original file on disk is not modified."
+                            : "This entry is \(entry.texture.pixelFormat.rawValue.uppercased()), which has no verified encoder yet.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let replaceError {
+                        Label(replaceError, systemImage: "exclamationmark.triangle")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
                     }
                 }
                 .padding(20)
             }
+            .onChange(of: entry.texID) { _, _ in replaceError = nil }
         } else {
             ContentUnavailableView("No Entry Selected", systemImage: "photo.on.rectangle")
+        }
+    }
+
+    /// Mirrors `TextureInspectorView.presentReplaceImagePanel`'s exact
+    /// decode -> resample -> encode -> patch -> save-as-copy loop, with one
+    /// difference: this container has no `ChunkNode` (`workspace.
+    /// rawBytes(for:)`/`patchedFileBytes(replacing:with:)` only cover the
+    /// chunk-tree formats), so the patch reads fresh bytes from `asset.
+    /// sourceURL` directly and splices `entry.textureFileOffset`/
+    /// `textureRecordByteLength` itself instead.
+    private func presentReplaceImagePanel(entry: TwinsPTCEntry, in asset: TwinsPSMAsset) {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.image]
+        panel.message = "Choose a replacement image. It's resampled to this entry's exact \(entry.texture.width) × \(entry.texture.height); the record can't change size."
+        guard panel.runModal() == .OK, let url = panel.urls.first else { return }
+
+        replaceError = nil
+        guard let nsImage = NSImage(contentsOf: url),
+              let resampled = TextureInspectorView.resampledRGBA(from: nsImage, width: entry.texture.width, height: entry.texture.height)
+        else {
+            replaceError = "Couldn't read that file as an image."
+            return
+        }
+        let replacement = TextureAsset(id: entry.texture.id, width: entry.texture.width, height: entry.texture.height, pixelFormat: entry.texture.pixelFormat, rgba: resampled)
+        do {
+            var fileBytes = try Data(contentsOf: asset.sourceURL)
+            guard entry.textureFileOffset >= 0, entry.textureRecordByteLength >= 0,
+                  entry.textureFileOffset + entry.textureRecordByteLength <= fileBytes.count
+            else {
+                replaceError = "This entry's recorded byte range no longer matches the file — can't patch safely."
+                return
+            }
+            let originalRecordBytes = fileBytes.subdata(in: entry.textureFileOffset..<(entry.textureFileOffset + entry.textureRecordByteLength))
+            let newRecordBytes = entry.texture.pixelFormat == .rawRGBA
+                ? try TextureXWriter.replacingPixelData(of: replacement, inOriginalRecordBytes: originalRecordBytes)
+                : try TextureWriter.replacingPixelData(of: replacement, inOriginalRecordBytes: originalRecordBytes)
+            fileBytes.replaceSubrange(entry.textureFileOffset..<(entry.textureFileOffset + entry.textureRecordByteLength), with: newRecordBytes)
+
+            guard let saveURL = ExportPanel.chooseSaveLocation(
+                suggestedName: "\(asset.sourceLabel)_edited.\(asset.sourceURL.pathExtension)",
+                message: "Save the edited copy of this file, with this entry's texture replaced. The original file on disk is not modified."
+            ) else { return }
+            isReplacingTexture = true
+            Task {
+                do {
+                    try await workspace.writeDataAsync(fileBytes, to: saveURL)
+                    workspace.statusMessage = "Saved edited copy to \(saveURL.lastPathComponent) with entry #\(entry.texID)'s texture replaced. The original file was not modified."
+                } catch {
+                    workspace.lastError = "Save failed: \(error)"
+                }
+                isReplacingTexture = false
+            }
+        } catch {
+            replaceError = error.localizedDescription
         }
     }
 

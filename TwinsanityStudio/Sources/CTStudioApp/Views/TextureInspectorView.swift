@@ -92,7 +92,7 @@ struct TextureInspectorView: View {
             }
             Text(Self.isReplaceable(texture.pixelFormat)
                 ? "\"Asset Swap & Quick-Test: Recipe Book\" (blueprint 6.4) texture replace: resamples an image you pick to this texture's exact \(texture.width) × \(texture.height) and re-encodes it into a real \(texture.pixelFormat.rawValue.uppercased()) record, then saves an edited copy. The original file on disk is not modified."
-                : "Only PSMCT32 (PS2 raw RGBA) and raw-uncompressed TextureX (Xbox) textures can be replaced. This is \(texture.pixelFormat.rawValue.uppercased()), which has no verified encoder yet (re-compressing to DXT5, and re-swizzling/re-quantizing to a GS palette, are real, separate work this build doesn't guess at).")
+                : "Only PSMCT32/PSMT8 (PS2 raw RGBA / 8-bit indexed) and raw-uncompressed TextureX (Xbox) textures can be replaced. This is \(texture.pixelFormat.rawValue.uppercased()), which has no verified encoder yet (re-compressing to DXT5 is real, separate work this build doesn't guess at).")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             if let replaceError {
@@ -164,15 +164,20 @@ struct TextureInspectorView: View {
     /// (this always needs to land on the original texture's exact size,
     /// never the picked image's).
     /// "Parity Phase L": which pixel formats have a verified, byte-exact
-    /// encoder to replace back into — PS2 PSMCT32 (`TextureWriter`) and now
-    /// Xbox raw-uncompressed `TextureX` (`TextureXWriter`). DXT5 and
-    /// GS-swizzled/palette formats aren't included; see the button's own
-    /// caption for why.
-    private static func isReplaceable(_ format: TexturePixelFormat) -> Bool {
-        format == .psmct32 || format == .rawRGBA
+    /// encoder to replace back into — PS2 PSMCT32/PSMT8 (`TextureWriter`,
+    /// the latter via `PSMT8Quantizer`'s median-cut palette generation) and
+    /// Xbox raw-uncompressed `TextureX` (`TextureXWriter`). DXT5 isn't
+    /// included; see the button's own caption for why.
+    /// Not `private` -- `PTCSheetsHubView` reuses this same support matrix
+    /// for `.ptc`/`.psm` entries.
+    static func isReplaceable(_ format: TexturePixelFormat) -> Bool {
+        format == .psmct32 || format == .psmt8 || format == .rawRGBA
     }
 
-    private static func resampledRGBA(from image: NSImage, width: Int, height: Int) -> [UInt8]? {
+    /// Not `private` -- `PTCSheetsHubView`'s own texture replace flow
+    /// (`.ptc`/`.psm` entries) reuses this exact resample step rather than
+    /// duplicating it.
+    static func resampledRGBA(from image: NSImage, width: Int, height: Int) -> [UInt8]? {
         guard width > 0, height > 0 else { return nil }
         var proposedRect = CGRect(x: 0, y: 0, width: image.size.width, height: image.size.height)
         guard let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil),

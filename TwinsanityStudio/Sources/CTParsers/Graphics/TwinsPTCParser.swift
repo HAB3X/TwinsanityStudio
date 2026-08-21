@@ -20,9 +20,11 @@ public enum TwinsPTCParser {
     public static func parseEntry(_ cursor: inout BinaryCursor) throws -> TwinsPTCEntry {
         let texID = try cursor.readUInt32()
         let matID = try cursor.readUInt32()
+        let textureFileOffset = cursor.position
         let texture = try TextureParser.parse(&cursor, recordID: texID)
+        let textureRecordByteLength = cursor.position - textureFileOffset
         let material = try MaterialParser.parse(&cursor, recordID: matID)
-        return TwinsPTCEntry(texID: texID, matID: matID, texture: texture, material: material)
+        return TwinsPTCEntry(texID: texID, matID: matID, texture: texture, material: material, textureFileOffset: textureFileOffset, textureRecordByteLength: textureRecordByteLength)
     }
 
     /// A standalone `.ptc` file — exactly one `TwinsPTCEntry`, nothing else.
@@ -36,13 +38,13 @@ public enum TwinsPTCParser {
     /// reference's own `while (Position < startPos + size)` loop, `size`
     /// here being simply `data.count` (a standalone file has no separate
     /// declared "record size" the way a chunk-tree entry does).
-    public static func parsePSM(_ data: Data, sourceLabel: String) throws -> TwinsPSMAsset {
+    public static func parsePSM(_ data: Data, sourceLabel: String, sourceURL: URL) throws -> TwinsPSMAsset {
         var cursor = BinaryCursor(data: data)
         var entries: [TwinsPTCEntry] = []
         while cursor.position < data.count {
             entries.append(try parseEntry(&cursor))
         }
-        return TwinsPSMAsset(sourceLabel: sourceLabel, entries: entries)
+        return TwinsPSMAsset(sourceLabel: sourceLabel, entries: entries, sourceURL: sourceURL)
     }
 
     /// A `.psf` file (`TwinsPSF.Load`): `int32` page count, that many

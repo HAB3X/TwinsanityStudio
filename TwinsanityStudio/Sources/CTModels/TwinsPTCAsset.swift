@@ -14,12 +14,27 @@ public struct TwinsPTCEntry: Sendable, Identifiable {
     public var matID: UInt32
     public var texture: TextureAsset
     public var material: MaterialInfo
+    /// Byte offset (relative to the start of the standalone `.ptc`/`.psm`/
+    /// `.psf` file this entry was parsed from) of this entry's `Texture`
+    /// record — right after `texID`/`matID`, where `TextureParser.parse`
+    /// itself starts reading. Captured during parse the same way
+    /// `PlacedCamera.fixedFieldsFileOffset` is, so a "PSM Editor" write-back
+    /// can patch just this record's bytes in place without needing to
+    /// reconstruct the whole container.
+    public var textureFileOffset: Int
+    /// How many bytes `TextureParser.parse` actually consumed for this
+    /// entry's `Texture` record — the record's own self-describing length,
+    /// captured (not assumed) so a patch always replaces exactly the bytes
+    /// the original record occupied, never more or fewer.
+    public var textureRecordByteLength: Int
 
-    public init(texID: UInt32, matID: UInt32, texture: TextureAsset, material: MaterialInfo) {
+    public init(texID: UInt32, matID: UInt32, texture: TextureAsset, material: MaterialInfo, textureFileOffset: Int = 0, textureRecordByteLength: Int = 0) {
         self.texID = texID
         self.matID = matID
         self.texture = texture
         self.material = material
+        self.textureFileOffset = textureFileOffset
+        self.textureRecordByteLength = textureRecordByteLength
     }
 }
 
@@ -34,10 +49,21 @@ public struct TwinsPSMAsset: Sendable, Identifiable {
     public var id: String { sourceLabel }
     public var sourceLabel: String
     public var entries: [TwinsPTCEntry]
+    /// Where this file actually lives on disk -- needed (unlike the
+    /// `ChunkNode`-based chunk-tree formats, which look this up via
+    /// `WorkspaceViewModel.rawBytes(for:)`) because a standalone `.ptc`/
+    /// `.psm` file has no `ChunkNode` of its own to key off of. A "PSM
+    /// Editor" write-back re-reads fresh bytes from here, patches one
+    /// entry's `Texture` record via `textureFileOffset`/
+    /// `textureRecordByteLength`, and always saves to a *new* location --
+    /// this URL is never written back to, same convention as every other
+    /// edit path in this app.
+    public var sourceURL: URL
 
-    public init(sourceLabel: String, entries: [TwinsPTCEntry]) {
+    public init(sourceLabel: String, entries: [TwinsPTCEntry], sourceURL: URL) {
         self.sourceLabel = sourceLabel
         self.entries = entries
+        self.sourceURL = sourceURL
     }
 }
 
