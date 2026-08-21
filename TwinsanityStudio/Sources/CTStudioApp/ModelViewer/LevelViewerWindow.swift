@@ -302,6 +302,14 @@ struct LevelViewerWindow: View {
     /// camera one above.
     @State private var isTopDownMode = false
     @State private var scenePreviewTimer: Timer?
+    /// "Pre-save validation" — dangling-reference warnings found by
+    /// `danglingReferenceWarnings()` for the save/launch action currently
+    /// gated behind the confirmation alert below, and the actual action to
+    /// run if the user picks "Save Anyway." `nil` means no confirmation is
+    /// pending (the common case: `trySave`/`tryQuickLaunch` run the action
+    /// immediately when there's nothing to warn about).
+    @State private var pendingDanglingWarnings: [String] = []
+    @State private var pendingConfirmedSaveAction: (() -> Void)?
     /// "Recipe Book" (roadmap 6.4).
     @State private var isRecipeBookPresented = false
     /// "Chunk-Based Architecture" (Part 2): which `ChunkLink.id`s have
@@ -371,6 +379,31 @@ struct LevelViewerWindow: View {
         .onDisappear {
             stopScenePreviewTimer()
             workspace.currentViewerCameraPositionProvider = nil
+        }
+        .alert(
+            "Dangling References Found",
+            isPresented: Binding(
+                get: { pendingConfirmedSaveAction != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        pendingConfirmedSaveAction = nil
+                        pendingDanglingWarnings = []
+                    }
+                }
+            )
+        ) {
+            Button("Cancel", role: .cancel) {
+                pendingConfirmedSaveAction = nil
+                pendingDanglingWarnings = []
+            }
+            Button("Save Anyway") {
+                let action = pendingConfirmedSaveAction
+                pendingConfirmedSaveAction = nil
+                pendingDanglingWarnings = []
+                action?()
+            }
+        } message: {
+            Text(pendingDanglingWarnings.joined(separator: "\n"))
         }
     }
 
@@ -1700,6 +1733,56 @@ struct LevelViewerWindow: View {
         return context.aiPaths.filter { !removedIDs.contains($0.path.id) }
     }
 
+    /// "Pre-save validation" — scans every real cross-record ID reference
+    /// this codebase actually has confirmed (`TriggerVolume.instanceIDs`,
+    /// `PlacedCamera.instanceIDs`, `PlacedInstance.childInstanceIDs` — see
+    /// each type's own doc comment) plus one the reference tool's editor
+    /// labels but never resolves (`AIPathRecord.startAIPositionID`/
+    /// `endAIPositionID`, worded as a heads-up rather than a fact below)
+    /// against this session's pending deletions, so a Trigger/Camera/
+    /// Instance/AIPath that still references something the user just
+    /// deleted gets caught *before* it's silently written to disk instead
+    /// of discovered later as a broken reference in-game. `ChunkSectionInserter
+    /// .removingRecord(s)` only removes the target record's own bytes —
+    /// nothing scrubs surviving records' reference fields, so this is a
+    /// real, exercisable gap without this check.
+    ///
+    /// Deliberately informational, not blocking — this codebase has no
+    /// confirmation-dialog pattern anywhere else (Delete itself fires
+    /// instantly, with Undo/"nothing hits disk until Save" as the safety
+    /// net), and one of the four checks here rests on an explicitly
+    /// unconfirmed reference, so hard-blocking risks a false-positive
+    /// block on a legitimate edit.
+    private func danglingReferenceWarnings() -> [String] {
+        guard let renderer else { return [] }
+        return DanglingReferenceChecker.warnings(
+            triggers: context.triggers.map { (id: $0.trigger.id, instanceIDs: $0.trigger.instanceIDs) },
+            cameras: context.cameras.map { (id: $0.camera.id, instanceIDs: $0.camera.instanceIDs) },
+            instances: context.instanceMarkers.map { (id: $0.instance.id, childInstanceIDs: $0.instance.childInstanceIDs) },
+            aiPaths: remainingRealAIPaths.map { (id: $0.path.id, startAIPositionID: $0.path.startAIPositionID, endAIPositionID: $0.path.endAIPositionID) },
+            removedInstanceIDs: Set(renderer.pendingRemovedInstanceIDs),
+            removedTriggerIDs: Set(renderer.pendingRemovedTriggerIDs),
+            removedCameraIDs: Set(renderer.pendingRemovedCameraIDs),
+            removedAIPositionIDs: Set(renderer.pendingRemovedAIPositionIDs)
+        )
+    }
+
+    /// Runs `action` immediately if there's nothing to warn about;
+    /// otherwise stashes it behind the confirmation alert (`body`'s
+    /// `.alert` modifier) and shows the real warnings first. Shared by
+    /// both "Save Chunk Overrides…" and "Quick Launch…" — the check has
+    /// to run before either one, and the warnings/action-to-run-if-
+    /// confirmed shape is identical for both.
+    private func confirmingDanglingReferences(before action: @escaping () -> Void) {
+        let warnings = danglingReferenceWarnings()
+        guard !warnings.isEmpty else {
+            action()
+            return
+        }
+        pendingDanglingWarnings = warnings
+        pendingConfirmedSaveAction = action
+    }
+
     private var aiPathsPanel: some View {
         DisclosureGroup(isExpanded: $isAIPathsExpanded) {
             Text("Real AIPath records — 5 raw arguments each (first two are the start/end AIPosition IDs); no confirmed meaning for the other three (the reference tool's own editor doesn't interpret them either).")
@@ -1981,6 +2064,10 @@ struct LevelViewerWindow: View {
     }
 
     private func saveLevelOverrides() {
+        confirmingDanglingReferences { performSaveLevelOverrides() }
+    }
+
+    private func performSaveLevelOverrides() {
         guard let (referenceNode, patchedBytes, summary) = computingPendingOverridePatch() else { return }
         guard let url = ExportPanel.chooseSaveLocation(
             suggestedName: "\(workspace.originalFileName(for: referenceNode) ?? "chunk")_edited.rm2",
@@ -2004,6 +2091,10 @@ struct LevelViewerWindow: View {
     /// writingStartingChunkPath`) plus, if there's anything pending, this
     /// session's own live edits baked in as an archive replacement.
     private func quickLaunchThisChunk() {
+        confirmingDanglingReferences { performQuickLaunchThisChunk() }
+    }
+
+    private func performQuickLaunchThisChunk() {
         guard let referenceNode = referenceNodeForFileOps, let actorFileRoot = workspace.fileRoot(containing: referenceNode) else { return }
         let baseName = (actorFileRoot.displayName as NSString).deletingPathExtension
         var replacements: [String: Data] = [:]
