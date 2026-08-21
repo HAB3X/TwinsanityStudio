@@ -20,6 +20,7 @@ struct ImageMakerView: View {
     @State private var errorMessage: String?
     @State private var isBuilding = false
     @State private var fileCount: Int?
+    @State private var totalByteCount: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -49,6 +50,9 @@ struct ImageMakerView: View {
                 }
                 if let fileCount {
                     LabeledContent("Files Found", value: "\(fileCount)")
+                }
+                if let totalByteCount {
+                    LabeledContent("Total Size", value: ByteCountFormatter.string(fromByteCount: Int64(totalByteCount), countStyle: .file))
                 }
             }
             .formStyle(.grouped)
@@ -84,7 +88,29 @@ struct ImageMakerView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         sourceFolder = url
         errorMessage = nil
-        fileCount = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil).count)
+        let (count, bytes) = Self.countFilesRecursively(at: url)
+        fileCount = count
+        totalByteCount = bytes
+    }
+
+    /// Walks the full folder tree, matching what `ISO9660ImageBuilder`
+    /// actually includes (every file in every subdirectory), not just the
+    /// top-level entries — a shallow count would understate a nested
+    /// source tree and misrepresent what's about to be built.
+    private static func countFilesRecursively(at url: URL) -> (count: Int, bytes: Int) {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey]) else {
+            return (0, 0)
+        }
+        var count = 0
+        var bytes = 0
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+            guard values?.isDirectory != true else { continue }
+            count += 1
+            bytes += values?.fileSize ?? 0
+        }
+        return (count, bytes)
     }
 
     private func buildImage() {
