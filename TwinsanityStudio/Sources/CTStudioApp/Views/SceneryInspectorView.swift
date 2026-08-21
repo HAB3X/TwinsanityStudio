@@ -62,9 +62,6 @@ struct SceneryInspectorView: View {
                     }
                 }
                 .disabled(isResolving)
-                Text("Objects are positioned correctly but not yet rotated/scaled — see the Level Viewer's own notes.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
         }
     }

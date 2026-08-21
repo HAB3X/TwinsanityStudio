@@ -1672,6 +1672,20 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     private var hoverLineVertexCount = 0
     /// Testability hook — mirrors `hasCollisionFill`.
     var hasHoverOutline: Bool { hoverLineBuffer != nil && hoverLineVertexCount > 0 }
+    /// "Selection outline": a dedicated wireframe box around whichever
+    /// object `selectedObjectIndex` names, independent of whether its
+    /// gizmo happens to be visible on screen. The gizmo alone used to be
+    /// the only visual sign of what's selected — fine when it's on
+    /// screen and readable, but a large or distant object's gizmo can be
+    /// tiny or clipped, leaving no visible cue that anything is selected
+    /// at all. Same wireframe-box approach as `hoverLineBuffer` (see
+    /// `rebuildHoverBuffer`'s doc comment), a distinct amber color so it
+    /// never reads as the (white) hover cue or a gizmo axis.
+    private var selectionLineBuffer: MTLBuffer?
+    private var selectionLineVertexCount = 0
+    private static let selectionOutlineColor = SIMD3<Float>(1.0, 0.8, 0.2)
+    /// Testability hook — mirrors `hasHoverOutline`.
+    var hasSelectionOutline: Bool { selectionLineBuffer != nil && selectionLineVertexCount > 0 }
     /// "Chunk-Based Architecture" (Part 2): the translucent fill for every
     /// visible boundary wall — separate from `overlayLineBuffer` because
     /// it draws as triangles through `translucentQuadPipelineState`, not
@@ -2444,8 +2458,10 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     func select(index: Int?) {
         selectedObjectIndex = index.flatMap { objects.indices.contains($0) ? $0 : nil }
         rebuildGizmoBuffer()
+        rebuildSelectionBuffer()
         // Selecting the object currently under the cursor already gets a
-        // gizmo — the separate hover outline would be visual redundancy.
+        // gizmo and a selection outline — the separate (white) hover
+        // outline would be visual redundancy on top of those.
         if hoveredObjectIndex == selectedObjectIndex { rebuildHoverBuffer() }
     }
 
@@ -2471,6 +2487,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return }
         objects[selectedObjectIndex].worldPosition = newPosition
         rebuildGizmoBuffer()
+        rebuildSelectionBuffer()
     }
 
     /// "Keyboard nudging" (QoL): moves the selection one step along a
@@ -2485,12 +2502,14 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         let step = snapToGrid ? gridSize : 0.25
         objects[selectedObjectIndex].worldPosition += worldDirection * step
         rebuildGizmoBuffer()
+        rebuildSelectionBuffer()
     }
 
     func setSelectedRotation(eulerDegrees: SIMD3<Float>) {
         guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return }
         objects[selectedObjectIndex].rotation = Self.quaternion(fromEulerDegrees: eulerDegrees)
         rebuildGizmoBuffer()
+        rebuildSelectionBuffer()
     }
 
     func setSelectedScale(to newScale: SIMD3<Float>) {
@@ -2504,6 +2523,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         let clamped = SIMD3(max(newScale.x, 0.01), max(newScale.y, 0.01), max(newScale.z, 0.01))
         objects[selectedObjectIndex].scale = clamped
         rebuildGizmoBuffer()
+        rebuildSelectionBuffer()
     }
 
     private static func eulerDegrees(from quaternion: simd_quatf) -> SIMD3<Float> {
@@ -3553,6 +3573,13 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
                 encoder.setVertexBuffer(hoverLineBuffer, offset: 0, index: 0)
                 encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: hoverLineVertexCount)
             }
+            // "Selection outline": drawn every frame the selection is
+            // non-nil, independent of the gizmo — see
+            // `rebuildSelectionBuffer`'s doc comment.
+            if let selectionLineBuffer, selectionLineVertexCount > 0 {
+                encoder.setVertexBuffer(selectionLineBuffer, offset: 0, index: 0)
+                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: selectionLineVertexCount)
+            }
         }
 
         // "Chunk-Based Architecture" (Part 2): the translucent boundary-
@@ -3813,6 +3840,46 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         hoverLineBuffer = device.makeBuffer(bytes: floats, length: floats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
     }
 
+    /// Rebuilds `selectionLineBuffer` — same axis-aligned wireframe-box
+    /// shape as `rebuildHoverBuffer`, around `selectedObjectIndex` instead
+    /// of `hoveredObjectIndex`, in `selectionOutlineColor`. Called from
+    /// `select(index:)` and every direct transform setter (`setSelected
+    /// Position`/`nudgeSelectedPosition`/`setSelectedRotation`/
+    /// `setSelectedScale`), same call sites that already call
+    /// `rebuildGizmoBuffer()`, so the outline tracks the selection exactly
+    /// as tightly as the gizmo does.
+    private func rebuildSelectionBuffer() {
+        guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else {
+            selectionLineBuffer = nil
+            selectionLineVertexCount = 0
+            return
+        }
+        let object = objects[selectedObjectIndex]
+        let half = SIMD3<Float>(repeating: max(object.boundingRadius, 0.15))
+        var floats: [Float] = []
+        func appendVertex(_ position: SIMD3<Float>, _ color: SIMD3<Float>) {
+            floats.append(contentsOf: [position.x, position.y, position.z, color.x, color.y, color.z])
+        }
+        let localCorners: [SIMD3<Float>] = [
+            SIMD3(-half.x, -half.y, -half.z), SIMD3(half.x, -half.y, -half.z),
+            SIMD3(half.x, half.y, -half.z), SIMD3(-half.x, half.y, -half.z),
+            SIMD3(-half.x, -half.y, half.z), SIMD3(half.x, -half.y, half.z),
+            SIMD3(half.x, half.y, half.z), SIMD3(-half.x, half.y, half.z)
+        ]
+        let corners = localCorners.map { object.worldPosition + $0 }
+        let edges: [(Int, Int)] = [
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4), (1, 5), (2, 6), (3, 7)
+        ]
+        for (a, b) in edges {
+            appendVertex(corners[a], Self.selectionOutlineColor)
+            appendVertex(corners[b], Self.selectionOutlineColor)
+        }
+        selectionLineVertexCount = floats.count / 6
+        selectionLineBuffer = device.makeBuffer(bytes: floats, length: floats.count * MemoryLayout<Float>.stride, options: .storageModeShared)
+    }
+
     /// Standard screen-space axis-constrained drag: project the selected
     /// object's origin and the grabbed axis's tip into screen space, take
     /// the mouse's raw delta, and scalar-project it onto that screen-space
@@ -3873,6 +3940,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         }
         objects[index].worldPosition = newPosition
         rebuildGizmoBuffer()
+        rebuildSelectionBuffer()
     }
 
     /// See `magnetSnapEnabled`'s doc comment. Linear scan over `objects` —
@@ -3947,6 +4015,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         // scale is visually indistinguishable from "nothing renders."
         objects[index].scale = SIMD3(max(newScale.x, 0.01), max(newScale.y, 0.01), max(newScale.z, 0.01))
         rebuildGizmoBuffer()
+        rebuildSelectionBuffer()
     }
 
     /// Deliberately simpler than translate/scale: rather than computing
@@ -3969,6 +4038,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         }
         objects[index].rotation = newRotation
         rebuildGizmoBuffer()
+        rebuildSelectionBuffer()
     }
 }
 
