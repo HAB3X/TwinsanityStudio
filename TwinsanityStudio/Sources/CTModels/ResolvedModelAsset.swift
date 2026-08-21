@@ -83,6 +83,30 @@ public struct ResolvedModelAsset: Sendable, Identifiable, Codable {
     }
 
     public var isFullyTextured: Bool { submeshMaterials.allSatisfy { $0.texture != nil } }
+
+    /// A real, disk-untouched **visual-only** texture override: every
+    /// submesh keeps its own real `materialID`/`textureID`, only
+    /// `texture` (the actual pixel data the renderer samples) changes.
+    /// Mesh geometry, `skeleton`, and `availableAnimations` are identical
+    /// to `self` — this never touches collision data, `PlacedInstance`/
+    /// `GameObjectInfo` entity data, or any on-disk record, since none of
+    /// that lives on `ResolvedModelAsset` in the first place. Built for
+    /// "Cross-Engine Texture Variant" (previewing a real Wrath of Cortex
+    /// crate texture on a Twinsanity crate's own real, working UVs,
+    /// sidestepping WoC's still-undecoded per-vertex UV data entirely —
+    /// see `WOCCompositeResolver`'s own doc comment for that gap): call
+    /// with a real decoded `TextureAsset` to preview it, or `nil` to
+    /// revert to every submesh's own original texture.
+    public func applyingTextureOverride(_ overrideTexture: TextureAsset?) -> ResolvedModelAsset {
+        var copy = self
+        copy.id = UUID() // a real, distinct preview asset — not the same identity as the un-overridden original
+        copy.submeshMaterials = submeshMaterials.map { material in
+            var m = material
+            m.texture = overrideTexture ?? material.texture
+            return m
+        }
+        return copy
+    }
 }
 
 public enum AssetResolver {

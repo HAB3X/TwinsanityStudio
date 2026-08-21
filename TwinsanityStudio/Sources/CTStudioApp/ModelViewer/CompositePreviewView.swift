@@ -1,5 +1,7 @@
 import SwiftUI
+import AppKit
 import CTModels
+import CTExport
 
 /// The "View Parent / Composite" inline preview (blueprint 2.1/2.3): an
 /// embedded, live Metal viewport showing the complete object a selected
@@ -19,6 +21,22 @@ struct CompositePreviewView: View {
     @State private var sandboxFrame: Double = 0
     @State private var sandboxTimer: Timer?
     @State private var sandboxPlaying = false
+    /// "Cross-Engine Texture Variant" — `nil` shows this object's own
+    /// real textures (the default); a real ID selects one real, decoded
+    /// Wrath of Cortex texture (from `workspace.wocCrateTextureLibrary`)
+    /// to preview in its place, using this asset's own real, working
+    /// UVs. See `ResolvedModelAsset.applyingTextureOverride(_:)`'s doc
+    /// comment for exactly what this does and doesn't touch.
+    @State private var wocOverrideTextureID: UUID?
+
+    private var wocOverrideTexture: TextureAsset? {
+        guard let wocOverrideTextureID else { return nil }
+        return workspace.wocCrateTextureLibrary.first { $0.id == wocOverrideTextureID }?.texture
+    }
+
+    private var effectiveAsset: ResolvedModelAsset {
+        asset.applyingTextureOverride(wocOverrideTexture)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -45,7 +63,7 @@ struct CompositePreviewView: View {
 
             HStack {
                 Button {
-                    workspace.modelViewerAsset = asset
+                    workspace.modelViewerAsset = effectiveAsset
                 } label: {
                     Label("Open Full Model Viewer", systemImage: "arrow.up.left.and.arrow.down.right")
                 }
@@ -57,18 +75,121 @@ struct CompositePreviewView: View {
                 Spacer()
             }
 
+            Divider()
+            crossEngineTextureVariant
+
             if asset.skeleton != nil, !asset.availableAnimations.isEmpty {
                 Divider()
                 animationSandbox
             }
         }
-        .onAppear { renderer = ModelViewerRenderer(asset: asset) }
+        .onAppear { renderer = ModelViewerRenderer(asset: effectiveAsset) }
         .onChange(of: asset.id) { _, _ in
-            renderer = ModelViewerRenderer(asset: asset)
+            wocOverrideTextureID = nil
+            renderer = ModelViewerRenderer(asset: effectiveAsset)
             stopSandboxPlayback()
             sandboxAnimationID = nil
         }
+        .onChange(of: wocOverrideTextureID) { _, _ in
+            renderer = ModelViewerRenderer(asset: effectiveAsset)
+        }
         .onDisappear { stopSandboxPlayback() }
+    }
+
+    /// "Cross-Engine Texture Variant": lets the user preview one of this
+    /// object's own submesh textures swapped for a real, decoded Wrath
+    /// of Cortex texture — geometry, skeleton, and every other real field
+    /// on `asset` stay exactly as resolved; only the in-memory preview's
+    /// `texture` changes, never anything on disk. Empty state offers
+    /// loading a real `.GSC` file directly (typically `CRATES.GSC`); once
+    /// loaded, a horizontal picker of real thumbnails lets the user
+    /// choose (or revert to "Original").
+    private var crossEngineTextureVariant: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Cross-Engine Texture Variant", systemImage: "arrow.left.arrow.right.square")
+                .font(.headline)
+
+            if workspace.wocCrateTextureLibrary.isEmpty {
+                Button {
+                    presentLoadWOCTexturesPanel()
+                } label: {
+                    Label("Load WoC Crate Textures…", systemImage: "square.and.arrow.down")
+                }
+                Text("Loads every real, decoded texture from a real Wrath of Cortex .GSC file (e.g. CRATES.GSC) as candidates. This object's own real UVs do the wrapping — only the pixel data changes, so this works even though WoC's own per-vertex UVs aren't decoded.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        variantChip(label: "Original", isSelected: wocOverrideTextureID == nil) {
+                            wocOverrideTextureID = nil
+                        }
+                        ForEach(workspace.wocCrateTextureLibrary) { entry in
+                            variantThumbnail(entry: entry, isSelected: wocOverrideTextureID == entry.id) {
+                                wocOverrideTextureID = entry.id
+                            }
+                        }
+                        Button {
+                            presentLoadWOCTexturesPanel()
+                        } label: {
+                            Image(systemName: "plus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Load more WoC textures from another .GSC file")
+                    }
+                    .padding(.vertical, 2)
+                }
+                if wocOverrideTextureID != nil {
+                    Text("Previewing a real WoC texture on this object's own UVs — a real, disk-untouched visual override. Geometry, collision, and entity behavior are unaffected. Pick \"Original\" to revert.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func variantChip(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.caption)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(isSelected ? Color.accentColor : Color(nsColor: .underPageBackgroundColor))
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func variantThumbnail(entry: TextureHubEntry, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Group {
+                if let cgImage = try? TextureExporter.cgImage(from: entry.texture) {
+                    Image(nsImage: NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height)))
+                        .resizable()
+                        .interpolation(.none)
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    Color.secondary.opacity(0.2)
+                }
+            }
+            .frame(width: 40, height: 40)
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(isSelected ? Color.accentColor : Color(.separatorColor), lineWidth: isSelected ? 2 : 1))
+        }
+        .buttonStyle(.plain)
+        .help(entry.sourceLabel)
+    }
+
+    private func presentLoadWOCTexturesPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a real Wrath of Cortex .GSC file (e.g. CRATES.GSC) to load its real, decoded textures as candidates."
+        panel.prompt = "Load"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        workspace.loadWOCCrateTextureLibrary(from: url)
     }
 
     private var sandboxAnimation: AnimationAsset? {
