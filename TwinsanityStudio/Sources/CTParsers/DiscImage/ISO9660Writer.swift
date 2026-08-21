@@ -137,15 +137,19 @@ public enum ISO9660Writer {
 /// **What "verified" means here, honestly**: every directory record this
 /// writes round-trips exactly through this package's own `ISO9660Reader`
 /// (same discipline as every other writer in this codebase) — proven by
-/// `ISO9660WriterBuildImageTests`. The Path Tables are written to the real
-/// ECMA-119 byte layout but aren't independently exercised by any reader
-/// in this codebase (`ISO9660Reader` never reads them — real CD-ROM
-/// drivers/BIOS implementations generally walk directory records directly
-/// and treat the path table as an optional lookup optimization, not a
-/// requirement), so their content is unverified beyond visual inspection
-/// against the spec. Whether a disc built this way actually **boots** on
-/// real PS2 hardware or in an emulator has not been tested — that's the
-/// one thing this project has never had access to verify, for any writer.
+/// `ISO9660WriterBuildImageTests`. The Path Tables (real CD-ROM drivers/
+/// BIOS implementations generally walk directory records directly and
+/// treat the path table as an optional lookup optimization, not a
+/// requirement — so a disc missing this verification could still browse
+/// and boot fine) are now also independently exercised: `ISO9660Reader.
+/// readPathTable`/`readPrimaryVolumeDescriptorInfo` decode both the Type L
+/// and Type M tables back out, and `ISO9660ImageBuilderTests` cross-checks
+/// every entry's name/parent-chain/LBA against the same directories'
+/// own, separately-verified directory records — not just that the two
+/// tables agree with each other, but that they agree with the actual disc
+/// layout. Whether a disc built this way actually **boots** on real PS2
+/// hardware or in an emulator has not been tested — that's the one thing
+/// this project has never had access to verify, for any writer.
 public enum ISO9660ImageBuilder {
     private static let sectorSize = 2048
 

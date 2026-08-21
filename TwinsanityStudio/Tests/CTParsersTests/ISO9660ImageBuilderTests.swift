@@ -125,4 +125,88 @@ final class ISO9660ImageBuilderTests: XCTestCase {
         let volumeID = image.subdata(in: (image.startIndex + pvdStart + 40)..<(image.startIndex + pvdStart + 40 + 6))
         XCTAssertEqual(String(data: volumeID, encoding: .ascii), "MYDISC")
     }
+
+    // MARK: - Path Tables ("Image Maker's Path Tables Verification")
+
+    /// Real, independent verification of the Path Tables — previously
+    /// unexercised by any reader in this codebase (see `ISO9660ImageBuilder`'s
+    /// own doc comment). Builds a real 3-level directory tree, decodes both
+    /// the Type L and Type M Path Tables via the new `ISO9660Reader.
+    /// readPathTable`, and cross-checks every entry against the same
+    /// directories' own directory-record LBAs (`readRootDirectory`'s own,
+    /// already-verified tree) — not just checking the two tables agree
+    /// with each other, but that they agree with the *actual* disc layout.
+    func testPathTablesMatchTheRealDirectoryTreeAndBothEndiannessesAgree() throws {
+        let sub = tempDir.appendingPathComponent("EARTH")
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        let subsub = sub.appendingPathComponent("HUB")
+        try FileManager.default.createDirectory(at: subsub, withIntermediateDirectories: true)
+        try Data("beach level".utf8).write(to: subsub.appendingPathComponent("BEACH.RM2"))
+        try Data("root file".utf8).write(to: tempDir.appendingPathComponent("SYSTEM.CNF"))
+
+        let image = try ISO9660ImageBuilder.buildingImage(from: tempDir, volumeLabel: "PATHTEST")
+        let source = PlainISOSource(data: image)
+        let root = try readBack(image)
+        let earth = try XCTUnwrap(root.children.first { $0.name == "EARTH" })
+        let hub = try XCTUnwrap(earth.children.first { $0.name == "HUB" })
+
+        let pvdInfo = try ISO9660Reader.readPrimaryVolumeDescriptorInfo(from: source)
+        XCTAssertGreaterThan(pvdInfo.pathTableByteSize, 0)
+        XCTAssertNotEqual(pvdInfo.pathTableLBA_L, pvdInfo.pathTableLBA_M, "the two tables must live at different LBAs, not overlap")
+
+        let tableL = ISO9660Reader.readPathTable(from: source, lba: pvdInfo.pathTableLBA_L, byteSize: pvdInfo.pathTableByteSize, bigEndian: false)
+        let tableM = ISO9660Reader.readPathTable(from: source, lba: pvdInfo.pathTableLBA_M, byteSize: pvdInfo.pathTableByteSize, bigEndian: true)
+
+        // Real directory count: root, EARTH, HUB — three Path Table Records.
+        XCTAssertEqual(tableL.count, 3)
+        XCTAssertEqual(tableM.count, 3)
+
+        // The defining property of a correct dual-encoded Path Table pair:
+        // decoding each with its own real endianness must produce
+        // identical logical values, proving `writeUInt32BE`/`writeUInt16BE`
+        // aren't silently writing little-endian bytes twice (a real,
+        // catchable bug this specific check exists for).
+        for (l, m) in zip(tableL, tableM) {
+            XCTAssertEqual(l.name, m.name)
+            XCTAssertEqual(l.parentIndex, m.parentIndex)
+            XCTAssertEqual(l.lba, m.lba)
+        }
+
+        // Root entry: real ECMA-119 convention is an empty/NUL name, parent
+        // index 1 (points at itself), and its LBA must match the exact
+        // same root the independently-verified directory-record reader found.
+        let rootEntry = try XCTUnwrap(tableL.first)
+        XCTAssertEqual(rootEntry.name, "")
+        XCTAssertEqual(rootEntry.parentIndex, 1)
+        XCTAssertEqual(rootEntry.lba, root.lba)
+
+        // EARTH: real name, parent index 1 (its parent, root, is table index 1).
+        let earthEntry = try XCTUnwrap(tableL.first { $0.name == "EARTH" })
+        XCTAssertEqual(earthEntry.parentIndex, 1)
+        XCTAssertEqual(earthEntry.lba, earth.lba, "the Path Table's LBA for EARTH must match its own real directory record's LBA")
+
+        // HUB: its parent index must resolve back to EARTH's own 1-based
+        // table position — the real parent-child chain the Path Table
+        // exists to encode, not just "some" value.
+        let earthTableIndex = UInt16((tableL.firstIndex { $0.name == "EARTH" } ?? -1) + 1)
+        let hubEntry = try XCTUnwrap(tableL.first { $0.name == "HUB" })
+        XCTAssertEqual(hubEntry.parentIndex, earthTableIndex)
+        XCTAssertEqual(hubEntry.lba, hub.lba)
+    }
+
+    /// A path table's records are sorted by ECMA-119 rule (parent
+    /// directory number, then name) — this only has real, independent
+    /// meaning to check once there's more than one directory at the same
+    /// level to potentially mis-order.
+    func testPathTableOrdersSiblingsByParentThenName() throws {
+        for name in ["ZEBRA", "APPLE", "MANGO"] {
+            try FileManager.default.createDirectory(at: tempDir.appendingPathComponent(name), withIntermediateDirectories: true)
+        }
+        let image = try ISO9660ImageBuilder.buildingImage(from: tempDir, volumeLabel: "SORTED")
+        let source = PlainISOSource(data: image)
+        let pvdInfo = try ISO9660Reader.readPrimaryVolumeDescriptorInfo(from: source)
+        let table = ISO9660Reader.readPathTable(from: source, lba: pvdInfo.pathTableLBA_L, byteSize: pvdInfo.pathTableByteSize, bigEndian: false)
+        let siblingNames = table.dropFirst().map(\.name) // drop the root entry
+        XCTAssertEqual(siblingNames, siblingNames.sorted(), "ECMA-119 8.6.2's own ordering rule: same-parent entries in ascending name order")
+    }
 }

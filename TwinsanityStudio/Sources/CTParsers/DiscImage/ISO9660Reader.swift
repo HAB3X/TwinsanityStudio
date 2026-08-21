@@ -64,6 +64,76 @@ public enum ISO9660Reader {
         return readDirectory(name: "", lba: rootLBA, size: rootSize, source: source, directoryRecordAbsoluteOffset: rootRecordAbsoluteOffset)
     }
 
+    /// The Primary Volume Descriptor's own Path Table fields (ECMA-119
+    /// 8.4.19-8.4.22) — real values `ISO9660ImageBuilder` writes but
+    /// nothing in this package previously read back. "Image Maker's Path
+    /// Tables Verification": without this, the Path Tables `ISO9660ImageBuilder`
+    /// writes were only ever checked by eye against the spec, not
+    /// independently exercised by any reader — see that type's own doc
+    /// comment.
+    public struct PrimaryVolumeDescriptorInfo: Sendable {
+        public var pathTableByteSize: UInt32
+        public var pathTableLBA_L: UInt32
+        public var pathTableLBA_M: UInt32
+    }
+
+    public static func readPrimaryVolumeDescriptorInfo(from source: any LogicalSectorSource) throws -> PrimaryVolumeDescriptorInfo {
+        guard let pvdSectorIndex = findPrimaryVolumeDescriptorSector(in: source), let pvd = source.sector(pvdSectorIndex) else {
+            throw ISO9660Error.notAnISO9660Image
+        }
+        // Path Table Size: byte 132 (both-endian UInt32, LE half used here).
+        // Location of Type L Path Table: byte 140 (LE UInt32).
+        // Location of the Optional Type L Path Table: byte 144 (unused).
+        // Location of Type M Path Table: byte 148 (BE UInt32).
+        guard let size = readUInt32LE(pvd, at: 132),
+              let lbaL = readUInt32LE(pvd, at: 140),
+              let lbaM = readUInt32BE(pvd, at: 148)
+        else {
+            throw ISO9660Error.notAnISO9660Image
+        }
+        return PrimaryVolumeDescriptorInfo(pathTableByteSize: size, pathTableLBA_L: lbaL, pathTableLBA_M: lbaM)
+    }
+
+    /// One decoded Path Table Record (ECMA-119 8.4.4-8.4.8): a directory's
+    /// own name, its parent's 1-based index into this same table, and its
+    /// real extent LBA — independent of (and cross-checkable against) the
+    /// same directory's own entry in the regular directory-record tree
+    /// `readRootDirectory` walks.
+    public struct ISO9660PathTableEntry: Sendable {
+        public var name: String
+        public var parentIndex: UInt16
+        public var lba: UInt32
+    }
+
+    /// Decodes one whole Path Table (L or M) starting at `lba`, for
+    /// `byteSize` real bytes (from `PrimaryVolumeDescriptorInfo.
+    /// pathTableByteSize` — the table is sector-padded beyond that, and
+    /// nothing in a real image announces how many records precede that
+    /// padding).
+    public static func readPathTable(from source: any LogicalSectorSource, lba: UInt32, byteSize: UInt32, bigEndian: Bool) -> [ISO9660PathTableEntry] {
+        var tableBytes = Data()
+        let sectorCount = max(1, Int((Int(byteSize) + sectorSize - 1) / sectorSize))
+        for i in 0..<sectorCount {
+            guard let sector = source.sector(Int(lba) + i) else { break }
+            tableBytes.append(sector)
+        }
+        var entries: [ISO9660PathTableEntry] = []
+        var offset = 0
+        while offset + 8 <= Int(byteSize), offset + 8 <= tableBytes.count {
+            let nameLength = Int(tableBytes[tableBytes.startIndex + offset])
+            guard nameLength > 0, offset + 8 + nameLength <= tableBytes.count else { break }
+            let record = tableBytes.subdata(in: (tableBytes.startIndex + offset)..<(tableBytes.startIndex + offset + 8 + nameLength))
+            let lbaValue = bigEndian ? readUInt32BE(record, at: 2) : readUInt32LE(record, at: 2)
+            let parentValue = bigEndian ? readUInt16BE(record, at: 6) : readUInt16LE(record, at: 6)
+            guard let entryLBA = lbaValue, let parentIndex = parentValue else { break }
+            let nameBytes = record.subdata(in: (record.startIndex + 8)..<(record.startIndex + 8 + nameLength))
+            let name = nameBytes.count == 1 && nameBytes[nameBytes.startIndex] == 0 ? "" : (String(data: nameBytes, encoding: .ascii) ?? "")
+            entries.append(ISO9660PathTableEntry(name: name, parentIndex: parentIndex, lba: entryLBA))
+            offset += 8 + nameLength + (nameLength % 2 == 0 ? 0 : 1)
+        }
+        return entries
+    }
+
     /// Extracts `entry`'s real file bytes straight from the volume.
     public static func readFile(_ entry: ISO9660Entry, from source: any LogicalSectorSource) -> Data? {
         guard !entry.isDirectory else { return nil }
@@ -161,5 +231,23 @@ public enum ISO9660Reader {
         guard offset + 4 <= data.count else { return nil }
         let base = data.startIndex + offset
         return UInt32(data[base]) | (UInt32(data[base + 1]) << 8) | (UInt32(data[base + 2]) << 16) | (UInt32(data[base + 3]) << 24)
+    }
+
+    private static func readUInt32BE(_ data: Data, at offset: Int) -> UInt32? {
+        guard offset + 4 <= data.count else { return nil }
+        let base = data.startIndex + offset
+        return (UInt32(data[base]) << 24) | (UInt32(data[base + 1]) << 16) | (UInt32(data[base + 2]) << 8) | UInt32(data[base + 3])
+    }
+
+    private static func readUInt16LE(_ data: Data, at offset: Int) -> UInt16? {
+        guard offset + 2 <= data.count else { return nil }
+        let base = data.startIndex + offset
+        return UInt16(data[base]) | (UInt16(data[base + 1]) << 8)
+    }
+
+    private static func readUInt16BE(_ data: Data, at offset: Int) -> UInt16? {
+        guard offset + 2 <= data.count else { return nil }
+        let base = data.startIndex + offset
+        return (UInt16(data[base]) << 8) | UInt16(data[base + 1])
     }
 }
