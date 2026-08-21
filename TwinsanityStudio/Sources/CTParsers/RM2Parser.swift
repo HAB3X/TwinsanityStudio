@@ -291,7 +291,11 @@ public enum RM2Parser {
     /// different, unverified record layout (`SoundEffectX.cs`/
     /// `SoundEffectMB.cs` in the reference tool), so they're deliberately
     /// left undecoded rather than guessed at.
-    private static let soundEffectSectionTypes: Set<SectionType> = [.se, .seEng, .seFre, .seGer, .seSpa, .seIta, .seJpn]
+    /// `.xboxSE` is deliberately excluded — its real bytes are embedded
+    /// directly in each record (see `SoundEffectXParser`), not indexed
+    /// into this shared "extra data" scheme the way every PS2 (retail and
+    /// `.mbSE`) `SoundEffect` variant is.
+    private static let soundEffectSectionTypes: Set<SectionType> = [.se, .seEng, .seFre, .seGer, .seSpa, .seIta, .seJpn, .mbSE]
 
     /// Ported from `TwinsSection.Load`'s `extra_begin`/`ExtraData`
     /// computation: the section's bytes from just past the furthest
@@ -316,9 +320,17 @@ public enum RM2Parser {
         }
         let leafData = data.subdata(in: (data.startIndex + absoluteOffset)..<(data.startIndex + absoluteOffset + size))
         var cursor = BinaryCursor(data: leafData)
-        guard let record = try? SoundEffectParser.parseHeader(&cursor, recordID: recordID),
-              let asset = SoundEffectParser.resolve(record, extraData: extraData, extraDataAbsoluteFileOffset: extraDataAbsoluteFileOffset)
-        else {
+        // `.mbSE`'s real header is 16 bytes (`SoundEffectMB.cs`), not
+        // retail's 22 — a distinct parse, same shared extra-data resolve.
+        let asset: SoundEffectAsset?
+        if sectionType == .mbSE {
+            asset = (try? SoundEffectParser.parseHeaderMB(&cursor, recordID: recordID))
+                .flatMap { SoundEffectParser.resolveMB($0, extraData: extraData, extraDataAbsoluteFileOffset: extraDataAbsoluteFileOffset) }
+        } else {
+            asset = (try? SoundEffectParser.parseHeader(&cursor, recordID: recordID))
+                .flatMap { SoundEffectParser.resolve($0, extraData: extraData, extraDataAbsoluteFileOffset: extraDataAbsoluteFileOffset) }
+        }
+        guard let asset else {
             return ChunkNode(recordID: recordID, sectionType: sectionType, displayName: displayName, byteSize: size, fileOffset: absoluteOffset, payload: .raw(byteCount: size))
         }
         return ChunkNode(recordID: recordID, sectionType: sectionType, displayName: displayName, byteSize: size, fileOffset: absoluteOffset, payload: .soundEffect(asset))
@@ -376,7 +388,10 @@ public enum RM2Parser {
             case .rigidModel, .mesh:
                 return .rigidModel(try RigidModelParser.parse(&cursor, recordID: recordID))
             case .material:
-                return .material(try MaterialParser.parse(&cursor, recordID: recordID))
+                let isMB = fileKind == .rm2MB || fileKind == .sm2MB
+                return .material(try MaterialParser.parse(&cursor, recordID: recordID, isMonkeyBall: isMB))
+            case .materialD:
+                return .material(try MaterialParser.parse(&cursor, recordID: recordID, isDemo: true))
             case .ogi:
                 return .skeleton(try GraphicsInfoParser.parse(&cursor, recordID: recordID))
             case .object, .objectDemo:
@@ -386,12 +401,15 @@ public enum RM2Parser {
             case .position:
                 return .position(try WorldPlacementParser.parsePosition(&cursor, recordID: recordID))
             case .objectInstance:
-                // Demo (`.objectInstanceDemo`) and multiplayer (`.objectInstanceMB`)
-                // variants diverge in their tail layout after `ObjectID`
-                // (`Twinsanity/Items/Instances/InstanceDemo.cs` /
-                // `InstanceMB.cs`) — only the retail layout is decoded here;
-                // those fall through to `.raw` like other unattempted formats.
                 return .instance(try WorldPlacementParser.parseInstance(&cursor, recordID: recordID))
+            case .objectInstanceDemo:
+                return .instanceDemo(try WorldPlacementParser.parseInstanceDemo(&cursor, recordID: recordID))
+            case .objectInstanceMB:
+                return .instanceMB(try WorldPlacementParser.parseInstanceMB(&cursor, recordID: recordID, size: size))
+            case .instanceTemplate:
+                return .instanceTemplate(try WorldPlacementParser.parseInstanceTemplate(&cursor, recordID: recordID))
+            case .instanceTemplateDemo:
+                return .instanceTemplateDemo(try WorldPlacementParser.parseInstanceTemplateDemo(&cursor, recordID: recordID))
             case .trigger:
                 return .trigger(try WorldPlacementParser.parseTrigger(&cursor, recordID: recordID))
             case .camera:
@@ -416,6 +434,8 @@ public enum RM2Parser {
                 return .script(try ScriptParser.parse(&cursor, recordID: recordID, size: size, platform: .xbox))
             case .scriptDemo:
                 return .script(try ScriptParser.parse(&cursor, recordID: recordID, size: size, platform: .demo))
+            case .xboxSE:
+                return .soundEffectX(try SoundEffectXParser.parse(&cursor, recordID: recordID))
             default:
                 return .raw(byteCount: size)
             }

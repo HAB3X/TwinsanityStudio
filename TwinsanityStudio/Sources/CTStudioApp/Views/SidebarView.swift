@@ -324,13 +324,13 @@ private struct SidebarRow: View {
         case .skeleton: return "figure.stand"
         case .animation: return "play.circle"
         case .position: return "mappin"
-        case .instance: return "cube.transparent.fill"
+        case .instance, .instanceDemo, .instanceMB: return "cube.transparent.fill"
         case .trigger: return "square.dashed"
         case .camera: return "video.fill"
         case .collision: return "square.grid.3x1.below.line.grid.1x2"
         case .scenery: return "map"
         case .dynamicScenery: return "arrow.triangle.2.circlepath"
-        case .soundEffect: return "speaker.wave.2"
+        case .soundEffect, .soundEffectX: return "speaker.wave.2"
         case .gameObject: return "cpu"
         case .chunkLinks: return "link"
         case .aiPosition: return "figure.walk.motion"
@@ -341,6 +341,7 @@ private struct SidebarRow: View {
         case .path: return "point.topleft.down.curvedto.point.bottomright.up"
         case .particleData: return "sparkles"
         case .script: return "chart.xyaxis.line"
+        case .instanceTemplate, .instanceTemplateDemo: return "doc.badge.gearshape"
         case .raw, .none: return node.children.isEmpty ? "doc" : "folder"
         }
     }
@@ -354,13 +355,13 @@ private struct SidebarRow: View {
         case .skeleton: return .orange
         case .animation: return .green
         case .position: return .mint
-        case .instance: return .indigo
+        case .instance, .instanceDemo, .instanceMB: return .indigo
         case .trigger: return .red
         case .camera: return .yellow
         case .collision: return .cyan
         case .scenery: return .green
         case .dynamicScenery: return .mint
-        case .soundEffect: return .pink
+        case .soundEffect, .soundEffectX: return .pink
         case .gameObject: return .gray
         case .chunkLinks: return .brown
         case .aiPosition, .aiPath: return .mint
@@ -370,6 +371,7 @@ private struct SidebarRow: View {
         case .path: return .mint
         case .particleData: return .yellow
         case .script: return .indigo
+        case .instanceTemplate, .instanceTemplateDemo: return .gray
         case .raw, .none: return .secondary
         }
     }
@@ -387,8 +389,8 @@ extension ChunkNode {
     /// undecoded Object/Script/Trigger/Position records to find it.
     private var displaySortRank: Int {
         switch payload {
-        case .texture, .mesh, .rigidModel, .skeleton, .animation, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .chunkLinks, .aiPosition, .aiPath, .path, .script: return 0
-        case .material, .position, .gameObject, .lodModel, .collisionSurface, .skydome, .particleData: return 1
+        case .texture, .mesh, .rigidModel, .skeleton, .animation, .instance, .instanceDemo, .instanceMB, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .soundEffectX, .chunkLinks, .aiPosition, .aiPath, .path, .script: return 0
+        case .material, .position, .gameObject, .lodModel, .collisionSurface, .skydome, .particleData, .instanceTemplate, .instanceTemplateDemo: return 1
         case .none: return children.isEmpty ? 3 : 2
         case .raw: return 3
         }

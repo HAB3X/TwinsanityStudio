@@ -4,16 +4,23 @@ import CTModels
 
 /// Decodes a `Material` record: a name plus one or more `TwinsShader` blocks,
 /// each ending in the texture ID it samples. Ported field-for-field from
-/// `Twinsanity/Items/Graphics/Material.cs` and `Twinsanity/TwinsShader.cs`.
+/// `Twinsanity/Items/Graphics/Material.cs`/`MaterialDemo.cs` and
+/// `Twinsanity/TwinsShader.cs`.
 ///
-/// `Material.Load` always calls `TwinsShader.Read(reader, 0, Demo: false, SMBA: isMB)`
-/// — the `Demo` flag is hardcoded false at that call site regardless of the
-/// enclosing file's actual format (Demo files route through a distinct
-/// `MaterialDemo` record type instead), and MonkeyBall (`SMBA`) is out of
-/// scope for this package — so this parser always reads the non-Demo,
-/// non-SMBA shader layout, matching every real Crash Twinsanity Material.
+/// `Material.Load` determines `isMB` from `Parent.Parent.Type ==
+/// SectionType.GraphicsMB` and calls `TwinsShader.Read(reader, 0, Demo:
+/// false, SMBA: isMB)`; `MaterialDemo.Load` (a distinct record type,
+/// `SectionType.MaterialD`, used only inside a `.rm2Demo`/`.sm2Demo` file's
+/// `GraphicsD` container) calls `TwinsShader.Read(reader, 0, Demo: true)`
+/// instead — `isDemo`/`isMonkeyBall` here are the caller's way of picking
+/// the right one; both real, confirmed byte-length differences straight
+/// from `TwinsShader.Read`/`GetLength` (`isDemo` removes the 2-byte
+/// `UnkFlag3`/`BlobFlag` pair; `isMonkeyBall` adds 2 bytes right before
+/// `TextureId` the reference's own author never identified — `// todo
+/// somewhere here these 2 bytes` — but the *offset impact* is real and
+/// confirmed regardless of what they mean).
 public enum MaterialParser {
-    public static func parse(_ cursor: inout BinaryCursor, recordID: UInt32) throws -> MaterialInfo {
+    public static func parse(_ cursor: inout BinaryCursor, recordID: UInt32, isDemo: Bool = false, isMonkeyBall: Bool = false) throws -> MaterialInfo {
         _ = try cursor.readUInt64() // Header, always 2
         _ = try cursor.readInt32()  // Unknown, always 2
         let nameLen = Int(try cursor.readInt32())
@@ -21,9 +28,9 @@ public enum MaterialParser {
         let shaderCount = try cursor.readInt32()
 
         var shaders: [TwinsShaderInfo] = []
-        shaders.reserveCapacity(cursor.safeReserveCount(shaderCount, elementSize: 94)) // smallest real TwinsShader block
+        shaders.reserveCapacity(cursor.safeReserveCount(shaderCount, elementSize: 92)) // smallest real TwinsShader block (Demo, non-MB)
         for _ in 0..<max(0, shaderCount) {
-            shaders.append(try readShader(&cursor))
+            shaders.append(try readShader(&cursor, isDemo: isDemo, isMonkeyBall: isMonkeyBall))
         }
         return MaterialInfo(id: recordID, name: name, shaders: shaders)
     }
@@ -33,7 +40,7 @@ public enum MaterialParser {
     /// in between (alpha blending, depth test, fog, LOD params, ...) are
     /// consumed to stay correctly positioned for the *next* shader, but
     /// aren't modeled since nothing here needs them yet.
-    private static func readShader(_ cursor: inout BinaryCursor) throws -> TwinsShaderInfo {
+    private static func readShader(_ cursor: inout BinaryCursor, isDemo: Bool, isMonkeyBall: Bool) throws -> TwinsShaderInfo {
         let shaderType = try cursor.readUInt32()
 
         // Variable-length parameter block, keyed by shader type.
@@ -61,14 +68,21 @@ public enum MaterialParser {
         _ = try cursor.readBytes(3)
         // ZValueDrawingMask
         _ = try cursor.readUInt8()
-        // Demo == false at every real call site: UnkFlag3, BlobFlag (2 bools)
-        _ = try cursor.readBytes(2)
+        // UnkFlag3, BlobFlag (2 bools) — real Demo-only omission (`TwinsShader.Read`'s `if (!Demo)`).
+        if !isDemo {
+            _ = try cursor.readBytes(2)
+        }
         // LodParamK, LodParamL
         _ = try cursor.readUInt16()
         _ = try cursor.readUInt16()
         // UnkVector1, UnkVector2, UnkVector3 (16 bytes each)
         _ = try cursor.readBytes(48)
-        // SMBA == false: no extra padding here.
+        // Real MonkeyBall-only 2 extra bytes right before TextureId — the
+        // reference itself never identified what they encode, only that
+        // they're there (`TwinsShader.Read`'s `if (SMBA)`).
+        if isMonkeyBall {
+            _ = try cursor.readUInt16()
+        }
 
         let textureId = try cursor.readUInt32()
         _ = try cursor.readUInt32() // trailing repeated ShaderType

@@ -240,3 +240,188 @@ public struct TriggerVolume: Sendable, Identifiable {
         2 * acos(min(1, max(-1, rotationQuaternion.w))) * 180 / .pi
     }
 }
+
+/// An `InstanceTemplate` record (`SectionType.instanceTemplate`, container
+/// sub-ID 0 alongside `Instance` at sub-ID 6) — a named preset of
+/// `GameObject`-style properties/flags/floats/ints, ported from
+/// `Twinsanity/Items/Instances/InstanceTemplate.cs`. `bitfield` is
+/// documented in the reference as carrying the same bits as a
+/// `GameObject`'s own bitfield, but no cross-reference from a
+/// `PlacedInstance` to a specific template is confirmed anywhere in this
+/// project's reference material, so this is modeled and browsable on its
+/// own rather than guessed to link to anything.
+public struct InstanceTemplateInfo: Sendable, Identifiable {
+    public let id: UInt32
+    public var name: String
+    public var objectID: UInt16
+    public var bitfield: UInt16
+    public var headerInt1: UInt32
+    public var headerInt2: UInt32
+    public var headerInt3: UInt32
+    /// Only present (and only round-tripped) when `headerInt1 == 1` — a
+    /// real conditional field in the reference's own `Load`/`Save`, not an
+    /// optional-for-safety default.
+    public var unkShort: UInt16?
+    public var unkFlags: [UInt8]
+    public var properties: UInt32
+    public var flags: [UInt32]
+    public var floats: [Float]
+    public var ints: [UInt32]
+
+    public init(
+        id: UInt32, name: String, objectID: UInt16, bitfield: UInt16,
+        headerInt1: UInt32, headerInt2: UInt32, headerInt3: UInt32, unkShort: UInt16?,
+        unkFlags: [UInt8], properties: UInt32, flags: [UInt32], floats: [Float], ints: [UInt32]
+    ) {
+        self.id = id
+        self.name = name
+        self.objectID = objectID
+        self.bitfield = bitfield
+        self.headerInt1 = headerInt1
+        self.headerInt2 = headerInt2
+        self.headerInt3 = headerInt3
+        self.unkShort = unkShort
+        self.unkFlags = unkFlags
+        self.properties = properties
+        self.flags = flags
+        self.floats = floats
+        self.ints = ints
+    }
+}
+
+/// The Demo build's `InstanceTemplate` (`SectionType.instanceTemplateDemo`)
+/// — same fields as `InstanceTemplateInfo`, but `unkFlags` is 2 bytes (not
+/// 6) and the three trailing lists share one packed byte-count header
+/// instead of each having its own `Int32` count. Ported from
+/// `Twinsanity/Items/Instances/InstanceTemplateDemo.cs`.
+public struct InstanceTemplateDemoInfo: Sendable, Identifiable {
+    public let id: UInt32
+    public var name: String
+    public var objectID: UInt16
+    public var bitfield: UInt16
+    public var headerInt1: UInt32
+    public var headerInt2: UInt32
+    public var headerInt3: UInt32
+    public var unkShort: UInt16?
+    public var unkFlags: [UInt8]
+    public var properties: UInt32
+    public var flags: [UInt32]
+    public var floats: [Float]
+    public var ints: [UInt32]
+
+    public init(
+        id: UInt32, name: String, objectID: UInt16, bitfield: UInt16,
+        headerInt1: UInt32, headerInt2: UInt32, headerInt3: UInt32, unkShort: UInt16?,
+        unkFlags: [UInt8], properties: UInt32, flags: [UInt32], floats: [Float], ints: [UInt32]
+    ) {
+        self.id = id
+        self.name = name
+        self.objectID = objectID
+        self.bitfield = bitfield
+        self.headerInt1 = headerInt1
+        self.headerInt2 = headerInt2
+        self.headerInt3 = headerInt3
+        self.unkShort = unkShort
+        self.unkFlags = unkFlags
+        self.properties = properties
+        self.flags = flags
+        self.floats = floats
+        self.ints = ints
+    }
+}
+
+/// The Demo build's `Instance` (`SectionType.objectInstanceDemo`) — the
+/// same transform/child-ID-list header as `PlacedInstance`, but
+/// `refList`/`scriptID` collapse into one `afterObjectID` field and the
+/// three trailing unknown lists share one packed byte-count header
+/// instead of `Instance`'s bit-packed `PHeader`. Ported from
+/// `Twinsanity/Items/Instances/InstanceDemo.cs`.
+public struct PlacedInstanceDemo: Sendable, Identifiable {
+    public let id: UInt32
+    public var position: SIMD4<Float>
+    public var rotationRaw: SIMD3<UInt16>
+    public var comRotationRaw: SIMD3<UInt16>
+    public var childInstanceIDs: [UInt16]
+    public var childPositionIDs: [UInt16]
+    public var childPathIDs: [UInt16]
+    public var someNum1: Int32
+    public var someNum2: Int32
+    public var someNum3: Int32
+    public var objectID: UInt16
+    public var afterObjectID: UInt32
+    public var flags: UInt32
+    public var unknownUInt32List: [UInt32]
+    public var unknownFloatList: [Float]
+    public var unknownUInt32List2: [UInt32]
+
+    public init(
+        id: UInt32, position: SIMD4<Float>, rotationRaw: SIMD3<UInt16>, comRotationRaw: SIMD3<UInt16>,
+        childInstanceIDs: [UInt16], childPositionIDs: [UInt16], childPathIDs: [UInt16],
+        someNum1: Int32, someNum2: Int32, someNum3: Int32,
+        objectID: UInt16, afterObjectID: UInt32, flags: UInt32,
+        unknownUInt32List: [UInt32], unknownFloatList: [Float], unknownUInt32List2: [UInt32]
+    ) {
+        self.id = id
+        self.position = position
+        self.rotationRaw = rotationRaw
+        self.comRotationRaw = comRotationRaw
+        self.childInstanceIDs = childInstanceIDs
+        self.childPositionIDs = childPositionIDs
+        self.childPathIDs = childPathIDs
+        self.someNum1 = someNum1
+        self.someNum2 = someNum2
+        self.someNum3 = someNum3
+        self.objectID = objectID
+        self.afterObjectID = afterObjectID
+        self.flags = flags
+        self.unknownUInt32List = unknownUInt32List
+        self.unknownFloatList = unknownFloatList
+        self.unknownUInt32List2 = unknownUInt32List2
+    }
+}
+
+/// The Monkey Ball build's `Instance` (`SectionType.objectInstanceMB`) —
+/// identical to `PlacedInstance` through `scriptID`, then a genuinely
+/// opaque tail (`Remain`) all the way to the record's own end. Ported from
+/// `Twinsanity/Items/Instances/InstanceMB.cs`, whose own `Load`/`Save`
+/// capture that tail as a raw byte blob rather than decoding it — the
+/// reference author's own attempt is left commented out in that file, not
+/// this project's own gap.
+public struct PlacedInstanceMB: Sendable, Identifiable {
+    public let id: UInt32
+    public var position: SIMD4<Float>
+    public var rotationRaw: SIMD3<UInt16>
+    public var comRotationRaw: SIMD3<UInt16>
+    public var childInstanceIDs: [UInt16]
+    public var childPositionIDs: [UInt16]
+    public var childPathIDs: [UInt16]
+    public var someNum1: Int32
+    public var someNum2: Int32
+    public var someNum3: Int32
+    public var objectID: UInt16
+    public var refList: Int16
+    public var scriptID: Int16
+    public var remainingTailBytes: Data
+
+    public init(
+        id: UInt32, position: SIMD4<Float>, rotationRaw: SIMD3<UInt16>, comRotationRaw: SIMD3<UInt16>,
+        childInstanceIDs: [UInt16], childPositionIDs: [UInt16], childPathIDs: [UInt16],
+        someNum1: Int32, someNum2: Int32, someNum3: Int32,
+        objectID: UInt16, refList: Int16, scriptID: Int16, remainingTailBytes: Data
+    ) {
+        self.id = id
+        self.position = position
+        self.rotationRaw = rotationRaw
+        self.comRotationRaw = comRotationRaw
+        self.childInstanceIDs = childInstanceIDs
+        self.childPositionIDs = childPositionIDs
+        self.childPathIDs = childPathIDs
+        self.someNum1 = someNum1
+        self.someNum2 = someNum2
+        self.someNum3 = someNum3
+        self.objectID = objectID
+        self.refList = refList
+        self.scriptID = scriptID
+        self.remainingTailBytes = remainingTailBytes
+    }
+}

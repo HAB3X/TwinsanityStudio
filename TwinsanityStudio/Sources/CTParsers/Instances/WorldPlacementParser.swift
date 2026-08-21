@@ -369,4 +369,138 @@ public enum WorldPlacementParser {
         }
         return values
     }
+
+    /// Decodes an `InstanceTemplate` record — ported field-for-field from
+    /// `Twinsanity/Items/Instances/InstanceTemplate.cs`.
+    public static func parseInstanceTemplate(_ cursor: inout BinaryCursor, recordID: UInt32) throws -> InstanceTemplateInfo {
+        let nameLen = Int(try cursor.readUInt32())
+        let name = try cursor.readASCIIString(length: nameLen)
+        let objectID = try cursor.readUInt16()
+        let bitfield = try cursor.readUInt16()
+        let headerInt1 = try cursor.readUInt32()
+        let headerInt2 = try cursor.readUInt32()
+        let headerInt3 = try cursor.readUInt32()
+        let unkShort: UInt16? = headerInt1 == 1 ? try cursor.readUInt16() : nil
+        let unkFlags = Array(try cursor.readBytes(6))
+        let properties = try cursor.readUInt32()
+        let flags = try readUInt32List(&cursor)
+        let floats = try readFloatList(&cursor)
+        let ints = try readUInt32List(&cursor)
+        return InstanceTemplateInfo(
+            id: recordID, name: name, objectID: objectID, bitfield: bitfield,
+            headerInt1: headerInt1, headerInt2: headerInt2, headerInt3: headerInt3, unkShort: unkShort,
+            unkFlags: unkFlags, properties: properties, flags: flags, floats: floats, ints: ints
+        )
+    }
+
+    /// Decodes an `InstanceTemplateDemo` record — ported field-for-field
+    /// from `Twinsanity/Items/Instances/InstanceTemplateDemo.cs`. Same
+    /// shape as retail except a 2-byte (not 6-byte) `unkFlags`, and the
+    /// three trailing lists share one packed byte-count header instead of
+    /// each carrying its own `Int32` count.
+    public static func parseInstanceTemplateDemo(_ cursor: inout BinaryCursor, recordID: UInt32) throws -> InstanceTemplateDemoInfo {
+        let nameLen = Int(try cursor.readUInt32())
+        let name = try cursor.readASCIIString(length: nameLen)
+        let objectID = try cursor.readUInt16()
+        let bitfield = try cursor.readUInt16()
+        let headerInt1 = try cursor.readUInt32()
+        let headerInt2 = try cursor.readUInt32()
+        let headerInt3 = try cursor.readUInt32()
+        let unkShort: UInt16? = headerInt1 == 1 ? try cursor.readUInt16() : nil
+        let unkFlags = Array(try cursor.readBytes(2))
+        let flagsCount = try cursor.readUInt8()
+        let floatsCount = try cursor.readUInt8()
+        let intsCount = try cursor.readUInt8()
+        _ = try cursor.readUInt8() // padding
+        let properties = try cursor.readUInt32()
+        var flags: [UInt32] = []
+        for _ in 0..<flagsCount { flags.append(try cursor.readUInt32()) }
+        var floats: [Float] = []
+        for _ in 0..<floatsCount { floats.append(try cursor.readFloat32()) }
+        var ints: [UInt32] = []
+        for _ in 0..<intsCount { ints.append(try cursor.readUInt32()) }
+        return InstanceTemplateDemoInfo(
+            id: recordID, name: name, objectID: objectID, bitfield: bitfield,
+            headerInt1: headerInt1, headerInt2: headerInt2, headerInt3: headerInt3, unkShort: unkShort,
+            unkFlags: unkFlags, properties: properties, flags: flags, floats: floats, ints: ints
+        )
+    }
+
+    /// Decodes the Demo build's `Instance` record — same transform/child-
+    /// ID-list header as retail (`parseInstance`), then a real layout
+    /// difference ported from `Twinsanity/Items/Instances/InstanceDemo.cs`:
+    /// `refList`/`scriptID` collapse into one `afterObjectID`, and the
+    /// three trailing lists share one packed byte-count header.
+    public static func parseInstanceDemo(_ cursor: inout BinaryCursor, recordID: UInt32) throws -> PlacedInstanceDemo {
+        let position = try cursor.readVector4()
+        let rotX = try cursor.readUInt16()
+        let comRotX = try cursor.readUInt16()
+        let rotY = try cursor.readUInt16()
+        let comRotY = try cursor.readUInt16()
+        let rotZ = try cursor.readUInt16()
+        let comRotZ = try cursor.readUInt16()
+
+        let (childInstanceIDs, someNum1) = try readCountedUInt16List(&cursor)
+        let (childPositionIDs, someNum2) = try readCountedUInt16List(&cursor)
+        let (childPathIDs, someNum3) = try readCountedUInt16List(&cursor)
+
+        let objectID = try cursor.readUInt16()
+        let afterObjectID = try cursor.readUInt32()
+
+        let flagsCount = try cursor.readUInt8()
+        let floatsCount = try cursor.readUInt8()
+        let intsCount = try cursor.readUInt8()
+        _ = try cursor.readUInt8() // padding
+        let flags = try cursor.readUInt32()
+        var unknownUInt32List: [UInt32] = []
+        for _ in 0..<flagsCount { unknownUInt32List.append(try cursor.readUInt32()) }
+        var unknownFloatList: [Float] = []
+        for _ in 0..<floatsCount { unknownFloatList.append(try cursor.readFloat32()) }
+        var unknownUInt32List2: [UInt32] = []
+        for _ in 0..<intsCount { unknownUInt32List2.append(try cursor.readUInt32()) }
+
+        return PlacedInstanceDemo(
+            id: recordID, position: position, rotationRaw: SIMD3(rotX, rotY, rotZ), comRotationRaw: SIMD3(comRotX, comRotY, comRotZ),
+            childInstanceIDs: childInstanceIDs, childPositionIDs: childPositionIDs, childPathIDs: childPathIDs,
+            someNum1: someNum1, someNum2: someNum2, someNum3: someNum3,
+            objectID: objectID, afterObjectID: afterObjectID, flags: flags,
+            unknownUInt32List: unknownUInt32List, unknownFloatList: unknownFloatList, unknownUInt32List2: unknownUInt32List2
+        )
+    }
+
+    /// Decodes the Monkey Ball build's `Instance` record — same header as
+    /// retail through `scriptID`, then a genuinely opaque tail preserved
+    /// verbatim for round-trip. Ported from
+    /// `Twinsanity/Items/Instances/InstanceMB.cs`, whose own `Load` does
+    /// the same (its attempt at decoding the tail is commented out in the
+    /// reference itself, not a gap unique to this port). `size` is the
+    /// record's own total byte length — needed to know how many tail bytes
+    /// remain after the decoded header.
+    public static func parseInstanceMB(_ cursor: inout BinaryCursor, recordID: UInt32, size: Int) throws -> PlacedInstanceMB {
+        let position = try cursor.readVector4()
+        let rotX = try cursor.readUInt16()
+        let comRotX = try cursor.readUInt16()
+        let rotY = try cursor.readUInt16()
+        let comRotY = try cursor.readUInt16()
+        let rotZ = try cursor.readUInt16()
+        let comRotZ = try cursor.readUInt16()
+
+        let (childInstanceIDs, someNum1) = try readCountedUInt16List(&cursor)
+        let (childPositionIDs, someNum2) = try readCountedUInt16List(&cursor)
+        let (childPathIDs, someNum3) = try readCountedUInt16List(&cursor)
+
+        let objectID = try cursor.readUInt16()
+        let refList = try cursor.readInt16()
+        let scriptID = try cursor.readInt16()
+
+        let remainingLength = max(0, size - cursor.position)
+        let remainingTailBytes = try cursor.readBytes(remainingLength)
+
+        return PlacedInstanceMB(
+            id: recordID, position: position, rotationRaw: SIMD3(rotX, rotY, rotZ), comRotationRaw: SIMD3(comRotX, comRotY, comRotZ),
+            childInstanceIDs: childInstanceIDs, childPositionIDs: childPositionIDs, childPathIDs: childPathIDs,
+            someNum1: someNum1, someNum2: someNum2, someNum3: someNum3,
+            objectID: objectID, refList: refList, scriptID: scriptID, remainingTailBytes: remainingTailBytes
+        )
+    }
 }

@@ -125,6 +125,14 @@ struct InspectorView: View {
                                 ParticleDataInspectorView(node: node, particleData: particleData)
                             case .script(let script):
                                 ScriptInspectorView(node: node, script: script)
+                            case .soundEffectX, .instanceTemplate, .instanceTemplateDemo, .instanceDemo, .instanceMB:
+                                // Real, decoded models (see `WorldPlacementAssets.swift`/
+                                // `SoundEffectAsset.swift`'s own doc comments) — no
+                                // dedicated editor UI yet, so these fall back to the
+                                // same raw/hex browsing every other record has, rather
+                                // than blocking on building bespoke inspector views for
+                                // formats this rare.
+                                RawInspectorView(node: node)
                             case .raw, .none:
                                 RawInspectorView(node: node)
                             }
@@ -169,7 +177,7 @@ struct InspectorView: View {
     private static func isCompositeEligible(_ payload: ChunkPayload?) -> Bool {
         switch payload {
         case .texture, .mesh, .material, .animation, .rigidModel, .skeleton: return true
-        case .position, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .gameObject, .chunkLinks, .aiPosition, .aiPath, .lodModel, .collisionSurface, .skydome, .path, .particleData, .script, .raw, .none: return false
+        case .position, .instance, .trigger, .camera, .collision, .scenery, .dynamicScenery, .soundEffect, .soundEffectX, .gameObject, .chunkLinks, .aiPosition, .aiPath, .lodModel, .collisionSurface, .skydome, .path, .particleData, .script, .raw, .instanceTemplate, .instanceTemplateDemo, .instanceDemo, .instanceMB, .none: return false
         }
     }
 

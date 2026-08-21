@@ -56,6 +56,18 @@ public enum ChunkPayload: Sendable {
     case scenery(SceneryAsset)
     case dynamicScenery(DynamicSceneryAsset)
     case soundEffect(SoundEffectAsset)
+    /// A Xbox `SoundEffectX` record — structurally decoded but not
+    /// PCM-decoded (no confirmed codec — see `SoundEffectXInfo`'s doc
+    /// comment). Distinct from `.soundEffect` since it isn't playable the
+    /// same way.
+    case soundEffectX(SoundEffectXInfo)
+    /// An `InstanceTemplate`/`InstanceTemplateDemo` record.
+    case instanceTemplate(InstanceTemplateInfo)
+    case instanceTemplateDemo(InstanceTemplateDemoInfo)
+    /// The Demo/Monkey Ball build's own `Instance` variant — see
+    /// `PlacedInstanceDemo`/`PlacedInstanceMB`'s own doc comments.
+    case instanceDemo(PlacedInstanceDemo)
+    case instanceMB(PlacedInstanceMB)
     /// "Chunk-Based Architecture": a `ChunkLinks` record — the real,
     /// decoded list of neighboring `.SM2`/`.RM2` chunk files this chunk
     /// streams in, plus the boundary geometry that triggers it. See
@@ -130,16 +142,18 @@ public enum ChunkPayload: Sendable {
         case .mesh, .rigidModel: return .model
         case .skeleton: return .skeleton
         case .animation: return .animation
-        case .instance: return .instance
+        case .instance, .instanceDemo, .instanceMB: return .instance
         case .trigger: return .trigger
         case .camera: return .camera
         case .collision: return .collision
-        case .soundEffect: return .soundEffect
+        case .soundEffect, .soundEffectX: return .soundEffect
         case .chunkLinks: return .chunkLinks
         case .aiPosition, .aiPath: return .aiWaypoint
         case .scenery, .dynamicScenery: return .scenery
         case .path: return .path
-        case .material, .position, .gameObject, .lodModel, .collisionSurface, .skydome, .particleData, .script, .raw: return nil
+        case .material, .position, .gameObject, .lodModel, .collisionSurface, .skydome, .particleData, .script, .raw,
+             .instanceTemplate, .instanceTemplateDemo:
+            return nil
         }
     }
 }

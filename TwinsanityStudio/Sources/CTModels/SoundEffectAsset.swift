@@ -46,3 +46,27 @@ public struct SoundEffectAsset: Sendable, Identifiable {
         sampleRateHz > 0 ? Double(pcmSamples.count) / Double(sampleRateHz) : 0
     }
 }
+
+/// A decoded `SoundEffectX` record (`SectionType.xboxSE`, Xbox-only) —
+/// structurally decoded (frequency, the real static Xbox WAV-container
+/// header fields, the raw sound bytes) but *not* PCM-decoded: unlike the
+/// PS2 `SoundEffect` family, the reference's own `SoundEffectX.cs` never
+/// documents `SoundData`'s codec, only its real container layout (`//
+/// Confirmed static` header blocks, `SoundData.Length + 4` framing).
+/// Claiming a specific codec here without that confirmation would be a
+/// guess this project's own discipline doesn't make elsewhere.
+public struct SoundEffectXInfo: Sendable, Identifiable {
+    public let id: UInt32
+    public var frequencyHz: UInt16
+    /// `UnkInt` in the reference — "sometimes SoundSize again, sometimes
+    /// 0, sometimes negative," per `SoundEffectX.cs`'s own comment.
+    public var unknownInt: Int32
+    public var soundData: Data
+
+    public init(id: UInt32, frequencyHz: UInt16, unknownInt: Int32, soundData: Data) {
+        self.id = id
+        self.frequencyHz = frequencyHz
+        self.unknownInt = unknownInt
+        self.soundData = soundData
+    }
+}

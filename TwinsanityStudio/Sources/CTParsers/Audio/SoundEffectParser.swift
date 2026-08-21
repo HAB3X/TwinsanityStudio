@@ -72,4 +72,69 @@ public enum SoundEffectParser {
         let byteRange = extraDataAbsoluteFileOffset.map { (offset: $0 + start, length: length) }
         return SoundEffectAsset(id: record.recordID, sampleRateHz: freq, pcmSamples: pcm, sourceAudioByteRange: byteRange)
     }
+
+    /// The Monkey Ball build's `SoundEffect` (`SoundEffectMB.cs`,
+    /// `SectionType.mbSE`) — a distinct, simpler 16-byte header
+    /// (`Head`(4) + `FreqReal`(4) + `SoundSize`(4) + `SoundOffset`(4))
+    /// sharing the same enclosing-section "extra data" audio-storage
+    /// scheme as retail. Unlike retail's `FreqFac` byte code, `FreqReal`
+    /// is already the real sample rate directly, no lookup table.
+    public struct RawRecordMB: Sendable {
+        public var recordID: UInt32
+        public var frequencyHz: UInt16
+        public var soundSize: UInt32
+        public var soundOffset: UInt32
+    }
+
+    public static func parseHeaderMB(_ cursor: inout BinaryCursor, recordID: UInt32) throws -> RawRecordMB {
+        _ = try cursor.readUInt32() // Head
+        let frequencyHz = UInt16(truncatingIfNeeded: try cursor.readUInt32()) // FreqReal
+        let soundSize = try cursor.readUInt32()
+        let soundOffset = try cursor.readUInt32()
+        return RawRecordMB(recordID: recordID, frequencyHz: frequencyHz, soundSize: soundSize, soundOffset: soundOffset)
+    }
+
+    /// Same real slice-and-decode as `resolve(_:extraData:...)` — `SoundEffectMB`
+    /// inherits `SoundEffect` in the reference (`class SoundEffectMB :
+    /// SoundEffect`) and only overrides the header fields, not the audio
+    /// codec, so the same real `ADPCMDecoder` this project already ported
+    /// for retail applies here too.
+    public static func resolveMB(_ record: RawRecordMB, extraData: Data, extraDataAbsoluteFileOffset: Int? = nil) -> SoundEffectAsset? {
+        let start = Int(record.soundOffset)
+        let length = Int(record.soundSize)
+        guard start >= 0, length >= 0, start + length <= extraData.count else { return nil }
+        let soundBytes = extraData.subdata(in: (extraData.startIndex + start)..<(extraData.startIndex + start + length))
+        let pcm = ADPCMDecoder.toPCMMono(soundBytes)
+        let byteRange = extraDataAbsoluteFileOffset.map { (offset: $0 + start, length: length) }
+        return SoundEffectAsset(id: record.recordID, sampleRateHz: record.frequencyHz, pcmSamples: pcm, sourceAudioByteRange: byteRange)
+    }
+}
+
+/// Decodes a `SoundEffectX` record (`SoundEffectX.cs`, Xbox-only,
+/// `SectionType.xboxSE`) — self-contained (the real sound bytes are
+/// embedded directly in the record, not indexed into a shared "extra
+/// data" blob the way every PS2 `.se`-family record is), so this is a
+/// single-pass decode, not the header-then-resolve split
+/// `SoundEffectParser` needs.
+public enum SoundEffectXParser {
+    /// Real, confirmed-static header blocks from `SoundEffectX.cs` —
+    /// consumed here (not modeled field-by-field) since the reference
+    /// itself never assigns them individual meaning beyond "confirmed
+    /// static."
+    private static let headerStatic1ByteCount = 20
+    private static let headerStatic2ByteCount = 28
+
+    public static func parse(_ cursor: inout BinaryCursor, recordID: UInt32) throws -> SoundEffectXInfo {
+        _ = try cursor.readUInt32() // Confirmed always 3
+        let frequencyHz = UInt16(truncatingIfNeeded: try cursor.readUInt32())
+        _ = try cursor.readBytes(headerStatic1ByteCount + headerStatic2ByteCount + 8) // HeaderStatic1, Freq again, Freq*2, HeaderStatic2
+        let soundSize = Int(try cursor.readInt32()) - 4
+        let unknownInt = try cursor.readInt32()
+        guard soundSize >= 0 else {
+            throw BinaryCursorError.outOfBounds(requested: soundSize, position: cursor.position, available: 0)
+        }
+        let soundData = try cursor.readBytes(soundSize)
+        _ = try cursor.readBytes(8) // SoundSize again, then zero
+        return SoundEffectXInfo(id: recordID, frequencyHz: frequencyHz, unknownInt: unknownInt, soundData: soundData)
+    }
 }
