@@ -289,7 +289,7 @@ struct ModelViewerWindow: View {
             if let skeleton = asset.skeleton {
                 LabeledContent("Joints", value: "\(skeleton.joints.count)")
             }
-            Toggle("Show Skeleton Overlay (experimental)", isOn: $showSkeletonOverlay)
+            Toggle("Show Skeleton Overlay".tagged(.experimental), isOn: $showSkeletonOverlay)
                 .toggleStyle(.checkbox)
             Text("Bind-pose joint positions are a best-effort visualization — the exact matrix layout isn't fully confirmed. Select an animation below to see an experimental (illustrative, not verified-accurate) animated pose instead.")
                 .font(.caption2)

@@ -26,7 +26,7 @@ struct LodModelInspectorView: View {
                     LabeledContent("LOD \(index)", value: String(format: "#%X", id))
                 }
             }
-            Section("LOD Distances (round-tripped, units unverified)") {
+            Section("LOD Distances".tagged(.custom("round-tripped, units unverified"))) {
                 ForEach(Array(lodModel.lodDistances.enumerated()), id: \.offset) { index, d in
                     LabeledContent("Slot \(index)", value: "\(d)")
                 }

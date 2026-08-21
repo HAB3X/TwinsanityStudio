@@ -321,7 +321,7 @@ struct GameObjectEditorSheet: View {
     private var aiBehaviorExperimentalSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Divider()
-            Text("AI Behavior (experimental, unconfirmed)").font(.caption.bold())
+            Text("AI Behavior".tagged(.experimentalUnconfirmed)).font(.caption.bold())
             Text("No reference source maps any index of Instance Floats/Integers to a specific gameplay meaning — these four fields just relabel chosen slots of the real lists above for convenience. Editing here edits the exact same underlying data as the raw list editors; the labels themselves are this build's own guess, not verified.")
                 .font(.caption2)
                 .foregroundStyle(.orange)
@@ -333,7 +333,7 @@ struct GameObjectEditorSheet: View {
     }
 
     private func experimentalFloatSlotField(label: String, index: Int) -> some View {
-        LabeledContent("\(label) (Floats[\(index)], unconfirmed)") {
+        LabeledContent(label.tagged(.custom("Floats[\(index)], unconfirmed"))) {
             TextField("value", text: Binding(
                 get: {
                     let floats = editableObject.instanceProperties?.floats ?? []
@@ -354,7 +354,7 @@ struct GameObjectEditorSheet: View {
     }
 
     private func experimentalIntegerSlotField(label: String, index: Int) -> some View {
-        LabeledContent("\(label) (Integers[\(index)], unconfirmed)") {
+        LabeledContent(label.tagged(.custom("Integers[\(index)], unconfirmed"))) {
             TextField("value", text: Binding(
                 get: {
                     let integers = editableObject.instanceProperties?.integers ?? []

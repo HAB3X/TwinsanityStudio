@@ -79,12 +79,12 @@ struct CollisionSurfaceEditorSheet: View {
                     }
                     LabeledContent("Surface ID") { TextField("value", text: $surfaceID).textFieldStyle(.roundedBorder) }
                 }
-                Section("Collision Behavior (experimental, unconfirmed)") {
+                Section("Collision Behavior".tagged(.experimentalUnconfirmed)) {
                     Text("No reference source names any bit of this record's Flags field — the reference tool itself only ever prints it as one raw hex value. These four toggles probe specific bit positions this build chose arbitrarily for experimentation; none of them are confirmed to have this (or any) effect in-game. Toggle, save an edited copy, and test in-emulator to find out.")
                         .font(.caption2)
                         .foregroundStyle(.orange)
                     ForEach(CollisionSurfaceInfo.ExperimentalFlagBit.allCases, id: \.self) { bit in
-                        Toggle("\(bit.label) (bit \(bit.rawValue), unconfirmed)", isOn: Binding(
+                        Toggle(bit.label.tagged(.custom("bit \(bit.rawValue), unconfirmed")), isOn: Binding(
                             get: { (flagsValue >> UInt32(bit.rawValue)) & 1 != 0 },
                             set: { newValue in
                                 if newValue { flagsValue |= (1 << UInt32(bit.rawValue)) } else { flagsValue &= ~(1 << UInt32(bit.rawValue)) }

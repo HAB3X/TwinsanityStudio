@@ -292,7 +292,7 @@ struct InstanceInspectorView: View {
                 Section("Referenced Paths") {
                     idListField($childPathIDsText)
                 }
-                Section("Undocumented Lists (real data, no confirmed meaning)") {
+                Section("Undocumented Lists".tagged(.custom("real data, no confirmed meaning"))) {
                     LabeledContent("UInt32 List") { TextField("comma-separated", text: $unknownUInt32ListText).textFieldStyle(.roundedBorder) }
                     LabeledContent("Float List") { TextField("comma-separated", text: $unknownFloatListText).textFieldStyle(.roundedBorder) }
                     LabeledContent("UInt32 List 2") { TextField("comma-separated", text: $unknownUInt32List2Text).textFieldStyle(.roundedBorder) }
