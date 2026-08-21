@@ -207,6 +207,15 @@ struct LevelViewerWindow: View {
 
     @State private var renderer: LevelViewerRenderer?
     @State private var selectedIndex: Int?
+    /// "Align & Distribute" (`SpatialAlignmentTool`): a second, additive
+    /// selection set purely for the batch position tools below, kept
+    /// deliberately separate from `selectedIndex` (the single-object gizmo/
+    /// inspector selection this app otherwise has everywhere) rather than
+    /// generalizing the whole app to multi-select — that's real scope this
+    /// task didn't ask for. Populated by ⌘-click in the Objects list
+    /// (`toggleAlignmentSelection`); cleared on delete/duplicate, since
+    /// either can shift every index after the changed one.
+    @State private var alignmentSelection: Set<Int> = []
     /// "Collapsible Sidebar Sections" (QoL): every list-heavy panel below
     /// starts collapsed — a real level's object count runs into the
     /// hundreds, and previously there was no way to reach the panels
@@ -1690,6 +1699,11 @@ struct LevelViewerWindow: View {
     private func deleteSelected() {
         guard let renderer, let index = selectedIndex, let snapshot = renderer.deleteObject(at: index) else { return }
         selectedIndex = nil
+        // Removing an object shifts every later index down by one --
+        // `alignmentSelection` has no way to know which of its members
+        // just became stale, so drop the whole picked set rather than risk
+        // Align/Distribute silently operating on the wrong objects next.
+        alignmentSelection.removeAll()
         refreshTransformFields()
         guard let undoManager else { return }
         undoManager.setActionName("Delete Object")
@@ -1906,13 +1920,18 @@ struct LevelViewerWindow: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+            alignDistributeControls
             ForEach(filteredSummaries, id: \.index) { summary in
                 Button {
-                    select(summary.index)
+                    if NSEvent.modifierFlags.contains(.command) {
+                        toggleAlignmentSelection(summary.index)
+                    } else {
+                        select(summary.index)
+                    }
                 } label: {
                     HStack {
-                        Image(systemName: "cube.fill")
-                            .foregroundStyle(selectedIndex == summary.index ? Color.accentColor : Color.secondary)
+                        Image(systemName: alignmentSelection.contains(summary.index) ? "checkmark.square.fill" : "cube.fill")
+                            .foregroundStyle(alignmentSelection.contains(summary.index) ? Color.accentColor : (selectedIndex == summary.index ? Color.accentColor : Color.secondary))
                         Text(summary.displayName)
                             .lineLimit(1)
                             .font(.caption)
@@ -1922,6 +1941,7 @@ struct LevelViewerWindow: View {
                     .background(selectedIndex == summary.index ? Color.accentColor.opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
                 }
                 .buttonStyle(.plain)
+                .help("Click to select. ⌘-click to add/remove from the Align/Distribute selection below.")
             }
         } label: {
             Text("Objects (\(renderer?.objectCount ?? 0))").font(.headline)
@@ -1932,6 +1952,134 @@ struct LevelViewerWindow: View {
         selectedIndex = index
         renderer?.select(index: index)
         refreshTransformFields()
+    }
+
+    private func toggleAlignmentSelection(_ index: Int) {
+        if alignmentSelection.contains(index) {
+            alignmentSelection.remove(index)
+        } else {
+            alignmentSelection.insert(index)
+        }
+    }
+
+    /// "Align & Distribute": only shown once ⌘-click has picked at least
+    /// two objects — with fewer than two there's nothing for either tool
+    /// to do (`SpatialAlignmentTool.align`/`distribute` both no-op on a
+    /// single item). Currently-eligible count (Instance/Actor layer only —
+    /// see `applyAlignmentBatch`'s own doc comment for why) is shown
+    /// alongside the raw picked count so ⌘-clicking a Trigger/Camera by
+    /// mistake reads as "picked but not eligible," not silently ignored.
+    @ViewBuilder
+    private var alignDistributeControls: some View {
+        if !alignmentSelection.isEmpty {
+            let eligibleCount = eligibleAlignmentTargets().count
+            HStack {
+                Text("\(alignmentSelection.count) picked (\(eligibleCount) eligible)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Menu("Align") {
+                    ForEach(SpatialAlignmentTool.Axis.allCases, id: \.self) { axis in
+                        Menu(axisLabel(axis)) {
+                            ForEach(SpatialAlignmentTool.AlignMode.allCases, id: \.self) { mode in
+                                Button(alignModeLabel(mode)) { applyAlignment(axis: axis, mode: mode) }
+                            }
+                        }
+                    }
+                }
+                .disabled(eligibleCount < 2)
+                Menu("Distribute") {
+                    ForEach(SpatialAlignmentTool.Axis.allCases, id: \.self) { axis in
+                        Button(axisLabel(axis)) { applyDistribution(axis: axis) }
+                    }
+                }
+                .disabled(eligibleCount < 2)
+                Button {
+                    alignmentSelection.removeAll()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .help("Clear the Align/Distribute selection.")
+            }
+            .menuStyle(.button)
+            .controlSize(.small)
+        }
+    }
+
+    private func axisLabel(_ axis: SpatialAlignmentTool.Axis) -> String {
+        switch axis {
+        case .x: return "X"
+        case .y: return "Y"
+        case .z: return "Z"
+        }
+    }
+
+    private func alignModeLabel(_ mode: SpatialAlignmentTool.AlignMode) -> String {
+        switch mode {
+        case .min: return "Min"
+        case .max: return "Max"
+        case .center: return "Center"
+        }
+    }
+
+    /// Only `.actors` (Instance) objects — the one layer with a confirmed
+    /// live write-back path all the way to disk (`LevelViewerRenderer.
+    /// pendingLevelOverrides` -> `WorldPlacementWriter.writeInstanceTransform`
+    /// -> "Save Chunk Overrides…"/"Quick Launch…"). Triggers/Cameras have
+    /// their own separate, inspector-driven position save
+    /// (`TriggerInspectorView`/`CameraInspectorView`'s own "Save Edited
+    /// Copy…") that doesn't read from this renderer's live `worldPosition`
+    /// list, so folding them into this batch edit would move them on
+    /// screen without persisting it — same reasoning
+    /// `pendingLevelOverrides`'s own doc comment already gives for why it's
+    /// `.actors`-only.
+    private func eligibleAlignmentTargets() -> [(index: Int, position: SIMD3<Float>)] {
+        guard let renderer else { return [] }
+        let summaries = renderer.objectSummaries
+        return alignmentSelection.sorted().compactMap { index in
+            guard summaries.indices.contains(index), summaries[index].layer == .actors else { return nil }
+            return (index: index, position: summaries[index].worldPosition)
+        }
+    }
+
+    private func applyAlignment(axis: SpatialAlignmentTool.Axis, mode: SpatialAlignmentTool.AlignMode) {
+        applyAlignmentBatch(actionName: "Align") { SpatialAlignmentTool.align($0, axis: axis, mode: mode) }
+    }
+
+    private func applyDistribution(axis: SpatialAlignmentTool.Axis) {
+        applyAlignmentBatch(actionName: "Distribute") { SpatialAlignmentTool.distribute($0, axis: axis) }
+    }
+
+    /// Shared apply path for both Align and Distribute: reads every
+    /// eligible picked object's current position, runs `compute` (the pure
+    /// `SpatialAlignmentTool` call), writes the results back through
+    /// `LevelViewerRenderer.setPositions` (the same "nothing hits disk
+    /// until Save" live-edit path a gizmo drag or nudge-field edit already
+    /// uses), and registers one recursive undo/redo step — same shape as
+    /// `registerTransformUndo`, just batched over several indices instead
+    /// of one.
+    private func applyAlignmentBatch(actionName: String, _ compute: ([SIMD3<Float>]) -> [SIMD3<Float>]) {
+        guard let renderer, let undoManager else { return }
+        let targets = eligibleAlignmentTargets()
+        guard targets.count >= 2 else { return }
+        let before = targets.map { (index: $0.index, position: $0.position) }
+        let newPositions = compute(targets.map(\.position))
+        let after = zip(targets, newPositions).map { (index: $0.0.index, position: $0.1) }
+        renderer.setPositions(after)
+        undoManager.setActionName(actionName)
+        Self.registerAlignmentUndo(undoManager: undoManager, renderer: renderer, restoreTo: before, thenRedoTo: after)
+        refreshTransformFields()
+    }
+
+    private static func registerAlignmentUndo(undoManager: UndoManager, renderer: LevelViewerRenderer, restoreTo: [(index: Int, position: SIMD3<Float>)], thenRedoTo: [(index: Int, position: SIMD3<Float>)]) {
+        undoManager.registerUndo(withTarget: renderer) { target in
+            target.setPositions(restoreTo)
+            undoManager.registerUndo(withTarget: target) { redoTarget in
+                redoTarget.setPositions(thenRedoTo)
+                registerAlignmentUndo(undoManager: undoManager, renderer: redoTarget, restoreTo: restoreTo, thenRedoTo: thenRedoTo)
+            }
+        }
     }
 
     private func currentSnapshot() -> TransformSnapshot? {
@@ -2168,6 +2316,9 @@ struct LevelViewerWindow: View {
     private func duplicateSelected() {
         guard let renderer, let newIndex = renderer.duplicateSelectedObject() else { return }
         selectedIndex = newIndex
+        // Same reasoning as `deleteSelected` -- an insertion can shift
+        // later indices, so drop the stale picked set rather than risk it.
+        alignmentSelection.removeAll()
         refreshTransformFields()
         guard let undoManager else { return }
         undoManager.setActionName("Duplicate Object")

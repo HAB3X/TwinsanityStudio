@@ -2452,10 +2452,12 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
 
     /// Backs the Level Viewer sidebar's object list and the coordinate
     /// nudge fields — index-paired with the internal `objects` array so
-    /// `select(index:)`/`setSelectedPosition(to:)` can address the same
-    /// entries directly.
-    var objectSummaries: [(index: Int, displayName: String, worldPosition: SIMD3<Float>)] {
-        objects.enumerated().map { ($0.offset, $0.element.displayName, $0.element.worldPosition) }
+    /// `select(index:)`/`setSelectedPosition(to:)`/`setPositions(_:)` can
+    /// address the same entries directly. `layer` lets the sidebar (e.g.
+    /// the Align/Distribute selection) tell an Instance apart from a
+    /// Trigger/Camera/waypoint without reaching into `objects` itself.
+    var objectSummaries: [(index: Int, displayName: String, worldPosition: SIMD3<Float>, layer: SceneLayer)] {
+        objects.enumerated().map { ($0.offset, $0.element.displayName, $0.element.worldPosition, $0.element.layer) }
     }
 
     var selectedPosition: SIMD3<Float>? {
@@ -2520,6 +2522,22 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     func setSelectedPosition(to newPosition: SIMD3<Float>) {
         guard let selectedObjectIndex, objects.indices.contains(selectedObjectIndex) else { return }
         objects[selectedObjectIndex].worldPosition = newPosition
+        rebuildGizmoBuffer()
+        rebuildSelectionBuffer()
+    }
+
+    /// "Align & Distribute" (`SpatialAlignmentTool`'s real write-back path):
+    /// sets several objects' `worldPosition` in one pass, unlike
+    /// `setSelectedPosition` which only ever touches `selectedObjectIndex`.
+    /// Rebuilds the shared GPU buffers once for the whole batch rather than
+    /// once per object. Silently skips any index outside `objects.indices`
+    /// (defensive only — callers build `updates` from this renderer's own
+    /// live `objectSummaries`, so a stale index shouldn't occur in
+    /// practice).
+    func setPositions(_ updates: [(index: Int, position: SIMD3<Float>)]) {
+        for update in updates where objects.indices.contains(update.index) {
+            objects[update.index].worldPosition = update.position
+        }
         rebuildGizmoBuffer()
         rebuildSelectionBuffer()
     }
