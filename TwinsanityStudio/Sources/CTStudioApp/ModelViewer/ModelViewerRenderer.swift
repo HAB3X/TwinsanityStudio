@@ -1882,6 +1882,18 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
     /// AI-waypoints).
     private var nextSyntheticTriggerID: UInt32 = 1
     private var nextSyntheticCameraID: UInt32 = 1
+    /// Same idea as `nextSyntheticTriggerID`/`nextSyntheticCameraID`, for
+    /// `AIPathRecord`s added this session. Unlike every other placeable
+    /// type here, `AIPathRecord` has no spatial position of its own (just
+    /// `id` + 5 raw `UInt16` args — see its own doc comment), so it can
+    /// never be a `GPULevelObject` and can't ride `objects`/`canDelete`/
+    /// `deleteObject` the way Instance/Trigger/Camera/AIWaypoint do.
+    /// Tracked as its own small pair of arrays instead, mirrored into the
+    /// save pipeline the same way (`pendingNewAIPaths`/
+    /// `pendingRemovedAIPathIDs`).
+    private var nextSyntheticAIPathID: UInt32 = 1
+    private(set) var newAIPaths: [(id: UInt32, args: [UInt16])] = []
+    private(set) var removedAIPathIDs: Set<UInt32> = []
     /// Whether the destination `.camera` collection is the Demo layout —
     /// `WorldPlacementWriter.writeNewCamera(isDemo:)` needs to match it
     /// (`Camera.cs`'s own `ParentType == SectionType.CameraDemo` check
@@ -1903,6 +1915,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         cameras: [(node: ChunkNode, camera: PlacedCamera)] = [],
         chunkLinks: [(node: ChunkNode, link: ChunkLink)] = [],
         aiPositions: [(node: ChunkNode, marker: AIPositionMarker)] = [],
+        aiPaths: [(node: ChunkNode, path: AIPathRecord)] = [],
         collisionMeshes: [CollisionMesh] = [],
         isDemoCameraCollection: Bool = false
     ) {
@@ -1912,6 +1925,7 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
         self.defaultAssetIndex = defaultAssetIndex
         self.isDemoCameraCollection = isDemoCameraCollection
         super.init()
+        nextSyntheticAIPathID = (aiPaths.map(\.path.id).max() ?? 0) + 1
         nextSyntheticInstanceID = (instanceMarkers.map(\.instance.id).max() ?? 0) + 1
         nextSyntheticAIPositionID = (aiPositions.map(\.marker.id).max() ?? 0) + 1
         nextSyntheticTriggerID = (triggers.map(\.trigger.id).max() ?? 0) + 1
@@ -3225,6 +3239,57 @@ final class LevelViewerRenderer: NSObject, MTKViewDelegate {
             return (syntheticID, encoded)
         }
     }
+
+    /// Adds a new `AIPathRecord` to this session (not written to disk
+    /// until save) — `args` defaults to a plausible-shaped record (a
+    /// start/end waypoint pair of 0/1, matching whatever the reference
+    /// tool's own `AIPathEditor` would show as the first two real
+    /// `AIPosition` IDs in a level; the caller/UI is expected to let the
+    /// user actually pick real waypoint IDs afterward via the same edit
+    /// form `AIPathInspectorView` already has). `explicitID` lets undo's
+    /// redo step re-add a path under its *original* synthetic ID rather
+    /// than minting a new one, keeping undo/redo symmetric — see
+    /// `LevelViewerWindow.registerAIPathAddUndo`.
+    @discardableResult
+    func addAIPath(args: [UInt16] = [0, 1, 0, 0, 0], explicitID: UInt32? = nil) -> UInt32 {
+        let id = explicitID ?? nextSyntheticAIPathID
+        if explicitID == nil { nextSyntheticAIPathID += 1 }
+        newAIPaths.append((id, args))
+        return id
+    }
+
+    /// Removes an AI Path from this session's effective set — a
+    /// session-added one (from `addAIPath`) is dropped outright; a real,
+    /// on-disk one is marked removed (its bytes are dropped from the
+    /// section at save time via `pendingRemovedAIPathIDs`). Either way,
+    /// `id`'s original `args` aren't needed here to undo the removal
+    /// (unlike a `GPULevelObject` delete, which snapshots position/
+    /// rotation/scale) — the caller already knows them, since AIPath has
+    /// no live 3D state this renderer tracks independently.
+    func removeAIPath(id: UInt32) {
+        if let index = newAIPaths.firstIndex(where: { $0.id == id }) {
+            newAIPaths.remove(at: index)
+        } else {
+            removedAIPathIDs.insert(id)
+        }
+    }
+
+    /// Undoes `removeAIPath(id:)` for a *real*, on-disk path (one that was
+    /// never in `newAIPaths` to begin with) — just un-marks it removed;
+    /// the original record data still lives in the level's own file/
+    /// context, this renderer never needed to snapshot it.
+    func restoreAIPath(id: UInt32) {
+        removedAIPathIDs.remove(id)
+    }
+
+    /// Every `AIPathRecord` added this session, ready to hand to
+    /// `WorkspaceViewModel.patchedFileBytes(insertingNewAIPaths:
+    /// removingAIPathIDs:levelNode:)` — the AI-path counterpart to
+    /// `pendingNewAIPositions`.
+    var pendingNewAIPaths: [(id: UInt32, encoded: Data)] {
+        newAIPaths.map { ($0.id, WorldPlacementWriter.writeAIPath($0.args)) }
+    }
+    var pendingRemovedAIPathIDs: [UInt32] { Array(removedAIPathIDs) }
 
     /// Unprojects a screen point through the inverse view-projection at two
     /// depths (Metal NDC `z = 0`/near and `z = 1`/far — see `Frustum`'s own

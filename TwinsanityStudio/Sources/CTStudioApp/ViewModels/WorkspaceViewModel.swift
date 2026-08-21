@@ -3083,10 +3083,12 @@ public final class WorkspaceViewModel {
         insertingNewAIPositions newAIPositions: [(id: UInt32, encoded: Data)],
         insertingNewTriggers newTriggers: [(id: UInt32, encoded: Data)] = [],
         insertingNewCameras newCameras: [(id: UInt32, encoded: Data)] = [],
+        insertingNewAIPaths newAIPaths: [(id: UInt32, encoded: Data)] = [],
         removingInstanceIDs: [UInt32] = [],
         removingTriggerIDs: [UInt32] = [],
         removingCameraIDs: [UInt32] = [],
         removingAIPositionIDs: [UInt32] = [],
+        removingAIPathIDs: [UInt32] = [],
         levelNode: ChunkNode
     ) -> Data? {
         guard let fileRoot = findFileRoot(containing: levelNode, in: rootNodes) else {
@@ -3115,8 +3117,8 @@ public final class WorkspaceViewModel {
             currentBytes = afterControlPointEdits
         }
 
-        let hasInsertions = !newInstances.isEmpty || !newAIPositions.isEmpty || !newTriggers.isEmpty || !newCameras.isEmpty
-        let hasRemovals = !removingInstanceIDs.isEmpty || !removingTriggerIDs.isEmpty || !removingCameraIDs.isEmpty || !removingAIPositionIDs.isEmpty
+        let hasInsertions = !newInstances.isEmpty || !newAIPositions.isEmpty || !newTriggers.isEmpty || !newCameras.isEmpty || !newAIPaths.isEmpty
+        let hasRemovals = !removingInstanceIDs.isEmpty || !removingTriggerIDs.isEmpty || !removingCameraIDs.isEmpty || !removingAIPositionIDs.isEmpty || !removingAIPathIDs.isEmpty
         guard hasInsertions || hasRemovals else { return currentBytes }
 
         // Every insertion *and* removal goes through the *one* multi-target
@@ -3156,6 +3158,13 @@ public final class WorkspaceViewModel {
                 return nil
             }
             targets.append((collection.node, newCameras, removingCameraIDs))
+        }
+        if !newAIPaths.isEmpty || !removingAIPathIDs.isEmpty {
+            guard let collectionNode = aiPathCollectionNode(inSameFileAs: levelNode) else {
+                lastError = "Can't add or remove AI paths here — this chunk's file has no existing AIPath collection."
+                return nil
+            }
+            targets.append((collectionNode, newAIPaths, removingAIPathIDs))
         }
 
         guard let result = ChunkSectionInserter.applyingRecordChanges(intoSections: targets, fileRoot: fileRoot, originalFileBytes: currentBytes) else {

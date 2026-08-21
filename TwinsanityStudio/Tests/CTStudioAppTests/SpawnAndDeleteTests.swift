@@ -26,6 +26,90 @@ final class SpawnAndDeleteTests: XCTestCase {
         XCTAssertEqual(worldPosition, SIMD3<Float>(3, 0, 4))
     }
 
+    // MARK: - AI Path (Level Viewer live session)
+
+    /// `AIPathRecord` has no spatial position of its own (see its own doc
+    /// comment) and isn't a `GPULevelObject`, so it can't ride
+    /// `spawnTrigger`/`spawnCamera`'s index-based create/select/delete --
+    /// this exercises its own separate `addAIPath`/`removeAIPath`/
+    /// `restoreAIPath` pair.
+    func testAddAIPathAddsARealPendingPath() throws {
+        let renderer = try makeRenderer()
+        let id = renderer.addAIPath()
+        XCTAssertEqual(renderer.newAIPaths.map(\.id), [id])
+        XCTAssertEqual(renderer.newAIPaths.first?.args, [0, 1, 0, 0, 0], "default args should be a plausible start/end waypoint pair")
+    }
+
+    func testAddAIPathUsesItsOwnIndependentSyntheticIDNamespace() throws {
+        let renderer = try makeRenderer()
+        let trigger = try XCTUnwrap(renderer.spawnTrigger())
+        let pathID = renderer.addAIPath()
+        // Trigger IDs and AIPath IDs are independent namespaces -- both
+        // legitimately start at 1, so this only checks each is tracked in
+        // its own place, not that the numeric values themselves differ.
+        XCTAssertNotNil(renderer.newTriggerInfo(at: trigger))
+        XCTAssertTrue(renderer.newAIPaths.contains { $0.id == pathID })
+    }
+
+    func testDuplicateAIPathAddsASecondPathWithTheSameArgs() throws {
+        let renderer = try makeRenderer()
+        let original = renderer.addAIPath(args: [2, 5, 9, 0, 1])
+        let duplicate = renderer.addAIPath(args: [2, 5, 9, 0, 1])
+        XCTAssertNotEqual(original, duplicate, "a duplicate must get its own real, distinct ID")
+        XCTAssertEqual(renderer.newAIPaths.count, 2)
+        XCTAssertEqual(renderer.newAIPaths.map(\.args), [[2, 5, 9, 0, 1], [2, 5, 9, 0, 1]])
+    }
+
+    func testRemoveAIPathDropsASessionAddedPathEntirely() throws {
+        let renderer = try makeRenderer()
+        let id = renderer.addAIPath()
+        renderer.removeAIPath(id: id)
+        XCTAssertTrue(renderer.newAIPaths.isEmpty, "a session-added path that's removed again shouldn't be tracked as removed real data -- it just never existed")
+        XCTAssertTrue(renderer.pendingRemovedAIPathIDs.isEmpty)
+    }
+
+    func testRemoveAIPathMarksARealIDAsRemovedWithoutTouchingNewAIPaths() throws {
+        let renderer = try makeRenderer()
+        renderer.removeAIPath(id: 42) // a real, on-disk ID this session never added
+        XCTAssertEqual(renderer.pendingRemovedAIPathIDs, [42])
+        XCTAssertTrue(renderer.newAIPaths.isEmpty)
+    }
+
+    func testRestoreAIPathUndoesRemovalOfARealID() throws {
+        let renderer = try makeRenderer()
+        renderer.removeAIPath(id: 7)
+        XCTAssertEqual(renderer.pendingRemovedAIPathIDs, [7])
+        renderer.restoreAIPath(id: 7)
+        XCTAssertTrue(renderer.pendingRemovedAIPathIDs.isEmpty)
+    }
+
+    /// `explicitID` is what keeps undo/redo symmetric (`LevelViewerWindow
+    /// .registerAIPathAddUndo`'s redo step re-adds under the *original*
+    /// ID rather than minting a new one) -- verified directly here rather
+    /// than only through the UI-level undo wiring.
+    func testAddAIPathWithExplicitIDReusesThatIDInsteadOfMintingANewOne() throws {
+        let renderer = try makeRenderer()
+        let firstID = renderer.addAIPath() // consumes the synthetic counter once
+        renderer.removeAIPath(id: firstID)
+        let redoneID = renderer.addAIPath(args: [1, 2, 3, 4, 5], explicitID: firstID)
+        XCTAssertEqual(redoneID, firstID)
+        XCTAssertEqual(renderer.newAIPaths.first?.args, [1, 2, 3, 4, 5])
+    }
+
+    /// `pendingNewAIPaths`' encoded bytes must be exactly what
+    /// `AINavigationParser.parseAIPath` reads back -- the same real
+    /// encode/decode round-trip every other pending-record test in this
+    /// file checks for Trigger/Camera.
+    func testPendingNewAIPathsEncodeAndReparseToTheSameArgs() throws {
+        let renderer = try makeRenderer()
+        let id = renderer.addAIPath(args: [3, 8, 100, 65535, 0])
+        let pending = try XCTUnwrap(renderer.pendingNewAIPaths.first { $0.id == id })
+        var cursor = BinaryCursor(data: pending.encoded)
+        let reparsed = try AINavigationParser.parseAIPath(&cursor, recordID: id)
+        XCTAssertEqual(reparsed.args, [3, 8, 100, 65535, 0])
+        XCTAssertEqual(cursor.position, pending.encoded.count, "writeAIPath's 10 bytes must be exactly what parseAIPath consumes, nothing more")
+    }
+
     func testSpawnCameraAddsARealSelectableCamera() throws {
         let renderer = try makeRenderer()
         let index = try XCTUnwrap(renderer.spawnCamera(at: SIMD3<Float>(1, 2, 3)))

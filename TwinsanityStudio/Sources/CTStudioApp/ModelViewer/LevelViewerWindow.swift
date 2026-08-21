@@ -343,6 +343,7 @@ struct LevelViewerWindow: View {
                 cameras: context.cameras,
                 chunkLinks: context.chunkLinks,
                 aiPositions: context.aiPositions,
+                aiPaths: context.aiPaths,
                 collisionMeshes: context.collisionMeshes.map(\.mesh),
                 isDemoCameraCollection: isDemoCameraCollection
             )
@@ -1655,18 +1656,120 @@ struct LevelViewerWindow: View {
     /// `AIPathRecord`'s doc comment), so a factual list rather than a
     /// scene-layer overlay. `AIPosition` waypoints render in the viewport
     /// instead (the "AI Waypoints" scene layer).
+    /// Real, on-disk AI Paths not marked removed this session -- the
+    /// "context data minus removed" half of the effective set. `AIPath`
+    /// has no `GPULevelObject`/spatial state for the renderer to merge
+    /// this into the way every other placeable type's list already does,
+    /// so the merge happens here instead.
+    private var remainingRealAIPaths: [(node: ChunkNode, path: AIPathRecord)] {
+        let removedIDs = Set(renderer?.pendingRemovedAIPathIDs ?? [])
+        return context.aiPaths.filter { !removedIDs.contains($0.path.id) }
+    }
+
     private var aiPathsPanel: some View {
         DisclosureGroup(isExpanded: $isAIPathsExpanded) {
-            Text("Real AIPath records — 5 raw arguments each, no confirmed link to any AI Waypoint (the reference tool's own editor doesn't interpret these either).")
+            Text("Real AIPath records — 5 raw arguments each (first two are the start/end AIPosition IDs); no confirmed meaning for the other three (the reference tool's own editor doesn't interpret them either).")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            ForEach(context.aiPaths, id: \.node.id) { entry in
-                Text("Path #\(entry.path.id): \(entry.path.args.map(String.init).joined(separator: ", "))")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
+            ForEach(remainingRealAIPaths, id: \.node.id) { entry in
+                HStack {
+                    Text("Path #\(entry.path.id): \(entry.path.args.map(String.init).joined(separator: ", "))")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Select") { workspace.select(entry.node) }
+                        .controlSize(.small)
+                    Button { duplicateAIPath(args: entry.path.args) } label: { Image(systemName: "plus.square.on.square") }
+                        .controlSize(.small).buttonStyle(.plain)
+                        .help("Duplicate")
+                    Button { deleteAIPath(id: entry.path.id, args: entry.path.args, isNew: false) } label: { Image(systemName: "trash") }
+                        .controlSize(.small).buttonStyle(.plain)
+                        .help("Delete")
+                }
             }
+            ForEach(renderer?.newAIPaths ?? [], id: \.id) { entry in
+                HStack {
+                    Text("Path #\(entry.id) (new): \(entry.args.map(String.init).joined(separator: ", "))")
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(1)
+                    Spacer()
+                    Button { duplicateAIPath(args: entry.args) } label: { Image(systemName: "plus.square.on.square") }
+                        .controlSize(.small).buttonStyle(.plain)
+                        .help("Duplicate")
+                    Button { deleteAIPath(id: entry.id, args: entry.args, isNew: true) } label: { Image(systemName: "trash") }
+                        .controlSize(.small).buttonStyle(.plain)
+                        .help("Delete")
+                }
+            }
+            Button("Add Path") { addAIPath() }
         } label: {
-            Text("AI Paths (\(context.aiPaths.count))").font(.headline)
+            Text("AI Paths (\(remainingRealAIPaths.count + (renderer?.newAIPaths.count ?? 0)))").font(.headline)
+        }
+    }
+
+    /// "Add Path": no spatial placement step (see `AIPathRecord`'s own
+    /// doc comment for why) -- a new path with plausible default args
+    /// (start/end waypoint 0/1) is added directly to the session's
+    /// pending set, editable afterward the same way any other AIPath is
+    /// (select the real record once saved, or edit the raw args here for
+    /// a still-session-only one -- args editing beyond the default is a
+    /// real follow-up, not attempted inline in this small panel yet).
+    private func addAIPath() {
+        guard let renderer else { return }
+        let id = renderer.addAIPath()
+        guard let undoManager else { return }
+        undoManager.setActionName("Add AI Path")
+        Self.registerAIPathAddUndo(undoManager: undoManager, renderer: renderer, id: id, args: [0, 1, 0, 0, 0])
+    }
+
+    private func duplicateAIPath(args: [UInt16]) {
+        guard let renderer else { return }
+        let id = renderer.addAIPath(args: args)
+        guard let undoManager else { return }
+        undoManager.setActionName("Duplicate AI Path")
+        Self.registerAIPathAddUndo(undoManager: undoManager, renderer: renderer, id: id, args: args)
+    }
+
+    /// Same recursive add/redo undo shape as `registerAIWaypointPlacementUndo`,
+    /// just calling `addAIPath`/`removeAIPath` directly instead of
+    /// `spawnAIWaypoint`/`removeObject`, since AIPath has no viewport
+    /// index to restore at.
+    private static func registerAIPathAddUndo(undoManager: UndoManager, renderer: LevelViewerRenderer, id: UInt32, args: [UInt16]) {
+        undoManager.registerUndo(withTarget: renderer) { target in
+            target.removeAIPath(id: id)
+            undoManager.registerUndo(withTarget: target) { redoTarget in
+                let newID = redoTarget.addAIPath(args: args, explicitID: id)
+                registerAIPathAddUndo(undoManager: undoManager, renderer: redoTarget, id: newID, args: args)
+            }
+        }
+    }
+
+    private func deleteAIPath(id: UInt32, args: [UInt16], isNew: Bool) {
+        guard let renderer else { return }
+        renderer.removeAIPath(id: id)
+        guard let undoManager else { return }
+        undoManager.setActionName("Delete AI Path")
+        Self.registerAIPathDeleteUndo(undoManager: undoManager, renderer: renderer, id: id, args: args, isNew: isNew)
+    }
+
+    /// Undo re-inserts the exact removed path -- via `restoreAIPath` for a
+    /// real, on-disk one (its data was never actually forgotten, just
+    /// marked removed) or `addAIPath(explicitID:)` for a session-added
+    /// one (same "keep the same ID across undo/redo" reasoning as
+    /// `registerAIPathAddUndo`). Redo (the undo *of* that restore)
+    /// deletes it again, same shape as `registerDeleteUndo`.
+    private static func registerAIPathDeleteUndo(undoManager: UndoManager, renderer: LevelViewerRenderer, id: UInt32, args: [UInt16], isNew: Bool) {
+        undoManager.registerUndo(withTarget: renderer) { target in
+            if isNew {
+                target.addAIPath(args: args, explicitID: id)
+            } else {
+                target.restoreAIPath(id: id)
+            }
+            undoManager.registerUndo(withTarget: target) { redoTarget in
+                redoTarget.removeAIPath(id: id)
+                registerAIPathDeleteUndo(undoManager: undoManager, renderer: redoTarget, id: id, args: args, isNew: isNew)
+            }
         }
     }
 
@@ -1796,13 +1899,15 @@ struct LevelViewerWindow: View {
         let newAIPositions = renderer.pendingNewAIPositions
         let newTriggers = renderer.pendingNewTriggers
         let newCameras = renderer.pendingNewCameras
+        let newAIPaths = renderer.pendingNewAIPaths
         let removedInstanceIDs = renderer.pendingRemovedInstanceIDs
         let removedTriggerIDs = renderer.pendingRemovedTriggerIDs
         let removedCameraIDs = renderer.pendingRemovedCameraIDs
         let removedAIPositionIDs = renderer.pendingRemovedAIPositionIDs
+        let removedAIPathIDs = renderer.pendingRemovedAIPathIDs
         guard !edits.isEmpty || !controlPointEdits.isEmpty || !newInstances.isEmpty || !newAIPositions.isEmpty
-            || !newTriggers.isEmpty || !newCameras.isEmpty
-            || !removedInstanceIDs.isEmpty || !removedTriggerIDs.isEmpty || !removedCameraIDs.isEmpty || !removedAIPositionIDs.isEmpty
+            || !newTriggers.isEmpty || !newCameras.isEmpty || !newAIPaths.isEmpty
+            || !removedInstanceIDs.isEmpty || !removedTriggerIDs.isEmpty || !removedCameraIDs.isEmpty || !removedAIPositionIDs.isEmpty || !removedAIPathIDs.isEmpty
         else { return nil }
 
         let encodedNewInstances = newInstances.map { entry in
@@ -1819,10 +1924,12 @@ struct LevelViewerWindow: View {
             insertingNewAIPositions: newAIPositions,
             insertingNewTriggers: newTriggers,
             insertingNewCameras: newCameras,
+            insertingNewAIPaths: newAIPaths,
             removingInstanceIDs: removedInstanceIDs,
             removingTriggerIDs: removedTriggerIDs,
             removingCameraIDs: removedCameraIDs,
             removingAIPositionIDs: removedAIPositionIDs,
+            removingAIPathIDs: removedAIPathIDs,
             levelNode: referenceNode
         ) else { return nil }
 
@@ -1833,7 +1940,8 @@ struct LevelViewerWindow: View {
         if !newAIPositions.isEmpty { parts.append("\(newAIPositions.count) newly placed waypoint(s)") }
         if !newTriggers.isEmpty { parts.append("\(newTriggers.count) newly placed trigger(s)") }
         if !newCameras.isEmpty { parts.append("\(newCameras.count) newly placed camera(s)") }
-        let removedTotal = removedInstanceIDs.count + removedTriggerIDs.count + removedCameraIDs.count + removedAIPositionIDs.count
+        if !newAIPaths.isEmpty { parts.append("\(newAIPaths.count) newly added AI path(s)") }
+        let removedTotal = removedInstanceIDs.count + removedTriggerIDs.count + removedCameraIDs.count + removedAIPositionIDs.count + removedAIPathIDs.count
         if removedTotal > 0 { parts.append("\(removedTotal) deleted object(s)") }
         return (referenceNode, patchedBytes, parts.joined(separator: " and "))
     }
