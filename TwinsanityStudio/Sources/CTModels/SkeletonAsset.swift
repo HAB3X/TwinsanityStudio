@@ -153,11 +153,13 @@ public struct ModelLink: Sendable, Codable {
 /// block of raw `Vector4`s (`positions` here) from the blob; the
 /// reference itself never further interprets the remaining 6 header-
 /// addressed blocks, so this doesn't invent a meaning for them either —
-/// `rawBlob` keeps the untouched bytes around (currently unused beyond
-/// that first block) for anything built on this later.
+/// `rawBlobRemainder` keeps those untouched bytes around verbatim
+/// (currently unused beyond that first block) so `SkeletonWriter` can
+/// reproduce the whole blob byte-for-byte without guessing at their
+/// layout.
 public struct GraphicsInfoCollisionData: Sendable, Codable {
     /// The 11 `UInt16` header fields exactly as stored — element counts
-    /// and byte offsets into `rawBlob` for 7 sub-blocks, only the first of
+    /// and byte offsets into the blob for 7 sub-blocks, only the first of
     /// which (`positions`) the reference tool's own code ever reads.
     public var header: [UInt16]
     /// Raw `Vector4`s from the blob's first sub-block (`header[0]` many) —
@@ -166,14 +168,20 @@ public struct GraphicsInfoCollisionData: Sendable, Codable {
     /// semantic (e.g. "hull vertex") is claimed beyond "this many real
     /// vectors, in this order."
     public var positions: [SIMD4<Float>]
+    /// Every blob byte after `positions` up to the entry's declared
+    /// `blobSize` — the other 6 header-addressed sub-blocks, kept
+    /// completely uninterpreted (see this type's own top doc comment) so a
+    /// writer can round-trip them exactly.
+    public var rawBlobRemainder: Data
 
-    public init(header: [UInt16], positions: [SIMD4<Float>]) {
+    public init(header: [UInt16], positions: [SIMD4<Float>], rawBlobRemainder: Data = Data()) {
         self.header = header
         self.positions = positions
+        self.rawBlobRemainder = rawBlobRemainder
     }
 
     private enum CodingKeys: String, CodingKey {
-        case header, positions
+        case header, positions, rawBlobRemainder
     }
 
     /// Same fix as `Joint`'s own Codable — see that type's doc comment.
@@ -182,6 +190,7 @@ public struct GraphicsInfoCollisionData: Sendable, Codable {
         header = try container.decode(Data.self, forKey: .header).withUnsafeBytes { Array($0.bindMemory(to: UInt16.self)) }
         let raw = try container.decode(Data.self, forKey: .positions).withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
         positions = unflattenVector4Array(raw)
+        rawBlobRemainder = try container.decodeIfPresent(Data.self, forKey: .rawBlobRemainder) ?? Data()
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -189,6 +198,7 @@ public struct GraphicsInfoCollisionData: Sendable, Codable {
         try container.encode(header.withUnsafeBufferPointer { Data(buffer: $0) }, forKey: .header)
         let flat = positions.flatMap { [$0.x, $0.y, $0.z, $0.w] }
         try container.encode(flat.withUnsafeBufferPointer { Data(buffer: $0) }, forKey: .positions)
+        try container.encode(rawBlobRemainder, forKey: .rawBlobRemainder)
     }
 }
 
@@ -206,8 +216,34 @@ public struct SkeletonAsset: Sendable, Identifiable, Codable {
     /// entry this `GraphicsInfo` carries. Empty for the many objects that
     /// have none (`collisionDataCount == 0` on disk).
     public var collisionData: [GraphicsInfoCollisionData]
+    /// The record's raw 16-byte `HeaderVars` exactly as stored on disk
+    /// (see `GraphicsInfoParser`'s own doc comment for the field layout).
+    /// Indices `[0]`/`[1]`/`[5]`/`[8]` are this type's own
+    /// joint/exitPoint/modelLink/collisionData counts, re-derived from the
+    /// arrays above whenever `SkeletonWriter` writes this record back out;
+    /// the rest — `[2]` reactJointCount, `[6]` skinFlag, `[7]`
+    /// blendSkinFlag, and the still-unconfirmed remaining bytes — are kept
+    /// completely verbatim so a writer never has to invent what they mean.
+    public var headerBytes: [UInt8]
+    /// `GraphicsInfoParser`'s Coord1/Coord2 — a bounding-volume pair the
+    /// reference tool's own `GraphicsInfo.Load` reads but never
+    /// interprets any further, so kept here only for round-tripping, not
+    /// claimed as (e.g.) "min/max corners" or any more specific semantic.
+    /// Always exactly 2 rows: `[coord1, coord2]`.
+    public var boundingVolume: [SIMD4<Float>]
+    /// The `byte[collisionDataCount]` trailer that follows every
+    /// `GI_CollisionData` entry (`GraphicsInfoParser`'s own doc comment) —
+    /// one uninterpreted byte per `collisionData` entry, in the same
+    /// order, kept verbatim for round-tripping.
+    public var collisionDataTrailer: [UInt8]
 
-    public init(id: UInt32, joints: [Joint], exitPoints: [ExitPoint], skinTransforms: [SkinTransform], skinID: UInt32, blendSkinID: UInt32, modelLinks: [ModelLink], collisionData: [GraphicsInfoCollisionData] = []) {
+    public init(
+        id: UInt32, joints: [Joint], exitPoints: [ExitPoint], skinTransforms: [SkinTransform], skinID: UInt32, blendSkinID: UInt32, modelLinks: [ModelLink],
+        collisionData: [GraphicsInfoCollisionData] = [],
+        headerBytes: [UInt8] = [UInt8](repeating: 0, count: 16),
+        boundingVolume: [SIMD4<Float>] = [SIMD4<Float>](repeating: .zero, count: 2),
+        collisionDataTrailer: [UInt8] = []
+    ) {
         self.id = id
         self.joints = joints
         self.exitPoints = exitPoints
@@ -216,6 +252,9 @@ public struct SkeletonAsset: Sendable, Identifiable, Codable {
         self.blendSkinID = blendSkinID
         self.modelLinks = modelLinks
         self.collisionData = collisionData
+        self.headerBytes = headerBytes
+        self.boundingVolume = boundingVolume
+        self.collisionDataTrailer = collisionDataTrailer
     }
 
     /// Builds the parent/child joint tree, replicating

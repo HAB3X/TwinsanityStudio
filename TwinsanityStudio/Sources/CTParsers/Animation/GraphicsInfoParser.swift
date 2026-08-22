@@ -21,6 +21,13 @@ import CTModels
 ///                                         // (blob's leading header[0] Vector4s decoded)
 /// byte[collisionDataCount] trailer
 /// ```
+///
+/// Every byte this parser doesn't itself interpret — `HeaderVars`,
+/// Coord1/Coord2, each collision blob's undecoded remainder, and the
+/// trailing per-entry byte array — is still captured verbatim onto
+/// `SkeletonAsset` (`headerBytes`/`boundingVolume`/`rawBlobRemainder`/
+/// `collisionDataTrailer`) so `SkeletonWriter` can round-trip a record
+/// byte-for-byte without inventing meaning for any of it.
 public enum GraphicsInfoParser {
     public static func parse(_ cursor: inout BinaryCursor, recordID: UInt32) throws -> SkeletonAsset {
         let header = [UInt8](try cursor.readBytes(0x10))
@@ -29,8 +36,8 @@ public enum GraphicsInfoParser {
         let modelLinkCount = Int(header[5])
         let collisionDataCount = Int(header[8])
 
-        _ = try cursor.readVector4() // Coord1 (bounding volume)
-        _ = try cursor.readVector4() // Coord2
+        let coord1 = try cursor.readVector4() // Coord1 (bounding volume)
+        let coord2 = try cursor.readVector4() // Coord2
 
         var joints: [Joint] = []
         joints.reserveCapacity(jointCount)
@@ -104,16 +111,18 @@ public enum GraphicsInfoParser {
             // sub-blocks are real bytes this parser doesn't decode yet,
             // not padding to skip blindly.
             let consumed = cursor.position - blobStart
+            var remainder = Data()
             if consumed < blobSize {
-                _ = try cursor.readBytes(blobSize - consumed)
+                remainder = try cursor.readBytes(blobSize - consumed)
             }
-            collisionData.append(GraphicsInfoCollisionData(header: header, positions: positions))
+            collisionData.append(GraphicsInfoCollisionData(header: header, positions: positions, rawBlobRemainder: remainder))
         }
-        _ = try cursor.readBytes(collisionDataCount) // trailing per-entry byte
+        let collisionDataTrailer = [UInt8](try cursor.readBytes(collisionDataCount)) // trailing per-entry byte
 
         return SkeletonAsset(
             id: recordID, joints: joints, exitPoints: exitPoints, skinTransforms: skinTransforms,
-            skinID: skinID, blendSkinID: blendSkinID, modelLinks: modelLinks, collisionData: collisionData
+            skinID: skinID, blendSkinID: blendSkinID, modelLinks: modelLinks, collisionData: collisionData,
+            headerBytes: header, boundingVolume: [coord1, coord2], collisionDataTrailer: collisionDataTrailer
         )
     }
 }
