@@ -381,6 +381,24 @@ struct LevelViewerWindow: View {
             renderer?.rotationSnapDegrees = Float(rotationSnapDegrees)
             renderer?.layerVisibility = layerVisibility
             workspace.currentViewerCameraPositionProvider = { [weak renderer] in renderer?.cameraEyeWorldPosition }
+            // "Quit-time Level Viewer autosave prompt" (app-lifecycle sweep):
+            // gives `WorkspaceViewModel` a real, live way to ask "is there
+            // anything to lose" and "what would saving it look like" without
+            // holding a reference to this transient View struct itself —
+            // only a weak `renderer`, a weak `workspace`, and the one stable
+            // anchor node this window's file-scoped operations already use
+            // (`referenceNodeForFileOps`, captured once here since it's fixed
+            // for this window's whole lifetime). Cleared in `.onDisappear`
+            // below, same as `currentViewerCameraPositionProvider`.
+            let anchorNode = referenceNodeForFileOps
+            workspace.currentLevelViewerDirtyProvider = { [weak renderer] in renderer?.hasPendingEdits ?? false }
+            workspace.currentLevelViewerPendingPatchProvider = { [weak renderer, weak workspace] in
+                guard let renderer, let workspace, let anchorNode,
+                      let patch = LevelViewerWindow.computingPendingOverridePatch(renderer: renderer, referenceNode: anchorNode, workspace: workspace),
+                      let fileRoot = workspace.fileRoot(containing: patch.referenceNode)
+                else { return nil }
+                return LevelViewerPendingPatch(archiveEntryDisplayName: fileRoot.displayName, patchedBytes: patch.bytes, summary: patch.summary)
+            }
         }
         // "Robust Undo/Redo" (QoL sweep), scoped to object moves — the one
         // piece of mutable state this session actually introduced and
@@ -394,6 +412,8 @@ struct LevelViewerWindow: View {
         .onDisappear {
             stopScenePreviewTimer()
             workspace.currentViewerCameraPositionProvider = nil
+            workspace.currentLevelViewerDirtyProvider = nil
+            workspace.currentLevelViewerPendingPatchProvider = nil
         }
         .alert(
             "Dangling References Found",
@@ -2166,6 +2186,17 @@ struct LevelViewerWindow: View {
     /// call sites can tell "no edits" apart from "patch failed."
     private func computingPendingOverridePatch() -> (referenceNode: ChunkNode, bytes: Data, summary: String)? {
         guard let renderer, let referenceNode = referenceNodeForFileOps else { return nil }
+        return Self.computingPendingOverridePatch(renderer: renderer, referenceNode: referenceNode, workspace: workspace)
+    }
+
+    /// `self`-free core of `computingPendingOverridePatch()` above — factored
+    /// out so the quit-time autosave path (`WorkspaceViewModel.
+    /// currentLevelViewerPendingPatchProvider`, wired in `.onAppear` below)
+    /// can compute the exact same real patch this window's own "Save Chunk
+    /// Overrides…"/"Quick Launch…" buttons would, from only a weakly-held
+    /// `renderer`/`workspace` and a plain `ChunkNode` — never a captured
+    /// reference to this (transient, struct) View itself.
+    static func computingPendingOverridePatch(renderer: LevelViewerRenderer, referenceNode: ChunkNode, workspace: WorkspaceViewModel) -> (referenceNode: ChunkNode, bytes: Data, summary: String)? {
         let edits = renderer.pendingLevelOverrides + renderer.pendingAIWaypointOverrides
         let controlPointEdits = renderer.pendingCameraControlPointOverrides
         let newInstances = renderer.pendingNewInstances

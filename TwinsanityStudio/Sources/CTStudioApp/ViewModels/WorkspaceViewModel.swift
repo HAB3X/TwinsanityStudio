@@ -244,6 +244,11 @@ public final class WorkspaceViewModel {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.registerDiscEntries(root, node: node, source: source)
+                    // "Remember the last mounted disc" — success case only
+                    // (we're already past every `throw`/early-return above),
+                    // and every recognized format, not just `.iso` (unlike
+                    // `discImageURL` just below, which stays `.iso`-only).
+                    self.lastMountedDiscImageURL = url
                     if url.pathExtension.uppercased() == "ISO" {
                         self.mountedDiscImageURLByRootID[node.id] = url
                         // "Quick Launch should use the disc I've already
@@ -365,6 +370,62 @@ public final class WorkspaceViewModel {
         }
     }
 
+    /// What actually happened when the quit-time prompt's "Save & Quit"
+    /// tried to save the currently-open Level Viewer's pending edits back
+    /// into the mounted disc image — see `savingPendingLevelViewerEditsToMountedDisc`.
+    /// `verificationFailed` and `writeFailed` are kept distinct on purpose:
+    /// a `verificationFailed` means the rebuilt image itself couldn't be
+    /// trusted (nothing safe to write anywhere), while `writeFailed` means
+    /// a genuinely *verified* image just couldn't be written back to
+    /// `discImageURL` in place (disk full, permissions, …) — that one still
+    /// has real, valid bytes worth offering to save somewhere else instead.
+    public enum LevelViewerQuitSaveOutcome {
+        case noPendingEdits
+        case noDiscImageConfigured
+        case saved(diagnostics: [String])
+        case verificationFailed(String)
+        case writeFailed(verifiedData: Data, diagnostics: [String], reason: String)
+    }
+
+    /// "Save Level Viewer changes before quitting" — the real save behind
+    /// `CTStudioApp.AppDelegate`'s quit-confirmation alert. Gathers this
+    /// session's actual pending Level Viewer edits (`currentLevelViewerPendingPatchProvider`),
+    /// patches the correct archive entry, and — exactly like
+    /// `GameLauncherView`'s own "Save changes to this ISO" toggle
+    /// (`GameLauncher.rebuildingAndVerifying`) — independently re-verifies
+    /// the whole rebuilt disc image before this ever overwrites the real
+    /// mounted `.iso` in place. Never writes an unverified result: if the
+    /// rebuild/verification itself fails, `discImageURL` is untouched.
+    ///
+    /// Targets `discImageURL` specifically (the same "the disc" this app's
+    /// Direct Boot/Launch already treats as the one active disc image for
+    /// save/launch purposes — see `GameLauncherView`), not a per-node lookup
+    /// of which mounted root a given `ChunkNode` structurally lives under:
+    /// `GameLauncher`'s own archive-replacement matching already works by
+    /// bare entry name against the disc's real archive index, regardless of
+    /// where the in-session edit's source file happened to be opened from,
+    /// so this mirrors that same existing behavior rather than inventing a
+    /// stricter, inconsistent rule just for quitting.
+    public func savingPendingLevelViewerEditsToMountedDisc() async -> LevelViewerQuitSaveOutcome {
+        guard let patch = currentLevelViewerPendingPatchProvider?() else { return .noPendingEdits }
+        guard let isoURL = discImageURL else { return .noDiscImageConfigured }
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("TwinsanityStudioQuitSave", isDirectory: true)
+        let result: GameLauncher.RebuildResult
+        do {
+            result = try await Task.detached(priority: .userInitiated) {
+                try LevelViewerDiscAutosave.rebuildingAndVerifying(patch: patch, isoURL: isoURL, scratchDirectory: scratch)
+            }.value
+        } catch {
+            return .verificationFailed("\(error)")
+        }
+        do {
+            try result.data.write(to: isoURL)
+            return .saved(diagnostics: result.diagnostics)
+        } catch {
+            return .writeFailed(verifiedData: result.data, diagnostics: result.diagnostics, reason: "\(error.localizedDescription)")
+        }
+    }
+
     /// The top-level entry in `rootNodes` whose subtree actually contains
     /// `target` — unlike `findFileRoot` (which looks specifically for an
     /// RM2/SM2-shaped Graphics/Code file root and wouldn't recognize a
@@ -463,6 +524,38 @@ public final class WorkspaceViewModel {
     /// simultaneously-open viewers, matching the reference tool's own
     /// single-viewer-at-a-time design.
     public var currentViewerCameraPositionProvider: (() -> SIMD3<Float>?)?
+    /// "Quit-time Level Viewer autosave prompt" (app-lifecycle sweep): set
+    /// by `LevelViewerWindow` while it's open (same lifetime/pattern as
+    /// `currentViewerCameraPositionProvider` immediately above), `nil` when
+    /// no Level Viewer is open. Gives app-level code (the quit hook in
+    /// `CTStudioApp.AppDelegate`) a real, live answer to "does the
+    /// currently-open Level Viewer have anything unsaved" without needing a
+    /// direct reference to that (transient, struct) View or its renderer.
+    /// Deliberately scoped to exactly this one source of pending edits —
+    /// see `hasPendingLevelViewerEdits`'s own doc comment for why this
+    /// doesn't attempt to cover every other editor in the app.
+    public var currentLevelViewerDirtyProvider: (() -> Bool)?
+    /// The companion to `currentLevelViewerDirtyProvider`: when non-`nil`,
+    /// actually building the real patch that a save would write — the same
+    /// `LevelViewerWindow.computingPendingOverridePatch()` logic "Save Chunk
+    /// Overrides…"/"Quick Launch…" already use, packaged as
+    /// `LevelViewerPendingPatch` so it can cross from that transient View
+    /// onto this long-lived view model. Returns `nil` if, by the time it's
+    /// actually called, there's nothing pending after all (matches
+    /// `computingPendingOverridePatch()`'s own "nil means no edits" contract).
+    public var currentLevelViewerPendingPatchProvider: (() -> LevelViewerPendingPatch?)?
+    /// True when the currently-open Level Viewer (if any) has real pending
+    /// edits that haven't been saved anywhere yet. This is honest about its
+    /// own scope: it answers for the Level Viewer specifically (position/
+    /// rotation changes, new/deleted instances, AI waypoint edits — see
+    /// `LevelViewerRenderer.hasPendingEdits`), not for every other editor
+    /// in this app (Recipe Book, Shader Graph Editor, sound/texture
+    /// inspectors, PTC Sheets, Agent Lab, …), each of which tracks its own
+    /// separate pending-edit state this pass deliberately does not unify
+    /// into one signal — that's real, separate future work.
+    public var hasPendingLevelViewerEdits: Bool {
+        currentLevelViewerDirtyProvider?() ?? false
+    }
     /// Every RigidModel/Skeleton successfully resolved (mesh + textures, and
     /// skeleton + animations where rigged) across every scanned file —
     /// populated automatically as archives are scanned, so browsing models
@@ -731,6 +824,9 @@ public final class WorkspaceViewModel {
         if let path = UserDefaults.standard.string(forKey: Self.discImageURLDefaultsKey) {
             discImageURL = URL(fileURLWithPath: path)
         }
+        if let path = UserDefaults.standard.string(forKey: Self.lastMountedDiscImageURLDefaultsKey) {
+            lastMountedDiscImageURL = URL(fileURLWithPath: path)
+        }
         if let path = UserDefaults.standard.string(forKey: Self.pcsx2AppURLDefaultsKey) {
             pcsx2AppURL = URL(fileURLWithPath: path)
         }
@@ -794,6 +890,51 @@ public final class WorkspaceViewModel {
         }
     }
     private static let discImageURLDefaultsKey = "TwinsanityStudio.DiscImageURL"
+
+    /// "Remember the last mounted disc" (app-lifecycle sweep): the source
+    /// `.iso`/`.bin`/`.cue` most recently *successfully* mounted via
+    /// `mountDiscImage(url:)` — restored here and automatically re-mounted
+    /// on the next launch (see `autoRemountLastDiscImageIfAvailable`, called
+    /// from `CTStudioApp`'s startup path) so the user doesn't have to
+    /// re-open it by hand every session. Deliberately a separate property
+    /// from `discImageURL` (the Direct Boot/Launch target above): that one
+    /// only ever tracks a plain `.iso` and the user is free to repoint it
+    /// away from whatever's actually mounted at any time, whereas this
+    /// tracks every successful mount regardless of format and is never
+    /// touched by anything except `mountDiscImage` itself.
+    public var lastMountedDiscImageURL: URL? {
+        didSet {
+            if let lastMountedDiscImageURL {
+                UserDefaults.standard.set(lastMountedDiscImageURL.path, forKey: Self.lastMountedDiscImageURLDefaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.lastMountedDiscImageURLDefaultsKey)
+            }
+        }
+    }
+    private static let lastMountedDiscImageURLDefaultsKey = "TwinsanityStudio.LastMountedDiscImageURL"
+    /// Guards `autoRemountLastDiscImageIfAvailable` against actually
+    /// re-mounting more than once per process — `CTStudioApp`'s own
+    /// `.onAppear` call site fires once for the ordinary single-window
+    /// case, but SwiftUI's default `WindowGroup` behavior (⌘N "New Window")
+    /// would otherwise re-run it and mount a second, duplicate copy of the
+    /// same disc into `rootNodes` every time a new window opens.
+    private var hasAttemptedAutoRemount = false
+
+    /// Called from `CTStudioApp`'s startup path. If a disc was mounted last
+    /// session and that exact file still exists at the same path, mounts it
+    /// again automatically — otherwise fails silently (clearing the now-
+    /// stale persisted URL) rather than surfacing an error banner for a disc
+    /// the user didn't just now ask to open.
+    public func autoRemountLastDiscImageIfAvailable() {
+        guard !hasAttemptedAutoRemount else { return }
+        hasAttemptedAutoRemount = true
+        guard let url = lastMountedDiscImageURL else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            lastMountedDiscImageURL = nil
+            return
+        }
+        mountDiscImage(url: url)
+    }
 
     /// The real PCSX2 app (or its bundled binary) `GameLauncher.launching`
     /// runs the built image with.

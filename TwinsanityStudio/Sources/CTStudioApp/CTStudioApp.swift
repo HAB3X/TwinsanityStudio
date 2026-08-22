@@ -18,6 +18,19 @@ struct CTStudioApp: App {
                 .environment(workspace)
                 .environment(wocWorkspace)
                 .frame(minWidth: 1100, minHeight: 700)
+                .onAppear {
+                    // "Remember + auto-remount the last mounted disc" and
+                    // the quit-time unsaved-Level-Viewer-edits prompt both
+                    // need a live `workspace` reference — the disc restore
+                    // right here, the prompt via `appDelegate.workspace`
+                    // (see `AppDelegate.applicationShouldTerminate`).
+                    // `autoRemountLastDiscImageIfAvailable` guards itself
+                    // against running more than once per process (see its
+                    // own doc comment), so this is safe even if `.onAppear`
+                    // ever fires again for a second `WindowGroup` window.
+                    appDelegate.workspace = workspace
+                    workspace.autoRemountLastDiscImageIfAvailable()
+                }
         }
         .windowToolbarStyle(.unified)
         .commands {
@@ -115,11 +128,137 @@ extension Notification.Name {
 /// via ⌘R. Without this, the window genuinely opens, it just sits behind
 /// Xcode until you manually ⌘Tab to it, which reads as "nothing happened."
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Set by `CTStudioApp`'s own `.onAppear` right after both exist — a
+    /// plain back-reference for `applicationShouldTerminate` below, never
+    /// ownership (`workspace` is owned by the `App` struct's `@State`).
+    weak var workspace: WorkspaceViewModel?
+    /// Set once the quit sequence below has genuinely finished (saved,
+    /// explicitly discarded, or decided there's nothing to save) so the
+    /// termination this triggers doesn't loop back into the same prompt a
+    /// second time.
+    private var readyToTerminate = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         for window in NSApp.windows {
             window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// "Prompt before losing unsaved Level Viewer edits" — a real, honest,
+    /// but deliberately *narrow* safety net: it only ever asks about
+    /// `WorkspaceViewModel.hasPendingLevelViewerEdits`, itself scoped to
+    /// exactly one source of pending edits in this whole app
+    /// (`LevelViewerRenderer`'s pending position/rotation/instance/waypoint
+    /// state — see that property's own doc comment for the full list of
+    /// *other* editors this deliberately does not also cover). Standard
+    /// macOS three-way unsaved-changes alert, `.terminateLater` while the
+    /// actual save — independently re-verified before it ever overwrites
+    /// the real mounted disc image — runs asynchronously.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !readyToTerminate, let workspace, workspace.hasPendingLevelViewerEdits else { return .terminateNow }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "You have unsaved Level Viewer changes"
+        alert.informativeText = "This session has pending position/rotation/instance/waypoint edits in the Level Viewer that haven't been saved back into the mounted disc image"
+            + (workspace.discImageURL.map { " (\($0.lastPathComponent))" } ?? "")
+            + ". Quitting now will lose them."
+        alert.addButton(withTitle: "Save & Quit")
+        alert.addButton(withTitle: "Discard & Quit")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            Task { @MainActor [weak self] in
+                await self?.saveAndTerminate(workspace: workspace)
+            }
+            return .terminateLater
+        case .alertSecondButtonReturn:
+            return .terminateNow
+        default:
+            return .terminateCancel
+        }
+    }
+
+    /// Runs the real save (`WorkspaceViewModel.savingPendingLevelViewerEditsToMountedDisc`,
+    /// which independently re-verifies the rebuilt image before ever
+    /// overwriting the real mounted `.iso` — same discipline as
+    /// `GameLauncher.rebuildingAndVerifying`) and resolves the `.terminateLater`
+    /// from `applicationShouldTerminate` above once it's genuinely done.
+    /// Never silently corrupts the disc image (a failed verification leaves
+    /// it untouched) and never silently blocks quitting forever (every
+    /// failure branch still offers a real way to finish quitting).
+    @MainActor
+    private func saveAndTerminate(workspace: WorkspaceViewModel) async {
+        let outcome = await workspace.savingPendingLevelViewerEditsToMountedDisc()
+        switch outcome {
+        case .noPendingEdits, .saved:
+            readyToTerminate = true
+            NSApp.reply(toApplicationShouldTerminate: true)
+
+        case .noDiscImageConfigured:
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "No disc image chosen"
+            alert.informativeText = "There's no disc image configured to save into (the Game Launcher's \"Disc Image\" field). Quit without saving to lose these edits, or cancel and set one first."
+            alert.addButton(withTitle: "Quit Without Saving")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn {
+                readyToTerminate = true
+                NSApp.reply(toApplicationShouldTerminate: true)
+            } else {
+                NSApp.reply(toApplicationShouldTerminate: false)
+            }
+
+        case .verificationFailed(let reason):
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = "Couldn't verify the rebuilt disc image"
+            alert.informativeText = "The patched image failed its own independent re-verification, so nothing was written to your real disc image: \(reason)"
+            alert.addButton(withTitle: "Retry")
+            alert.addButton(withTitle: "Quit Without Saving")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                await saveAndTerminate(workspace: workspace)
+            case .alertSecondButtonReturn:
+                readyToTerminate = true
+                NSApp.reply(toApplicationShouldTerminate: true)
+            default:
+                NSApp.reply(toApplicationShouldTerminate: false)
+            }
+
+        case .writeFailed(let verifiedData, _, let reason):
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = "Verified, but couldn't write back to the disc image"
+            alert.informativeText = "The rebuilt image passed its own independent re-verification, but writing it back into the mounted disc image failed: \(reason). You can save the verified result to a different file instead, and copy it back into place yourself."
+            alert.addButton(withTitle: "Save Copy Elsewhere…")
+            alert.addButton(withTitle: "Quit Without Saving")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                if let destination = ExportPanel.chooseSaveLocation(suggestedName: "rebuilt.iso", message: "Choose where to save the verified, rebuilt disc image.") {
+                    do {
+                        try verifiedData.write(to: destination)
+                        readyToTerminate = true
+                        NSApp.reply(toApplicationShouldTerminate: true)
+                    } catch {
+                        // Couldn't even write the fallback copy — don't loop
+                        // forever; let the user decide what to do next from
+                        // a normal, un-terminated app instead.
+                        NSApp.reply(toApplicationShouldTerminate: false)
+                    }
+                } else {
+                    NSApp.reply(toApplicationShouldTerminate: false)
+                }
+            case .alertSecondButtonReturn:
+                readyToTerminate = true
+                NSApp.reply(toApplicationShouldTerminate: true)
+            default:
+                NSApp.reply(toApplicationShouldTerminate: false)
+            }
         }
     }
 }

@@ -17,6 +17,10 @@ import XCTest
 /// `WorkspaceViewModel` layer built on top of it.
 final class DiscImageSidebarMergeTests: XCTestCase {
     private static let sectorSize = 2048
+    /// Mirrors `WorkspaceViewModel`'s own private `lastMountedDiscImageURLDefaultsKey`
+    /// literal — used only to scrub `UserDefaults.standard` around the
+    /// persistence test below so it's self-contained across repeated runs.
+    private static let lastMountedDiscImageURLDefaultsKeyForTest = "TwinsanityStudio.LastMountedDiscImageURL"
 
     private func bothEndian32(_ v: UInt32) -> [UInt8] {
         let le: [UInt8] = [UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF), UInt8((v >> 16) & 0xFF), UInt8((v >> 24) & 0xFF)]
@@ -145,6 +149,68 @@ final class DiscImageSidebarMergeTests: XCTestCase {
 
         let subdirNode = try XCTUnwrap(findByName("WMPDATA", in: discRoot.children))
         XCTAssertEqual(subdirNode.children.map(\.displayName), ["FRUIT.WMP"], "nested directories must mirror recursively, not just the root level")
+    }
+
+    /// "Remember the last mounted disc" (app-lifecycle sweep):
+    /// `mountDiscImage`'s success path should record `lastMountedDiscImageURL`
+    /// (independent of `discImageURL`, which this synthetic image never
+    /// touches — it isn't a plain `.iso` extension test target here, it's
+    /// the same fixture `testMountDiscImageAddsRealTreeToRootNodesNotASeparateSheet`
+    /// already proves mounts cleanly), and `autoRemountLastDiscImageIfAvailable`
+    /// should use that persisted value to bring the same disc back on a
+    /// fresh `WorkspaceViewModel` standing in for "next launch."
+    @MainActor
+    func testSuccessfulMountRecordsLastMountedDiscImageURLAndAutoRemountRestoresIt() async throws {
+        let isoURL = try buildSyntheticISOFile()
+        // `lastMountedDiscImageURL` persists to the real `UserDefaults.standard`
+        // (same mechanism as `discImageURL`), so a prior run of this exact
+        // test (or a real session on this machine) could leave a stale value
+        // behind on disk between process launches — clear it on both ends so
+        // this test is self-contained rather than order/history-dependent.
+        UserDefaults.standard.removeObject(forKey: Self.lastMountedDiscImageURLDefaultsKeyForTest)
+        defer {
+            try? FileManager.default.removeItem(at: isoURL)
+            UserDefaults.standard.removeObject(forKey: Self.lastMountedDiscImageURLDefaultsKeyForTest)
+        }
+
+        let workspace = WorkspaceViewModel()
+        XCTAssertNil(workspace.lastMountedDiscImageURL, "nothing mounted yet in this fresh instance")
+
+        workspace.mountDiscImage(url: isoURL)
+        try await waitForRootNodes(workspace)
+        XCTAssertNil(workspace.lastError)
+        XCTAssertEqual(workspace.lastMountedDiscImageURL, isoURL, "a successful mount should record the exact URL passed in")
+
+        // Simulate "next launch": a brand new WorkspaceViewModel restores
+        // `lastMountedDiscImageURL` from UserDefaults in its own `init`
+        // (same mechanism `discImageURL` already uses), then
+        // `autoRemountLastDiscImageIfAvailable` should mount it again
+        // without anyone calling `mountDiscImage` directly.
+        let relaunched = WorkspaceViewModel()
+        XCTAssertEqual(relaunched.lastMountedDiscImageURL, isoURL, "should have restored from UserDefaults, mirroring discImageURL's own persistence")
+        XCTAssertEqual(relaunched.rootNodes.count, 0, "shouldn't auto-mount just from being constructed")
+
+        relaunched.autoRemountLastDiscImageIfAvailable()
+        try await waitForRootNodes(relaunched)
+        XCTAssertNil(relaunched.lastError, "auto-remounting the same still-real file should succeed silently")
+        XCTAssertEqual(relaunched.rootNodes.count, 1, "the disc should be mounted again automatically")
+    }
+
+    /// A stale persisted URL (the file was moved/deleted since last launch)
+    /// should be cleared quietly, not surfaced as an error — the user never
+    /// asked to open this file just now, so there's nothing to complain to
+    /// them about.
+    @MainActor
+    func testAutoRemountClearsStalePersistedURLWithoutError() {
+        let workspace = WorkspaceViewModel()
+        let goneURL = FileManager.default.temporaryDirectory.appendingPathComponent("does-not-exist-\(UUID().uuidString).iso")
+        workspace.lastMountedDiscImageURL = goneURL
+
+        workspace.autoRemountLastDiscImageIfAvailable()
+
+        XCTAssertNil(workspace.lastMountedDiscImageURL, "a nonexistent path should be cleared rather than retried forever")
+        XCTAssertNil(workspace.lastError, "the user didn't just ask to open this file — no error banner for a missing auto-remount target")
+        XCTAssertEqual(workspace.rootNodes.count, 0)
     }
 
     /// Real regression: `rootNodes` gained the mounted disc correctly, but
