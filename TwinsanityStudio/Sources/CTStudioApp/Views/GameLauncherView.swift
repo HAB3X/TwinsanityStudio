@@ -13,6 +13,12 @@ import CTExport
 /// this doesn't need to change is copied straight through from the disc
 /// image the user points at (`GameLauncher.building`'s own doc comment) —
 /// nothing here builds a disc from scratch.
+///
+/// "Save changes to this ISO" (`saveToDiscImage`, on by default) decides
+/// whether launching also writes the independently-verified result back
+/// into that same disc image in place, so it sticks around for next time,
+/// or only ever builds a throwaway scratch copy for the one PCSX2 run —
+/// see that property's own doc comment.
 struct GameLauncherView: View {
     @Environment(WorkspaceViewModel.self) private var workspace
     @Environment(\.dismiss) private var dismiss
@@ -30,6 +36,19 @@ struct GameLauncherView: View {
     /// instead. This toggle lets both choices live in the one place the
     /// user actually is, against the same already-chosen disc image.
     @State private var bootTarget: BootTarget = .thisLevel
+    /// "When I boot from my level I want it to auto save to the current
+    /// ISO": on by default, since that's the explicit ask -- launching
+    /// used to only ever write into a throwaway scratch copy, so nothing
+    /// about a Quick Launch ever stuck around afterward. With this on,
+    /// launching independently re-verifies the patched result
+    /// (`GameLauncher.rebuildingAndVerifying`, the same real check "Save
+    /// Rebuilt ISO…" already uses) and writes it back into the disc image
+    /// above *in place* before booting it, so the level override/edits
+    /// this session baked in are still there the next time this same
+    /// file is mounted or launched, not just for this one PCSX2 run.
+    /// Turning it off restores the old throwaway-scratch-copy behavior,
+    /// for a one-off test nobody wants to keep.
+    @State private var saveToDiscImage = true
 
     private enum BootTarget: String, CaseIterable, Identifiable {
         case thisLevel = "This Level"
@@ -56,9 +75,14 @@ struct GameLauncherView: View {
                 Spacer()
                 Button("Close") { dismiss() }
             }
-            Text("Patches a real, already-bootable PS2 disc image and boots it in PCSX2. Every byte this doesn't need to change is copied straight through from the disc image below. The original file is never modified.")
+            Text(saveToDiscImage
+                 ? "Patches a real, already-bootable PS2 disc image and boots it in PCSX2. Every byte this doesn't need to change is copied straight through. The verified result is saved back into the disc image below before it boots, so this sticks around for next time too."
+                 : "Patches a real, already-bootable PS2 disc image and boots it in PCSX2. Every byte this doesn't need to change is copied straight through from the disc image below. The original file is never modified.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            Toggle("Save changes to this ISO", isOn: $saveToDiscImage)
+                .help("On: the disc image below is updated in place with this launch's own verified changes, so they're still there next time. Off: only a throwaway copy is built for this one PCSX2 run.")
 
             Form {
                 LabeledContent("Disc Image (.iso)") {
@@ -187,28 +211,47 @@ struct GameLauncherView: View {
     private func buildAndLaunch() {
         guard let discImageURL = workspace.discImageURL, let pcsx2AppURL = workspace.pcsx2AppURL else { return }
         let plan = effectivePlan
+        let saveInPlace = saveToDiscImage
         errorMessage = nil
         isIntegrityFailure = false
         diagnostics = []
         isBuilding = true
-        statusMessage = "Building…"
+        statusMessage = saveInPlace ? "Building and verifying…" : "Building…"
         Task.detached(priority: .userInitiated) {
             do {
-                let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("TwinsanityStudioLaunch", isDirectory: true)
-                // `GameLauncher.building` only creates `scratch` itself when
-                // `plan` actually needs it (a starting-chunk override or
-                // archive replacements) — the global "Play in PCSX2" case
-                // has neither and returns the image untouched, so this
-                // write's own destination folder needs to exist regardless
-                // of whether building itself ever touched it.
-                try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
-                let built = try GameLauncher.building(isoURL: discImageURL, plan: plan, scratchDirectory: scratch)
-                let outputURL = scratch.appendingPathComponent(plan.startingChunkBaseName != nil ? "quicklaunch.iso" : "launch.iso")
-                try built.write(to: outputURL)
+                let outputURL: URL
+                if saveInPlace {
+                    // Independently re-verified (same real check "Save
+                    // Rebuilt ISO…" already uses) before this ever
+                    // overwrites the user's real disc image in place —
+                    // never write back an image that hasn't actually been
+                    // confirmed to still be a valid, readable disc.
+                    let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("TwinsanityStudioLaunch", isDirectory: true)
+                    try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+                    let result = try GameLauncher.rebuildingAndVerifying(isoURL: discImageURL, plan: plan, scratchDirectory: scratch)
+                    await MainActor.run { diagnostics = result.diagnostics }
+                    try result.data.write(to: discImageURL)
+                    outputURL = discImageURL
+                } else {
+                    let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("TwinsanityStudioLaunch", isDirectory: true)
+                    // `GameLauncher.building` only creates `scratch` itself
+                    // when `plan` actually needs it (a starting-chunk
+                    // override or archive replacements) — the global "Play
+                    // in PCSX2" case has neither and returns the image
+                    // untouched, so this write's own destination folder
+                    // needs to exist regardless of whether building itself
+                    // ever touched it.
+                    try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+                    let built = try GameLauncher.building(isoURL: discImageURL, plan: plan, scratchDirectory: scratch)
+                    outputURL = scratch.appendingPathComponent(plan.startingChunkBaseName != nil ? "quicklaunch.iso" : "launch.iso")
+                    try built.write(to: outputURL)
+                }
                 try GameLauncher.launching(pcsx2AppURL: pcsx2AppURL, isoURL: outputURL)
                 await MainActor.run {
                     isBuilding = false
-                    statusMessage = "Launched PCSX2 with \(outputURL.lastPathComponent)."
+                    statusMessage = saveInPlace
+                        ? "Saved to \(outputURL.lastPathComponent) and launched PCSX2."
+                        : "Launched PCSX2 with \(outputURL.lastPathComponent)."
                 }
             } catch {
                 await MainActor.run {

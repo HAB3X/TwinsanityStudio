@@ -122,7 +122,19 @@ public enum GameLauncher {
             guard let match = index.entries.first(where: { (entryBaseName($0.name) as NSString).deletingPathExtension.lowercased() == baseName.lowercased() }) else {
                 throw GameLauncherError.levelNotFoundInArchive(baseName)
             }
-            let windowsPath = match.name.replacingOccurrences(of: "/", with: "\\")
+            // Lowercased, not just backslash-converted: the archive's own
+            // entry name keeps whatever case the disc's real directory
+            // structure uses (e.g. "Levels/Earth/Hub/hubb.sm2"), but the
+            // game's own internal level-path convention is confirmed
+            // lowercase everywhere else this codebase has real disc data
+            // to check it against -- a real `ChunkLink.path` value reads
+            // "levels\earth\cavern\tunnel01", never capitalized. Writing
+            // the mixed-case archive name into this field let the ISO
+            // patch itself apply cleanly (no error, no thrown mismatch)
+            // while the game's own case-sensitive internal lookup quietly
+            // failed to resolve it and fell back to booting the main menu
+            // instead -- a real, reported bug, not a hypothetical one.
+            let windowsPath = match.name.replacingOccurrences(of: "/", with: "\\").lowercased()
             let startingChunkPath = (windowsPath as NSString).deletingPathExtension
             let (exeEntry, revision) = try locateBootExecutable(in: root, source: source)
             guard let exeData = ISO9660Reader.readFile(exeEntry, from: source) else {
