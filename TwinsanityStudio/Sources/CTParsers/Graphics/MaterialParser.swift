@@ -35,13 +35,20 @@ public enum MaterialParser {
         return MaterialInfo(id: recordID, name: name, shaders: shaders)
     }
 
-    /// Reads one `TwinsShader` block (`TwinsShader.cs:74-149`) and returns
+    /// Reads one `TwinsShader` block (`TwinsShader.cs:74-149`) and decodes
     /// just `shaderType`/`textureId` — the ~90 bytes of PS2 GS render state
     /// in between (alpha blending, depth test, fog, LOD params, ...) are
-    /// consumed to stay correctly positioned for the *next* shader, but
-    /// aren't modeled since nothing here needs them yet.
+    /// read to stay correctly positioned for the *next* shader, and captured
+    /// verbatim into `renderStateBytes` so `MaterialWriter` can round-trip
+    /// them, but aren't decoded field-by-field since nothing here needs
+    /// their individual values yet.
     private static func readShader(_ cursor: inout BinaryCursor, isDemo: Bool, isMonkeyBall: Bool) throws -> TwinsShaderInfo {
         let shaderType = try cursor.readUInt32()
+        // Everything from here through the end of the fixed render-state
+        // block (i.e. everything up to `textureId`) is captured verbatim
+        // into `renderStateBytes` below, not just consumed — see
+        // `TwinsShaderInfo`'s doc comment.
+        let stateStart = cursor.position
 
         // Variable-length parameter block, keyed by shader type.
         switch shaderType {
@@ -84,9 +91,12 @@ public enum MaterialParser {
             _ = try cursor.readUInt16()
         }
 
+        let stateEnd = cursor.position
+        let renderStateBytes = cursor.data[(cursor.data.startIndex + stateStart)..<(cursor.data.startIndex + stateEnd)]
+
         let textureId = try cursor.readUInt32()
         _ = try cursor.readUInt32() // trailing repeated ShaderType
 
-        return TwinsShaderInfo(shaderType: shaderType, textureId: textureId)
+        return TwinsShaderInfo(shaderType: shaderType, textureId: textureId, renderStateBytes: Data(renderStateBytes))
     }
 }

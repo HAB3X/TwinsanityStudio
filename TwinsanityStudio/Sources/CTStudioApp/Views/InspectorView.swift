@@ -85,7 +85,7 @@ struct InspectorView: View {
                             case .rigidModel(let info):
                                 RigidModelInspectorView(node: node, info: info)
                             case .material(let material):
-                                MaterialInspectorView(material: material)
+                                MaterialInspectorView(node: node, material: material)
                             case .skeleton(let skeleton):
                                 SkeletonInspectorView(node: node, skeleton: skeleton)
                             case .animation(let animation):
@@ -305,25 +305,6 @@ struct RigidModelInspectorView: View {
                 Label("Open in Model Viewer", systemImage: "cube.fill")
             }
         }
-    }
-}
-
-struct MaterialInspectorView: View {
-    let material: MaterialInfo
-
-    var body: some View {
-        Form {
-            LabeledContent("Name", value: material.name)
-            LabeledContent("Shader Count", value: "\(material.shaders.count)")
-            if !material.shaders.isEmpty {
-                DisclosureGroup("Shaders") {
-                    ForEach(Array(material.shaders.enumerated()), id: \.offset) { _, shader in
-                        LabeledContent("Type \(shader.shaderType)", value: "texture #\(shader.textureId)")
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
     }
 }
 
