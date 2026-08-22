@@ -246,6 +246,18 @@ public final class WorkspaceViewModel {
                     self.registerDiscEntries(root, node: node, source: source)
                     if url.pathExtension.uppercased() == "ISO" {
                         self.mountedDiscImageURLByRootID[node.id] = url
+                        // "Quick Launch should use the disc I've already
+                        // mounted, not make me pick it again": Direct
+                        // Boot/Launch (`GameLauncherView`) only supports a
+                        // plain .iso (see `ISO9660Writer`'s own doc
+                        // comment — no raw .bin/.cue), which is exactly
+                        // the case this branch is already in. A user only
+                        // has one disc actively mounted/relevant at a
+                        // time in practice, so defaulting to whichever one
+                        // they just mounted is the real fix — manually
+                        // choosing a different image afterward still
+                        // overrides this until the next mount.
+                        self.discImageURL = url
                     }
                     self.rootNodes.append(node)
                     self.statusMessage = "Mounted \(url.lastPathComponent) — \(self.discEntryByNodeID.count) recognized file(s) available to open."

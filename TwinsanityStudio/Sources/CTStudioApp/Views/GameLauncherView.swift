@@ -23,8 +23,31 @@ struct GameLauncherView: View {
     @State private var errorMessage: String?
     @State private var isIntegrityFailure = false
     @State private var diagnostics: [String] = []
+    /// "Boot from either the level I'm in or the game": reached via Quick
+    /// Launch (`context != nil`) always used to force a level-specific
+    /// boot with no way back to a normal boot without closing this sheet
+    /// and finding the toolbar's separate "Play in PCSX2…" entry point
+    /// instead. This toggle lets both choices live in the one place the
+    /// user actually is, against the same already-chosen disc image.
+    @State private var bootTarget: BootTarget = .thisLevel
+
+    private enum BootTarget: String, CaseIterable, Identifiable {
+        case thisLevel = "This Level"
+        case mainGame = "Main Game"
+        var id: String { rawValue }
+    }
 
     private var context: WorkspaceViewModel.GameLauncherContext? { workspace.gameLauncherContext }
+
+    /// The real plan for whichever `bootTarget` is currently selected —
+    /// `context`'s own starting-chunk/archive-replacement data only
+    /// applies when booting into the level itself; a normal game boot
+    /// uses neither, same shape as the toolbar's own "Play in PCSX2…"
+    /// entry point (`context == nil`).
+    private var effectivePlan: GameLaunchPlan {
+        guard let context, bootTarget == .thisLevel else { return GameLaunchPlan() }
+        return GameLaunchPlan(startingChunkBaseName: context.startingChunkBaseName, archiveReplacements: context.archiveReplacements)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -60,12 +83,28 @@ struct GameLauncherView: View {
             .formStyle(.grouped)
 
             if let context {
+                Picker("Boot", selection: $bootTarget) {
+                    ForEach(BootTarget.allCases) { target in
+                        Text(target.rawValue).tag(target)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
                 VStack(alignment: .leading, spacing: 4) {
-                    Label("Boots straight into \(context.startingChunkBaseName)", systemImage: "bolt.fill")
-                        .font(.headline)
-                    Text(context.summary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if bootTarget == .thisLevel {
+                        Label("Boots straight into \(context.startingChunkBaseName)", systemImage: "bolt.fill")
+                            .font(.headline)
+                        Text(context.summary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Label("Boots the game normally, straight to the main menu", systemImage: "gamecontroller.fill")
+                            .font(.headline)
+                        Text("No level override, no pending edits baked in — the same disc image above, booted exactly as it is.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .padding(8)
                 .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
@@ -147,10 +186,7 @@ struct GameLauncherView: View {
 
     private func buildAndLaunch() {
         guard let discImageURL = workspace.discImageURL, let pcsx2AppURL = workspace.pcsx2AppURL else { return }
-        let plan = GameLaunchPlan(
-            startingChunkBaseName: context?.startingChunkBaseName,
-            archiveReplacements: context?.archiveReplacements ?? [:]
-        )
+        let plan = effectivePlan
         errorMessage = nil
         isIntegrityFailure = false
         diagnostics = []
@@ -192,10 +228,7 @@ struct GameLauncherView: View {
     /// caller doesn't control the lifetime of.
     private func rebuildAndSave() {
         guard let discImageURL = workspace.discImageURL else { return }
-        let plan = GameLaunchPlan(
-            startingChunkBaseName: context?.startingChunkBaseName,
-            archiveReplacements: context?.archiveReplacements ?? [:]
-        )
+        let plan = effectivePlan
         errorMessage = nil
         isIntegrityFailure = false
         diagnostics = []
