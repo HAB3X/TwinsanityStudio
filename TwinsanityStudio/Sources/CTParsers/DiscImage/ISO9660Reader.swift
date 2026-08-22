@@ -42,9 +42,15 @@ public struct ISO9660Entry: Sendable, Identifiable {
 ///
 /// Deliberately narrow: Level 1/2 primary volume descriptor + directory
 /// records only, no Rock Ridge/Joliet extensions (a PS2 disc's file tree
-/// is plain 8.3-ish ISO-9660, not a Unix/Windows-authored one) and no
-/// write-back — repacking a modified image back into a bootable disc is
-/// real, separate work this doesn't attempt.
+/// is plain 8.3-ish ISO-9660, not a Unix/Windows-authored one), and this
+/// type itself is read-only — repacking an edited file back into the
+/// image in place, patching its directory record's LBA/size (both the
+/// LE and BE copies, ECMA-119 7.3.3/7.3.1), is `ISO9660Writer
+/// .replacingFile(_:with:in:)`'s job, not this reader's. Real write-back
+/// exists and is wired into `WorkspaceViewModel.replacingDiscImage`/
+/// `savingPendingLevelViewerEditsToMountedDisc`, `GameLauncher`'s
+/// "Save Rebuilt ISO…"/quit-time autosave paths, plain `.iso` only (not
+/// raw-sector `.bin`/`.cue` — see `ISO9660Writer`'s own doc comment).
 public enum ISO9660Reader {
     private static let sectorSize = 2048
     private static let volumeDescriptorStartSector = 16
