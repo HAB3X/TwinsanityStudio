@@ -2245,7 +2245,16 @@ struct LevelViewerWindow: View {
 
     private func performQuickLaunchThisChunk() {
         guard let referenceNode = referenceNodeForFileOps, let actorFileRoot = workspace.fileRoot(containing: referenceNode) else { return }
-        let baseName = (actorFileRoot.displayName as NSString).deletingPathExtension
+        // Real bug this fixes (see `LevelDisplayNameMatching`'s own doc
+        // comment): this used to derive `baseName` as `(actorFileRoot.
+        // displayName as NSString).deletingPathExtension` with no
+        // `lastPathComponent` normalization, so a level reached by
+        // browsing a mounted disc/archive (`displayName` == a full path
+        // like "Levels/Earth/Cavern/cavent") produced "Levels/Earth/Cavern/
+        // cavent" instead of "cavent" — which `GameLauncher.building`'s own
+        // bare-`lastPathComponent` archive-entry matching could never
+        // match, always throwing "isn't in this disc's archive."
+        let baseName = LevelDisplayNameMatching.quickLaunchBaseName(fromDisplayName: actorFileRoot.displayName)
         var replacements: [String: Data] = [:]
         var summary = "Boots \(baseName) exactly as it is on the disc — no pending edits to bake in."
         if let patch = computingPendingOverridePatch() {
@@ -2922,8 +2931,16 @@ struct SceneryModeView: View {
     /// `loadingDestinationGraphics` to independently succeed) instead of
     /// the simpler, always-correct same-file duplicate. Bare-filename
     /// comparison is robust to both shapes.
+    ///
+    /// Real bug this ALSO fixes (see `LevelDisplayNameMatching`'s own doc
+    /// comment): this used to compare `displayName` directly against
+    /// `destinationSceneryFileRoot.displayName` with no normalization on
+    /// the destination side, so a destination level reached by browsing a
+    /// mounted disc/archive (whose `displayName` is a full archive path,
+    /// not a bare filename) could never match, producing "Couldn't
+    /// identify this level" in Scenery mode.
     private func isDestinationLevel(named displayName: String) -> Bool {
-        displayName.caseInsensitiveCompare(destinationSceneryFileRoot.displayName) == .orderedSame
+        LevelDisplayNameMatching.isSameLevel(displayName, destinationSceneryFileRoot.displayName)
     }
 
     private func place(section: Section, entry: WorkspaceViewModel.SceneryCatalogEntry, key: String) {

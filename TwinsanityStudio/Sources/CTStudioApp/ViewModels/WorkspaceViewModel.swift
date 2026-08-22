@@ -2792,14 +2792,34 @@ public final class WorkspaceViewModel {
     public func sceneryLevelSources(excluding destinationSceneryFileRoot: ChunkNode?) -> [SceneryLevelSource] {
         var seenNames = Set<String>()
         var results: [SceneryLevelSource] = []
-        if let excludedName = destinationSceneryFileRoot?.displayName.lowercased() {
-            seenNames.insert(excludedName)
+        // Normalized to bare filename to match the (now also
+        // bare-normalized, see below) keys inserted by the
+        // `otherLevelSceneryFileRoots` loop — `destinationSceneryFileRoot`
+        // is exactly the disc/archive-browsed case whose `displayName` can
+        // be a full path, and an un-normalized exclusion key here would
+        // silently stop excluding the destination level from its own
+        // "borrow scenery from another level" picker.
+        if let excludedName = destinationSceneryFileRoot?.displayName {
+            seenNames.insert((excludedName as NSString).lastPathComponent.lowercased())
         }
 
         for root in otherLevelSceneryFileRoots {
-            let key = root.displayName.lowercased()
+            // Real bug this fixes: `root.displayName` is the FULL archive
+            // path (e.g. "Levels/Earth/Cavern/cavent") for a level reached
+            // by browsing into a mounted disc/archive, not just the bare
+            // filename — used raw here, unlike the archive-index branch
+            // below which already normalizes via `lastPathComponent`. That
+            // inconsistency broke both `seenNames` de-duplication against
+            // the archive-index branch (this bare/full-path key wouldn't
+            // match the other branch's) and every downstream exact-match
+            // comparison against `SceneryLevelSource.displayName` — see
+            // `LevelDisplayNameMatching`'s own doc comment for the
+            // Scenery-mode/Quick-Launch symptoms this same class of bug
+            // caused. Bare filename is robust to both shapes.
+            let bareDisplayName = (root.displayName as NSString).lastPathComponent
+            let key = bareDisplayName.lowercased()
             guard seenNames.insert(key).inserted else { continue }
-            results.append(SceneryLevelSource(id: key, displayName: root.displayName, openFileRoot: root))
+            results.append(SceneryLevelSource(id: key, displayName: bareDisplayName, openFileRoot: root))
         }
 
         for (rootID, index) in archiveIndexByRootID {
