@@ -17,7 +17,7 @@ to Swift — see [Acknowledgments](#acknowledgments) below. The Wrath of
 Cortex side is reverse-engineered from scratch; nothing like it existed
 before.
 
-**macOS only, for now** — see [Roadmap](#roadmap).
+**macOS only, for now.**
 
 ## Features
 
@@ -202,17 +202,6 @@ an edited file actually **boots and runs correctly on a real PS2** or in an
 emulator — no claim here should be read as hardware-tested. If you try
 something on real hardware or an emulator, that's the actual verification
 step, and issues found there are genuinely useful to report.
-
-## Roadmap
-
-- Fix animation playback (live-deformed skinned mesh, not just decoded
-  channel values)
-- Full support for all versions of both Twinsanity and Wrath of Cortex
-  (PS2, Xbox, demo builds)
-- Full support for CrateModLoader crates (import, not just export)
-- Support for the LEGO TT-engine titles
-- A comprehensive UI overhaul
-- Windows support
 
 ## Acknowledgments
 
