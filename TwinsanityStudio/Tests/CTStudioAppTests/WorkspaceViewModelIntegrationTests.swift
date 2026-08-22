@@ -303,6 +303,92 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
         XCTAssertNotNil(workspace.lastError, "the corrupted file's parse failure should have been reported, not silently swallowed")
         XCTAssertTrue(workspace.lastError?.contains("corrupted.rm2") ?? false, "lastError should name the file that failed: \(workspace.lastError ?? "nil")")
     }
+
+    /// "Forge Palette anywhere": the user's own ask — "I want the thumbnail
+    /// to load in the forge palette even if the level is not loaded." A
+    /// fresh workspace with the real archive open but nothing scanned/
+    /// expanded yet has no level of its own to resolve BASICCRATE (#3)
+    /// against, and `resolvingObjectIDAcrossAllLevels` deliberately doesn't
+    /// consult the shared-`Default.rm2` fast path other resolvers use —
+    /// yet BASICCRATE's own `GameObject` entry lives in that disc's real
+    /// `Startup/Default.rm2` (see `AssetResolver.resolveInstanceObject`'s
+    /// own doc comment on why shared pickups/props live there), which is
+    /// itself just one more real `.rm2` entry `allLevelGraphicsCandidates`
+    /// enumerates — so the disc-wide search should still find it there.
+    func testResolvingObjectIDAcrossAllLevelsFindsRealGeometryAndRecordsItGlobally() async throws {
+        let bhURL = URL(fileURLWithPath: "/Users/marcuschandler/Documents/Crash Twinsanity/Games Files/PS2 FILES/CRASH6/CRASH.BH")
+        guard FileManager.default.fileExists(atPath: bhURL.path) else {
+            throw XCTSkip("Real CRASH.BH not present on this machine.")
+        }
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: bhURL)
+        XCTAssertTrue(workspace.globalObjectThumbnails.isEmpty, "sanity check: nothing should be resolved yet before this search runs")
+
+        let resolved = await workspace.resolvingObjectIDAcrossAllLevels(3)
+        let unwrapped = try XCTUnwrap(resolved, "expected BASICCRATE (#3) to resolve somewhere on the real disc")
+        XCTAssertFalse(unwrapped.mesh.submeshes.isEmpty)
+
+        XCTAssertEqual(workspace.globalObjectThumbnails[3]?.id, unwrapped.id, "a successful disc-wide resolution must be recorded into globalObjectThumbnails -- the same cache every other Forge Palette / ModelViewerRenderer.globalObjectFallbacks consumer already reads, so this is what makes the resolution 'immediately available everywhere else'")
+
+        // A second call for the same, now-resolved object ID should
+        // short-circuit through the `globalObjectThumbnails` cache rather
+        // than re-running the whole disc-wide search.
+        let secondResolved = await workspace.resolvingObjectIDAcrossAllLevels(3)
+        XCTAssertEqual(secondResolved?.id, unwrapped.id)
+    }
+
+    /// Real, permanently-unresolvable object IDs exist on this disc — both
+    /// `ALTEARTH_CORE_HOLOGRAPHIC_SPAWNER` (#986) and
+    /// `ALTEARTH_CORE_LASER_ROTOGUN_TARGET` (#1016) carry `AssetResolver.
+    /// resolveInstanceObject`'s real "no value" (`65535`) sentinel, so no
+    /// level on the real disc can ever resolve either of them. A disc-wide
+    /// search for one must come back `nil` (not hang, not crash) and cache
+    /// that negative result.
+    func testResolvingAConfirmedUnresolvableObjectIDReturnsNilAndCachesTheNegativeResult() async throws {
+        let bhURL = URL(fileURLWithPath: "/Users/marcuschandler/Documents/Crash Twinsanity/Games Files/PS2 FILES/CRASH6/CRASH.BH")
+        guard FileManager.default.fileExists(atPath: bhURL.path) else {
+            throw XCTSkip("Real CRASH.BH not present on this machine.")
+        }
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: bhURL)
+
+        let resolved = await workspace.resolvingObjectIDAcrossAllLevels(986)
+        XCTAssertNil(resolved)
+        XCTAssertTrue(workspace.confirmedUnresolvableObjectIDs.contains(986))
+    }
+
+    /// "Never re-parse a level archive entry you've already parsed this
+    /// session": a second disc-wide search (for a *different*, still-
+    /// unresolvable object ID, so it can't just short-circuit through
+    /// `globalObjectThumbnails`/`confirmedUnresolvableObjectIDs` at the very
+    /// top) must still visit the same universe of real `.rm2`/`.rmx`
+    /// candidates, but every one of them was already parsed into a cached
+    /// `GraphicsAssetIndex` by the first search — so it should complete
+    /// dramatically faster than the first, proving levels aren't being
+    /// re-parsed from scratch.
+    func testResolvingObjectIDAcrossAllLevelsReusesAlreadyParsedLevelIndicesOnALaterSearch() async throws {
+        let bhURL = URL(fileURLWithPath: "/Users/marcuschandler/Documents/Crash Twinsanity/Games Files/PS2 FILES/CRASH6/CRASH.BH")
+        guard FileManager.default.fileExists(atPath: bhURL.path) else {
+            throw XCTSkip("Real CRASH.BH not present on this machine.")
+        }
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: bhURL)
+
+        let firstStart = Date()
+        let firstResult = await workspace.resolvingObjectIDAcrossAllLevels(986)
+        let firstDuration = Date().timeIntervalSince(firstStart)
+        XCTAssertNil(firstResult)
+
+        let secondStart = Date()
+        let secondResult = await workspace.resolvingObjectIDAcrossAllLevels(1016)
+        let secondDuration = Date().timeIntervalSince(secondStart)
+        XCTAssertNil(secondResult)
+
+        XCTAssertLessThan(
+            secondDuration, max(firstDuration / 2, 1),
+            "the second search should reuse every level's already-parsed GraphicsAssetIndex instead of re-parsing archive entries it already visited; first=\(firstDuration)s second=\(secondDuration)s"
+        )
+    }
 }
 
 /// Bridges `@Observable`'s access-based change tracking to XCTest's

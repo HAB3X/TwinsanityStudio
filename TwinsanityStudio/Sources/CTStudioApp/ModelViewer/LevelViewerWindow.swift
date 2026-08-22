@@ -281,6 +281,12 @@ struct LevelViewerWindow: View {
     /// `ObservableObject`, so `@State` (not `@StateObject`) is the correct
     /// owner here.
     @State private var sceneryCache = SceneryLoadCache()
+    /// "Forge Palette anywhere" — see `GlobalObjectResolutionCache`'s own
+    /// doc comment. Same `@State`-owned-here, passed-down-to-the-palette
+    /// shape as `sceneryCache` immediately above, for the same reason: it
+    /// needs to survive switching `editorMode` away from the Forge Palette
+    /// tab and back without losing in-flight/confirmed search state.
+    @State private var globalObjectResolutionCache = GlobalObjectResolutionCache()
     /// "Numbered Hotbar (1-9)": what's pinned to each of the 9 slots —
     /// `nil` for an empty slot. Session-only, like `armedPlacement`; not
     /// persisted to disk. Pinned from the Forge Palette (a small pin
@@ -902,6 +908,7 @@ struct LevelViewerWindow: View {
                 workspace.recordGlobalObjectThumbnail(objectID: objectID, asset: resolved)
                 return resolved
             },
+            resolutionCache: globalObjectResolutionCache,
             searchText: $sidebarSearchText,
             onPin: { objectID, name in pinToHotbar(objectID: objectID, name: name) },
             armedObjectID: armedPlacement?.objectID
@@ -2466,6 +2473,12 @@ private struct ForgePaletteView: View {
     /// same reasons `canResolve` can be `nil`/`false` (renderer not ready
     /// yet, or this level's data genuinely has no geometry for that ID).
     let resolveForThumbnail: (UInt16) -> ResolvedModelAsset?
+    /// "Forge Palette anywhere": drives (and reports the in-flight state of)
+    /// the background disc-wide search for an entry `resolveForThumbnail`
+    /// currently misses — see `GlobalObjectResolutionCache`'s own doc
+    /// comment. Owned by `LevelViewerWindow`, handed down the same way
+    /// `SceneryLoadCache` is to `SceneryModeView`.
+    let resolutionCache: GlobalObjectResolutionCache
     /// Bound to the sidebar-wide search field (`LevelViewerWindow`'s own
     /// `sidebarSearchText`) — typing there filters this palette live even
     /// when "Place" isn't the active mode tab, and the palette's own
@@ -2485,12 +2498,24 @@ private struct ForgePaletteView: View {
     let armedObjectID: UInt16?
     let onArm: (UInt16, String) -> Void
 
+    /// Needed only to hand to `resolutionCache.search(objectID:workspace:)`
+    /// — every actual resolve/render call still goes through `canResolve`/
+    /// `resolveForThumbnail` above, kept as closures (not a second, direct
+    /// path into `workspace`) so this view's own resolve logic stays exactly
+    /// in lockstep with whatever `renderer` the caller is actually using.
+    @Environment(WorkspaceViewModel.self) private var workspace
+
     @State private var selectedCategory: DefaultObjectID.Category?
     @State private var hideUnavailable = false
     /// Same cache/failure-set split `ModelsHubView` uses for its gallery
     /// thumbnails, keyed by `objectID` instead of a resolved asset's own
     /// `id` — a palette entry's thumbnail is looked up before any
-    /// `ResolvedModelAsset` exists for it.
+    /// `ResolvedModelAsset` exists for it. `failedThumbnailIDs` means
+    /// specifically "a real resolved asset's *3D render* failed" — it must
+    /// never be set just because `resolveForThumbnail` came up empty (see
+    /// `loadThumbnailIfNeeded`'s doc comment): conflating the two would
+    /// freeze a row at the orange placeholder forever, even after a
+    /// background `resolutionCache` search later succeeds.
     @State private var thumbnailCache: [UInt16: NSImage] = [:]
     @State private var failedThumbnailIDs: Set<UInt16> = []
 
@@ -2548,7 +2573,19 @@ private struct ForgePaletteView: View {
                         HStack {
                             paletteThumbnail(for: entry.id, resolvable: resolvable)
                                 .frame(width: 40, height: 40)
-                                .onAppear { loadThumbnailIfNeeded(for: entry.id) }
+                                // "Forge Palette anywhere": `.task(id:)`
+                                // (not `.onAppear`) specifically so this
+                                // re-fires the instant `resolvable` flips
+                                // from false to true — the moment a
+                                // background `resolutionCache` search
+                                // resolves this object in some other level,
+                                // `canResolve` (which already re-checks
+                                // `workspace.globalObjectThumbnails` live)
+                                // starts returning true for it, and this row
+                                // needs to actually kick off the real 3D
+                                // thumbnail render at that point, not just
+                                // wait for the user to scroll away and back.
+                                .task(id: resolvable) { loadThumbnailIfNeeded(for: entry.id) }
                             Text(entry.name).lineLimit(1).font(.callout)
                                 .foregroundStyle(resolvable ? .primary : .secondary)
                             Spacer()
@@ -2583,8 +2620,13 @@ private struct ForgePaletteView: View {
     /// real offscreen 3D render (`ModelThumbnailRenderer`, same renderer
     /// the Models Hub gallery already uses) per resolvable entry — not a
     /// generic cube glyph standing in for "some model." Entries with no
-    /// real geometry keep the amber placeholder glyph, since there's
-    /// nothing real to render a thumbnail of.
+    /// real geometry (yet) show one of two honestly-different states —
+    /// "Forge Palette anywhere"'s own requirement that "still checking"
+    /// never look identical to "checked everywhere, genuinely nothing":
+    /// a spinner with a distinct tooltip while `resolutionCache` is actively
+    /// searching every other level on this disc, versus the static amber
+    /// placeholder once that search has confirmed there's really nothing
+    /// there.
     @ViewBuilder
     private func paletteThumbnail(for objectID: UInt16, resolvable: Bool) -> some View {
         if let thumbnail = thumbnailCache[objectID] {
@@ -2592,10 +2634,19 @@ private struct ForgePaletteView: View {
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
-        } else if !resolvable || failedThumbnailIDs.contains(objectID) {
+        } else if !resolvable {
+            if resolutionCache.status(for: objectID) == .searching {
+                ProgressView().controlSize(.mini)
+                    .help("Searching every other level on this disc for this object's real geometry…")
+            } else {
+                Image(systemName: "cube.transparent")
+                    .foregroundStyle(.orange)
+                    .help("No geometry for this object anywhere on this disc — placing it drops an amber placeholder cube instead of a real model.")
+            }
+        } else if failedThumbnailIDs.contains(objectID) {
             Image(systemName: "cube.transparent")
                 .foregroundStyle(.orange)
-                .help("No geometry resolves for this object in this level — placing it drops an amber placeholder cube instead of a real model.")
+                .help("This object resolved to real geometry, but rendering its thumbnail failed.")
         } else {
             ProgressView().controlSize(.mini)
         }
@@ -2604,9 +2655,26 @@ private struct ForgePaletteView: View {
     /// Same off-main-thread rendering posture as `ModelsHubView.
     /// loadThumbnailIfNeeded` — only skipped if already cached/failed, or
     /// if this entry has no real geometry to render in the first place.
+    ///
+    /// "Forge Palette anywhere": when `resolveForThumbnail` comes up empty
+    /// (nothing in this level's own data, the shared `Default.rm2`, or an
+    /// earlier global resolution), this does *not* fall into
+    /// `failedThumbnailIDs` — that set means "a real render of a *resolved*
+    /// asset failed," a genuinely different, permanent case from "nothing
+    /// resolved here yet, but a background search might still find it
+    /// somewhere else." Instead it hands off to `resolutionCache`, which
+    /// starts (or no-ops onto an already-running/-confirmed) a bounded
+    /// disc-wide search; if that search later succeeds, `canResolve` starts
+    /// returning true for this ID (it re-reads `workspace.
+    /// globalObjectThumbnails` live), the row's own `.task(id: resolvable)`
+    /// re-fires, and this function runs again — this time reaching the real
+    /// `resolveForThumbnail` branch below.
     private func loadThumbnailIfNeeded(for objectID: UInt16) {
         guard thumbnailCache[objectID] == nil, !failedThumbnailIDs.contains(objectID) else { return }
-        guard let asset = resolveForThumbnail(objectID) else { return }
+        guard let asset = resolveForThumbnail(objectID) else {
+            resolutionCache.search(objectID: objectID, workspace: workspace)
+            return
+        }
         Task.detached(priority: .userInitiated) {
             let image = ModelThumbnailRenderer.render(asset, size: 64)
             await MainActor.run {

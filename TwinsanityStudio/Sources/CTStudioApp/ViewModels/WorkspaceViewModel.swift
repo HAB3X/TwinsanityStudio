@@ -660,6 +660,29 @@ public final class WorkspaceViewModel {
     /// flag already true and return `nil` prematurely, before the real
     /// result ever landed.
     private var sharedDefaultAssetIndexTask: Task<GraphicsAssetIndex?, Never>?
+    /// "Forge Palette anywhere": one real level `.rm2`/`.rmx` archive
+    /// entry's own parsed `GraphicsAssetIndex`, keyed by `"<archive
+    /// rootID>|<entry name>"` — the exact same "cache the `Task` itself, not
+    /// just its eventual result" pattern as `sharedDefaultAssetIndexTask`
+    /// immediately above, generalized from the one shared `Default.rm2` to
+    /// any level entry `resolvingObjectIDAcrossAllLevels` visits. A second
+    /// concurrent lookup against a level whose parse is already in flight
+    /// (the same level can appear as a candidate for two different object
+    /// IDs searched around the same time) awaits the same `Task` instead of
+    /// re-parsing, and a level already fully parsed this session is never
+    /// re-parsed again for a later object ID.
+    private var levelAssetIndexTaskByKey: [String: Task<GraphicsAssetIndex?, Never>] = [:]
+    /// "Forge Palette anywhere": every `Instance.objectID` this session has
+    /// confirmed resolves to real geometry in *no* level on this disc —
+    /// see `resolvingObjectIDAcrossAllLevels`'s doc comment. Real, permanent
+    /// examples exist (`ALTEARTH_CORE_HOLOGRAPHIC_SPAWNER` #986,
+    /// `ALTEARTH_CORE_LASER_ROTOGUN_TARGET` #1016 — both carry
+    /// `AssetResolver.resolveInstanceObject`'s real `65535` "no value"
+    /// sentinel, so no level can ever resolve them). Not `private` so
+    /// `WorkspaceViewModelTests` can assert the negative cache actually
+    /// populates without needing a real mounted archive to prove a search
+    /// stops early on a repeat lookup.
+    private(set) var confirmedUnresolvableObjectIDs: Set<UInt16> = []
     /// Raw file bytes for standalone-opened `.RM2`/`.SM2` files, keyed by
     /// their root `ChunkNode.id` — the "Editing GUI" write path's source
     /// material for patching an edited record back in at its known offset.
@@ -2927,12 +2950,27 @@ public final class WorkspaceViewModel {
     }
 
     /// Every distinct real model placed in `sceneryRoot`, resolved against
-    /// `graphicsRoot`'s own Graphics data — the click-to-place catalog for
+    /// `sceneryRoot`'s *own* Graphics data — the click-to-place catalog for
     /// one picked source level.
+    ///
+    /// Previously built its index from the paired `graphicsRoot` (`.rm2`)
+    /// instead, on the assumption scenery geometry lived there. Verified
+    /// empirically against the real disc archive (`Levels/Earth/Hub/
+    /// hubb.sm2`/`hubb.rm2`): every one of `hubb.sm2`'s real 462 scenery
+    /// placements resolves against `hubb.sm2`'s own Graphics section (245
+    /// `RigidModel`s / 80 `LodModel`s); *none* resolve against `hubb.rm2`'s
+    /// (which carries the level's Instance/Trigger/Camera/AI data instead —
+    /// see `resolvedLevelPlacements`'s own doc comment, independently
+    /// confirming `.rm2` has "zero scenery"). Building the index from the
+    /// wrong file made every `resolveModelID` call fail, so this panel
+    /// always reported zero placements regardless of how much real scenery
+    /// a level actually had — the viewport rendered fine the whole time
+    /// because `resolvedLevelPlacements` already indexed the scenery file
+    /// itself. This now matches that working code path exactly.
     public func resolvedSceneryCatalog(sceneryRoot: ChunkNode, graphicsRoot: ChunkNode) async -> [SceneryCatalogEntry] {
         guard let sceneryNode = sceneryNode(in: sceneryRoot), case .scenery(let asset)? = sceneryNode.payload else { return [] }
         return await Task.detached(priority: .userInitiated) {
-            let index = AssetResolver.buildIndex(fileRoot: graphicsRoot)
+            let index = AssetResolver.buildIndex(fileRoot: sceneryRoot)
             var byKey: [String: SceneryCatalogEntry] = [:]
             for placement in asset.placements {
                 let key = "\(placement.modelID)-\(placement.isSpecial)"
@@ -3658,6 +3696,147 @@ public final class WorkspaceViewModel {
         }
         sharedDefaultAssetIndexTask = task
         return await task.value
+    }
+
+    // MARK: - "Forge Palette anywhere" (global object resolution across every level)
+
+    /// Splits `count` candidate indices into `laneCount` round-robin lanes —
+    /// lane 0 gets indices `0, laneCount, 2*laneCount, …`, lane 1 gets
+    /// `1, laneCount+1, …`, and so on. This is the exact assignment
+    /// `resolvingObjectIDAcrossAllLevels`'s bounded-concurrency search uses
+    /// to split its candidate level list across a handful of lanes (matching
+    /// `SceneryLoadCache`'s own lane-count approach). Pulled out as a free,
+    /// `nonisolated`, pure function so the assignment itself is directly
+    /// unit-testable without a real workspace or archive.
+    nonisolated static func laneIndices(count: Int, laneCount: Int) -> [[Int]] {
+        guard count > 0, laneCount > 0 else { return [] }
+        return (0..<laneCount).map { lane in Array(stride(from: lane, to: count, by: laneCount)) }
+    }
+
+    /// One real `.rm2`/`.rmx` archive entry this session can reach —
+    /// `resolvingObjectIDAcrossAllLevels`'s own candidate unit. Deliberately
+    /// broader than `SceneryLevelSource`: an object's real geometry lives
+    /// directly in a level's own `.rm2`/`.rmx` Graphics/Code sections, with
+    /// no `.sm2`/`.smx` scenery sibling required at all, so this enumerates
+    /// every graphics-bearing archive entry, not just scenery-paired ones.
+    private struct LevelGraphicsCandidate {
+        var key: String
+        var archiveRootID: UUID
+        var entry: ArchiveEntry
+    }
+
+    /// Every real `.rm2`/`.rmx` entry across every mounted archive this
+    /// session has open — the same `archiveIndexByRootID` universe
+    /// `sceneryLevelSources`'s own archive-index loop enumerates, widened
+    /// from ".sm2/.smx with a paired sibling" to "every graphics file,
+    /// period." Deliberately doesn't also enumerate already-open standalone
+    /// files (unlike `sceneryLevelSources`) — this search only ever runs for
+    /// an object ID that already missed this *session's* own currently-open
+    /// level (checked by the three existing sources before this ever
+    /// engages), so re-checking that same open level again here would be
+    /// pure waste.
+    private func allLevelGraphicsCandidates() -> [LevelGraphicsCandidate] {
+        var results: [LevelGraphicsCandidate] = []
+        for (rootID, index) in archiveIndexByRootID {
+            for entry in index.entries {
+                let ext = (entry.name as NSString).pathExtension.lowercased()
+                guard ext == "rm2" || ext == "rmx" else { continue }
+                results.append(LevelGraphicsCandidate(key: "\(rootID)|\(entry.name)", archiveRootID: rootID, entry: entry))
+            }
+        }
+        return results
+    }
+
+    /// Parses (or reuses an already-in-flight/-completed parse of) one
+    /// candidate level's own `GraphicsAssetIndex` — the exact coalescing
+    /// cache `loadSharedDefaultAssetIndexIfNeeded` established for the one
+    /// shared `Default.rm2`, generalized here to any level entry: concurrent
+    /// lookups against the same not-yet-parsed level coalesce onto the same
+    /// in-flight `Task` rather than each starting their own redundant parse,
+    /// and a level already parsed this session is never parsed again.
+    private func loadingLevelAssetIndex(_ candidate: LevelGraphicsCandidate) async -> GraphicsAssetIndex? {
+        if let existingTask = levelAssetIndexTaskByKey[candidate.key] {
+            return await existingTask.value
+        }
+        guard let index = archiveIndexByRootID[candidate.archiveRootID] else { return nil }
+        let entry = candidate.entry
+        let task = Task<GraphicsAssetIndex?, Never> {
+            await Task.detached(priority: .utility) { () -> GraphicsAssetIndex? in
+                guard let data = try? BDArchiveParser.readEntryData(entry, index: index),
+                      let fileRoot = try? Self.mainTreeDriver(forExtension: (entry.name as NSString).pathExtension).parseChunkFile(data: data, fileKind: Self.fileKind(forEntryNamed: entry.name), fileName: entry.name)
+                else { return nil }
+                return AssetResolver.buildIndex(fileRoot: fileRoot)
+            }.value
+        }
+        levelAssetIndexTaskByKey[candidate.key] = task
+        return await task.value
+    }
+
+    /// "I want the thumbnail to load in the forge palette even if the level
+    /// is not loaded" — the real, bounded, non-blocking disc-wide search
+    /// behind that request. Called only on demand, per object ID actually
+    /// displayed (`GlobalObjectResolutionCache.search`), never as an eager
+    /// pre-scan: searches every other real `.rm2`/`.rmx` level this session
+    /// can reach (`allLevelGraphicsCandidates`) across a handful of
+    /// concurrent lanes (`laneIndices`, matching `SceneryLoadCache`'s own
+    /// lane count), stopping at the first level whose own `GraphicsAssetIndex`
+    /// actually resolves `objectID` to real geometry (a resolved `GameObject`
+    /// whose mesh has at least one submesh — the same bar
+    /// `ModelViewerRenderer.canResolveObjectID` already holds every other
+    /// resolution source to).
+    ///
+    /// Every lane checks `foundAsset` before parsing its next candidate, so
+    /// a resolution in one lane stops every other lane from parsing further
+    /// candidates it no longer needs — mutating `foundAsset` is safe despite
+    /// several lanes touching it because this whole method (and every lane
+    /// `Task` it starts, since a plain, non-detached `Task { }` inherits its
+    /// creator's actor) runs on this `@MainActor` class, so every actual
+    /// read/write is serialized between the `await` points inside
+    /// `loadingLevelAssetIndex` — the same "plain parallel Tasks, not a
+    /// `TaskGroup`" shape `SceneryModeView.loadAllLevels` already uses, for
+    /// the same Sendable-capture reasoning.
+    ///
+    /// On success, records the resolution into `globalObjectThumbnails` so
+    /// it's immediately available everywhere else that already checks it
+    /// (the Forge Palette in every other open level, `ModelViewerRenderer.
+    /// globalObjectFallbacks`) — no new cache for the *result* itself. On
+    /// total failure, caches `objectID` in `confirmedUnresolvableObjectIDs`
+    /// so a permanently-unresolvable ID (a real one exists — see that
+    /// property's own doc comment) never triggers a second full disc scan.
+    public func resolvingObjectIDAcrossAllLevels(_ objectID: UInt16) async -> ResolvedModelAsset? {
+        if let cached = globalObjectThumbnails[objectID] { return cached }
+        guard !confirmedUnresolvableObjectIDs.contains(objectID) else { return nil }
+
+        let candidates = allLevelGraphicsCandidates()
+        guard !candidates.isEmpty else {
+            confirmedUnresolvableObjectIDs.insert(objectID)
+            return nil
+        }
+
+        let laneCount = min(4, candidates.count)
+        var foundAsset: ResolvedModelAsset?
+        var laneTasks: [Task<Void, Never>] = []
+        for lane in Self.laneIndices(count: candidates.count, laneCount: laneCount) {
+            let laneCandidates = lane.map { candidates[$0] }
+            laneTasks.append(Task {
+                for candidate in laneCandidates {
+                    if foundAsset != nil { return }
+                    guard let index = await self.loadingLevelAssetIndex(candidate) else { continue }
+                    if let resolved = AssetResolver.resolveInstanceObject(objectID: objectID, instanceSelector: 0, index: index),
+                       !resolved.mesh.submeshes.isEmpty, foundAsset == nil {
+                        foundAsset = resolved
+                    }
+                }
+            })
+        }
+        for laneTask in laneTasks { await laneTask.value }
+
+        if let foundAsset {
+            recordGlobalObjectThumbnail(objectID: objectID, asset: foundAsset)
+            return foundAsset
+        }
+        confirmedUnresolvableObjectIDs.insert(objectID)
+        return nil
     }
 
     /// "Chunk-Based Architecture" (Part 2) — "seamlessly load and stitch
