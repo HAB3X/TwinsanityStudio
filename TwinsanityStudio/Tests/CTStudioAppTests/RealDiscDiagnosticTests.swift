@@ -504,3 +504,224 @@ extension RealDiscDiagnosticTests {
         XCTAssertGreaterThan(resolvedViaLOD, s.placements.count * 9 / 10, "expected LodModel resolution to recover nearly all real placements")
     }
 }
+
+/// Real regression coverage for "placing scenery via the Level Viewer's
+/// Scenery tab fails every time" ("Internal error: couldn't safely apply
+/// the record change to the file structure — refusing to save a
+/// possibly-corrupt result"). The real root cause, found by reproducing
+/// the *live app's* actual archive-browsing path rather than a from-scratch
+/// parse: `WorkspaceViewModel.expandArchiveEntry` built the archive-browsed
+/// file's `ChunkNode` root by copying `fileOffset`/`byteSize` from the
+/// still-unexpanded archive-entry *placeholder* node — `entry.offset`/
+/// `entry.size` from the `.BH` index, i.e. this file's span *inside the
+/// shared `.BD`* (a real `beach.sm2` sits at archive offset 107204180) —
+/// instead of the freshly-parsed root's own fields (`fileOffset: 0`, set by
+/// `RM2Parser.parse` as it does for any standalone-opened file). Meanwhile
+/// `rawFileBytesByRootID[replacement.id]` stores only this one file's own
+/// already-extracted standalone bytes (`BDArchiveParser.readEntryData`),
+/// addressed from 0. `SceneryData` is a tier-0 "raw leaf" whose containing
+/// section *is the file root itself* (see `RM2Parser.tier0Kind`'s doc
+/// comment) — the first ever write path in this codebase to target the
+/// file root directly — so `ChunkSectionInserter` sliced the standalone
+/// buffer at the archive-relative offset and always landed out of bounds,
+/// returning `nil`. The same file-root-as-outermost-ancestor mechanics mean
+/// this also would have broken Instance/Trigger/Camera/AIPosition/AIPath
+/// insertion for any archive-browsed level, not just scenery — it just
+/// never showed up there because nothing had exercised that combination
+/// with a real regression test before now.
+///
+/// A from-scratch `RM2Parser.parse` of the same real bytes, called
+/// directly (never routing through `expandArchiveEntry`), cannot reproduce
+/// this — its root's `fileOffset` is correctly 0 by construction. Only
+/// actually driving `WorkspaceViewModel`'s real archive-browsing path
+/// (`open(url:)` -> `expandArchiveEntry`, exactly what the Level Viewer's
+/// sidebar does when a user opens a level from a mounted disc/archive —
+/// "the normal way anyone opens a level," per `expandArchiveEntry`'s own
+/// doc comment) surfaces it.
+@MainActor
+final class ScenerPlacementArchiveRegressionTests: XCTestCase {
+    /// Real `.BH`/`.BD` archive location — checks both the machine-local
+    /// copy and a mounted disc image, same dual-path convention
+    /// `WorkspaceViewModelIntegrationTests` already uses.
+    private static func locateRealBH() throws -> URL {
+        let candidates = [
+            "/Volumes/CRASH/CRASH6/CRASH.BH",
+            "/Users/marcuschandler/Documents/Crash Twinsanity/Games Files/PS2 FILES/CRASH6/CRASH.BH",
+        ]
+        for path in candidates where FileManager.default.fileExists(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+        throw XCTSkip("Neither a mounted disc image nor the local CRASH.BH archive is present on this machine.")
+    }
+
+    private static func findScenery(in root: ChunkNode) -> SceneryAsset? {
+        if case .scenery(let asset) = root.payload { return asset }
+        for child in root.children {
+            if let found = findScenery(in: child) { return found }
+        }
+        return nil
+    }
+
+    /// Narrow, fast pin of the actual fix: an archive-browsed file root's
+    /// own `fileOffset` must be 0 (relative to the standalone bytes
+    /// `rawFileBytesByRootID` stores for it), never the `.BD`-relative
+    /// offset the unexpanded archive-entry placeholder carried.
+    func testArchiveBrowsedFileRootUsesStandaloneByteCoordinates() async throws {
+        let bhURL = try Self.locateRealBH()
+        let index = try BDArchiveParser.readIndex(bhURL: bhURL)
+        let entryName = "Levels/Earth/Hub/beach.sm2"
+        let entry = try XCTUnwrap(index.entries.first { $0.name == entryName })
+        // Real evidence this file really does sit at a large, nonzero
+        // offset inside the shared .BD — if this ever failed, the rest of
+        // this test wouldn't actually be exercising the bug.
+        XCTAssertGreaterThan(entry.offset, 0, "expected this fixture entry to sit well inside the archive, not at its very start")
+
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: bhURL)
+        let archiveRoot = try XCTUnwrap(workspace.rootNodes.first)
+        let placeholder = try XCTUnwrap(archiveRoot.children.first { $0.displayName == entryName })
+        XCTAssertEqual(placeholder.fileOffset, Int(entry.offset), "sanity check: the unexpanded placeholder should carry the raw archive offset")
+
+        await workspace.expandArchiveEntry(placeholder, rootID: archiveRoot.id)
+        let expanded = try XCTUnwrap(archiveRoot.children.first { $0.displayName == entryName })
+
+        XCTAssertEqual(expanded.fileOffset, 0, "an archive-browsed file root's fileOffset must match its own standalone bytes (start at 0), not the .BD archive offset")
+        XCTAssertEqual(expanded.byteSize, Int(entry.size))
+        XCTAssertTrue(workspace.canSaveEdits(for: expanded), "expanding an archive entry should register its raw bytes for saving")
+    }
+
+    /// The actual user-facing bug, reproduced and fixed: same-level scenery
+    /// placement ("this level's own scenery" tile in the Scenery tab) on a
+    /// level reached by browsing a mounted archive, verified with a real
+    /// round-trip re-parse, not just "didn't return nil."
+    func testPlacingSceneryOnArchiveBrowsedLevelRoundTrips() async throws {
+        let bhURL = try Self.locateRealBH()
+        let index = try BDArchiveParser.readIndex(bhURL: bhURL)
+        let entryName = "Levels/Earth/Hub/beach.sm2"
+        let entry = try XCTUnwrap(index.entries.first { $0.name == entryName })
+        let originalData = try BDArchiveParser.readEntryData(entry, index: index)
+
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: bhURL)
+        let archiveRoot = try XCTUnwrap(workspace.rootNodes.first)
+        let placeholder = try XCTUnwrap(archiveRoot.children.first { $0.displayName == entryName })
+        await workspace.expandArchiveEntry(placeholder, rootID: archiveRoot.id)
+        let sceneryFileRoot = try XCTUnwrap(archiveRoot.children.first { $0.displayName == entryName })
+
+        let sceneryNode = try XCTUnwrap(workspace.sceneryNode(in: sceneryFileRoot))
+        guard case .scenery(let originalScenery)? = sceneryNode.payload else {
+            return XCTFail("expected a decoded SceneryData payload for \(entryName)")
+        }
+        let originalPlacementCount = originalScenery.placements.count
+        XCTAssertGreaterThan(originalPlacementCount, 0, "fixture level should already have real scenery placements")
+        let modelID = try XCTUnwrap(originalScenery.placements.first?.modelID)
+        let placedPosition = SIMD4<Float>(123, 45, 67, 1)
+
+        guard let patchedBytes = workspace.duplicatingSceneryPlacement(
+            modelID: modelID, isSpecial: false, position: placedPosition, sceneryFileRoot: sceneryFileRoot
+        ) else {
+            return XCTFail("duplicatingSceneryPlacement failed: \(workspace.lastError ?? "no error message") — this is the exact reported bug")
+        }
+        XCTAssertNotEqual(patchedBytes, originalData)
+
+        // Round-trip: re-parse the patched bytes for real (not just "isn't
+        // nil") and confirm the new placement is really there.
+        let reparsedRoot = try RM2Parser.parse(data: patchedBytes, fileKind: .sm2, fileName: entryName)
+        let reparsedScenery = try XCTUnwrap(Self.findScenery(in: reparsedRoot))
+        XCTAssertEqual(reparsedScenery.placements.count, originalPlacementCount + 1)
+        let newPlacement = try XCTUnwrap(reparsedScenery.placements.first {
+            guard let t = $0.translation else { return false }
+            return simd_distance(t, SIMD3(placedPosition.x, placedPosition.y, placedPosition.z)) < 0.01
+        })
+        XCTAssertEqual(newPlacement.modelID, modelID)
+
+        // Confirm the rest of the file structure — every other top-level
+        // record — is untouched, real evidence "the rest of the file
+        // matches the original," not just "re-parsed without throwing."
+        var originalCursor = BinaryCursor(data: originalData)
+        let originalHeader = try ChunkHeaderReader.readHeader(from: &originalCursor)
+        var patchedCursor = BinaryCursor(data: patchedBytes)
+        let patchedHeader = try ChunkHeaderReader.readHeader(from: &patchedCursor)
+        XCTAssertEqual(originalHeader.entries.count, patchedHeader.entries.count, "top-level record count should be unchanged — SceneryData replaced in place by id, not appended")
+        for originalEntry in originalHeader.entries where originalEntry.id != sceneryNode.recordID {
+            let originalBytes = originalData.subdata(in: Int(originalEntry.offset)..<(Int(originalEntry.offset) + Int(originalEntry.size)))
+            let patchedEntry = try XCTUnwrap(patchedHeader.entries.first { $0.id == originalEntry.id }, "record id \(originalEntry.id) missing from patched file")
+            let patchedRecordBytes = patchedBytes.subdata(in: Int(patchedEntry.offset)..<(Int(patchedEntry.offset) + Int(patchedEntry.size)))
+            XCTAssertEqual(originalBytes, patchedRecordBytes, "record id \(originalEntry.id) changed even though only SceneryData should have")
+        }
+    }
+
+    /// The cross-level path: "Add Scenery From Other Level…" placing a
+    /// model borrowed from a *different* real archive-browsed level onto
+    /// the destination level, verified with the same real round-trip.
+    ///
+    /// Currently a **documented known failure**, not a working round-trip
+    /// — real disc evidence (`Levels/Earth/Totem/l03beach.sm2`) exposed a
+    /// second, separate bug in `CrossFileModelCopier.graphicsCollection`:
+    /// it finds a tier-2 collection by matching its own `sectionType`
+    /// against `.rigidModel`, but for this real file that collection has
+    /// zero children — the real RigidModel-payloaded records live
+    /// somewhere else in the same `.graphics` container (confirmed via
+    /// `AssetResolver.buildIndex`, which aggregates by each leaf's own
+    /// decoded payload type rather than by collection sectionType, and
+    /// finds 85 real ones). See `copyingRigidModelChain`'s own doc comment
+    /// for the full finding. Fixing this needs real verification of which
+    /// tier-2 collection actually holds these records and why, not a
+    /// guess — guessing at binary format structure risks writing corrupt
+    /// output. This test pins the exact, real error so a future fix has a
+    /// concrete regression target instead of silently re-breaking.
+    func testPlacingSceneryFromAnotherArchiveBrowsedLevelRoundTrips() async throws {
+        let bhURL = try Self.locateRealBH()
+        let index = try BDArchiveParser.readIndex(bhURL: bhURL)
+        let destinationEntryName = "Levels/Earth/Hub/beach.sm2"
+        let sourceEntryName = "Levels/Earth/Totem/l03beach.sm2"
+        for name in [destinationEntryName, sourceEntryName] {
+            _ = try XCTUnwrap(index.entries.first { $0.name == name }, "expected fixture entry \(name) to exist in the real archive")
+        }
+
+        let workspace = WorkspaceViewModel()
+        workspace.open(url: bhURL)
+        let archiveRoot = try XCTUnwrap(workspace.rootNodes.first)
+
+        // Expand the destination the same way the live app does when a
+        // user opens a level from the sidebar.
+        let destinationPlaceholder = try XCTUnwrap(archiveRoot.children.first { $0.displayName == destinationEntryName })
+        await workspace.expandArchiveEntry(destinationPlaceholder, rootID: archiveRoot.id)
+        let destinationSceneryFileRoot = try XCTUnwrap(archiveRoot.children.first { $0.displayName == destinationEntryName })
+
+        guard let destinationGraphics = await workspace.loadingDestinationGraphics(for: destinationSceneryFileRoot) else {
+            return XCTFail("couldn't resolve destination graphics: \(workspace.lastError ?? "no error message")")
+        }
+
+        // Resolve the source level via the same "borrow scenery from
+        // another level" catalog path the Scenery tab actually uses —
+        // reads straight off the mounted archive, same as a level never
+        // individually opened.
+        let sources = workspace.sceneryLevelSources(excluding: destinationSceneryFileRoot)
+        let sourceSummary = try XCTUnwrap(sources.first { $0.displayName.caseInsensitiveCompare((sourceEntryName as NSString).lastPathComponent) == .orderedSame })
+        guard let loadedSource = await workspace.loadingSceneryLevelSource(sourceSummary) else {
+            return XCTFail("couldn't load source level: \(workspace.lastError ?? "no error message")")
+        }
+        let catalog = await workspace.resolvedSceneryCatalog(sceneryRoot: loadedSource.sceneryRoot)
+        let sourceEntry = try XCTUnwrap(catalog.first, "expected at least one real resolvable scenery model in \(sourceEntryName)")
+
+        let placedPosition = SIMD4<Float>(200, 10, -50, 1)
+
+        // Known failure, not yet fixed (see this test's own doc comment
+        // and `CrossFileModelCopier.copyingRigidModelChain`'s) — pinned as
+        // a specific, expected error rather than left to fail generically,
+        // so this test still catches a regression to a *different* error
+        // and stays honest about what's actually verified here.
+        guard workspace.placingSceneryFromAnotherLevel(
+            modelID: sourceEntry.modelID, isSpecial: sourceEntry.isSpecial, position: placedPosition,
+            sourceSceneryFileRoot: loadedSource.sceneryRoot, sourceSceneryBytes: loadedSource.sceneryBytes,
+            sourceGraphicsRoot: loadedSource.graphicsRoot, sourceGraphicsBytes: loadedSource.graphicsBytes,
+            destinationSceneryFileRoot: destinationSceneryFileRoot,
+            destinationGraphicsRoot: destinationGraphics.graphicsRoot, destinationGraphicsBytes: destinationGraphics.graphicsBytes
+        ) == nil else {
+            return XCTFail("placingSceneryFromAnotherLevel unexpectedly succeeded — if CrossFileModelCopier's graphicsCollection gap has been fixed, replace this whole known-failure assertion with a real round-trip check like testPlacingSceneryOnArchiveBrowsedLevelRoundTrips' own.")
+        }
+        let lastError = try XCTUnwrap(workspace.lastError)
+        XCTAssertTrue(lastError.contains("Couldn't find lodModel") || lastError.contains("Couldn't find rigidModel") || lastError.contains("didn't resolve to any real RigidModel"), "expected the known CrossFileModelCopier.graphicsCollection gap, got a different error instead: \(lastError)")
+    }
+}

@@ -2741,6 +2741,7 @@ struct SceneryModeSection: Identifiable {
     var displayName: String
     var isCurrentLevel: Bool
     var sceneryRoot: ChunkNode
+    var sceneryBytes: Data
     var graphicsRoot: ChunkNode
     var graphicsBytes: Data
     var catalog: [WorkspaceViewModel.SceneryCatalogEntry]
@@ -3010,7 +3011,8 @@ struct SceneryModeView: View {
         let section = Section(
             id: source.id, displayName: source.displayName,
             isCurrentLevel: isCurrent,
-            sceneryRoot: loaded.sceneryRoot, graphicsRoot: loaded.graphicsRoot, graphicsBytes: loaded.graphicsBytes,
+            sceneryRoot: loaded.sceneryRoot, sceneryBytes: loaded.sceneryBytes,
+            graphicsRoot: loaded.graphicsRoot, graphicsBytes: loaded.graphicsBytes,
             catalog: catalog
         )
         if section.isCurrentLevel {
@@ -3069,6 +3071,7 @@ struct SceneryModeView: View {
             }
             guard let result = workspace.placingSceneryFromAnotherLevel(
                 modelID: entry.modelID, isSpecial: entry.isSpecial, position: SIMD4(initialPosition, 1),
+                sourceSceneryFileRoot: section.sceneryRoot, sourceSceneryBytes: section.sceneryBytes,
                 sourceGraphicsRoot: section.graphicsRoot, sourceGraphicsBytes: section.graphicsBytes,
                 destinationSceneryFileRoot: destinationSceneryFileRoot,
                 destinationGraphicsRoot: destinationGraphics.graphicsRoot, destinationGraphicsBytes: destinationGraphics.graphicsBytes

@@ -1993,12 +1993,49 @@ public final class WorkspaceViewModel {
 
         switch outcome {
         case .success(let (parsed, data)):
+            // Real, reported bug ("place scenery" — and, by the same
+            // mechanism, any other insert-a-new-record save — always fails
+            // with "couldn't safely apply the record change... refusing to
+            // save a possibly-corrupt result" for *any* level reached by
+            // browsing a mounted archive/disc): `node` here is still the
+            // unexpanded archive-entry placeholder from `load(_:)`, whose
+            // `byteSize`/`fileOffset` are `entry.size`/`entry.offset` — this
+            // file's span *inside the shared `.BD` archive* (e.g. a real
+            // beach.sm2 sits at archive offset 107204180). `parsed` is the
+            // fresh `RM2Parser.parse` of `data`, which is this file's own
+            // *standalone, already-extracted* bytes (`BDArchiveParser.
+            // readEntryData`) — addressed from 0, per `RM2Parser.parse`'s
+            // own root (`fileOffset: 0, byteSize: data.count`), same as any
+            // directly-opened loose `.RM2`/`.SM2`. Building `replacement`
+            // with `node`'s archive-relative offset instead of `parsed`'s
+            // own would leave `replacement.fileOffset` pointing tens/
+            // hundreds of megabytes past the end of `data` (which is only
+            // this one file's bytes) — harmless for every *leaf* record
+            // (their own `fileOffset`s are computed independently, relative
+            // to `data`, by `RM2Parser`'s recursion, never derived from the
+            // root's own field) but fatal the moment anything targets the
+            // file root itself as a section to rebuild: `ChunkSectionInserter`
+            // slices `originalFileBytes` (= `rawFileBytesByRootID[replacement.
+            // id]` = `data`) at `sectionNode.fileOffset..<+byteSize` — for
+            // `SceneryData` (a tier-0 "raw leaf" whose containing section
+            // *is* the file root, see `RM2Parser.tier0Kind`'s doc comment)
+            // that slice is always out of `data`'s bounds, and for every
+            // other insertion (Instance/Trigger/Camera/AIPosition/AIPath)
+            // the file root is still the outermost ancestor
+            // `insertingRecords`/`applyingRecordChanges` walks up to and
+            // rebuilds via the same offset — so both fail identically.
+            // `byteSize` numerically happens to match either way (no
+            // compression — `entry.size == data.count` exactly), which is
+            // why this only ever showed up as a *save* failure, never a
+            // *browse/parse* one. Using `parsed`'s own root fields keeps
+            // this node's coordinates consistent with the bytes actually
+            // stored for it, exactly like a standalone-opened file.
             let replacement = ChunkNode(
                 recordID: node.recordID,
                 sectionType: parsed.sectionType,
                 displayName: node.displayName,
-                byteSize: node.byteSize,
-                fileOffset: node.fileOffset,
+                byteSize: parsed.byteSize,
+                fileOffset: parsed.fileOffset,
                 children: parsed.children,
                 payload: parsed.payload
             )
@@ -3054,10 +3091,24 @@ public final class WorkspaceViewModel {
     /// read-only posture `siblingActorFileRoot`'s own doc comment already
     /// establishes for a stitched neighbor's data, this is browsing another
     /// level's geometry to copy *from*, not opening it for editing.
-    public func loadingSceneryLevelSource(_ source: SceneryLevelSource) async -> (sceneryRoot: ChunkNode, graphicsRoot: ChunkNode, graphicsBytes: Data)? {
+    /// `sceneryBytes` alongside `sceneryRoot` — needed because a scenery
+    /// placement's `modelID` doesn't reliably resolve against the same file
+    /// on every level: real archive evidence has both shapes (`hubb.sm2`
+    /// carries its *own* embedded Graphics section that every one of its
+    /// 462 real placements resolves against, with its paired `hubb.rm2`
+    /// resolving none of them; other levels — see `CrossFileModelCopierTests`'
+    /// own real-disc test — carry no Graphics data of their own and rely
+    /// entirely on their paired `.rm2`). `placingSceneryFromAnotherLevel`
+    /// tries the level's own scenery-file graphics first (matching
+    /// `resolvedSceneryCatalog`'s already-verified resolution source, which
+    /// is what actually proved this `modelID` copyable to begin with), then
+    /// falls back to the paired `.rm2` — so it needs both files' real bytes
+    /// on hand, not just the paired one.
+    public func loadingSceneryLevelSource(_ source: SceneryLevelSource) async -> (sceneryRoot: ChunkNode, sceneryBytes: Data, graphicsRoot: ChunkNode, graphicsBytes: Data)? {
         if let openRoot = source.openFileRoot {
+            guard let sceneryBytes = rawFileBytesByRootID[openRoot.id] else { return nil }
             guard let (graphicsRoot, graphicsBytes) = await resolvingGraphicsRoot(for: openRoot) else { return nil }
-            return (openRoot, graphicsRoot, graphicsBytes)
+            return (openRoot, sceneryBytes, graphicsRoot, graphicsBytes)
         }
 
         guard let rootID = source.archiveRootID, let index = archiveIndexByRootID[rootID],
@@ -3068,13 +3119,13 @@ public final class WorkspaceViewModel {
             lastError = "\(source.displayName) isn't in a mounted archive anymore."
             return nil
         }
-        return await Task.detached(priority: .userInitiated) { () -> (ChunkNode, ChunkNode, Data)? in
+        return await Task.detached(priority: .userInitiated) { () -> (ChunkNode, Data, ChunkNode, Data)? in
             guard let sceneryData = try? BDArchiveParser.readEntryData(sceneryEntry, index: index),
                   let sceneryRoot = try? Self.mainTreeDriver(forExtension: (sceneryEntry.name as NSString).pathExtension).parseChunkFile(data: sceneryData, fileKind: Self.fileKind(forEntryNamed: sceneryEntry.name), fileName: sceneryEntry.name),
                   let graphicsData = try? BDArchiveParser.readEntryData(graphicsEntry, index: index),
                   let graphicsRoot = try? Self.mainTreeDriver(forExtension: (graphicsEntry.name as NSString).pathExtension).parseChunkFile(data: graphicsData, fileKind: Self.fileKind(forEntryNamed: graphicsEntry.name), fileName: graphicsEntry.name)
             else { return nil }
-            return (sceneryRoot, graphicsRoot, graphicsData)
+            return (sceneryRoot, sceneryData, graphicsRoot, graphicsData)
         }.value
     }
 
@@ -3191,6 +3242,7 @@ public final class WorkspaceViewModel {
 
     public func placingSceneryFromAnotherLevel(
         modelID: UInt32, isSpecial: Bool, position: SIMD4<Float>,
+        sourceSceneryFileRoot: ChunkNode, sourceSceneryBytes: Data,
         sourceGraphicsRoot: ChunkNode, sourceGraphicsBytes: Data,
         destinationSceneryFileRoot: ChunkNode,
         destinationGraphicsRoot: ChunkNode, destinationGraphicsBytes: Data
@@ -3203,16 +3255,36 @@ public final class WorkspaceViewModel {
             return nil
         }
 
+        // Real evidence a scenery `modelID` doesn't reliably live in the
+        // same file on every level: `resolvedSceneryCatalog` (which is what
+        // actually proved this `modelID`/`isSpecial` pair resolves to real
+        // geometry, for the thumbnail the user clicked) builds its index
+        // from the level's *own* scenery-file Graphics section, not its
+        // paired `.rm2` — confirmed against real disc data (`hubb.sm2`: all
+        // 462 real placements resolve there, none via `hubb.rm2`). Other
+        // real levels carry no Graphics data of their own and genuinely
+        // need the paired `.rm2` (`CrossFileModelCopierTests`' own real-disc
+        // test). Trying the level's own file first matches what actually
+        // proved this placement copyable; falling back to the paired
+        // `.rm2` covers the other real shape instead of failing outright.
         let copyResult: CrossFileModelCopier.CopyResult
         do {
             copyResult = try CrossFileModelCopier.copyingRigidModelChain(
                 modelID: modelID, isSpecial: isSpecial,
-                sourceFileRoot: sourceGraphicsRoot, sourceBytes: sourceGraphicsBytes,
+                sourceFileRoot: sourceSceneryFileRoot, sourceBytes: sourceSceneryBytes,
                 destinationFileRoot: destinationGraphicsRoot, destinationBytes: destinationGraphicsBytes
             )
         } catch {
-            lastError = "Couldn't copy the source model's geometry: \(error.localizedDescription)"
-            return nil
+            do {
+                copyResult = try CrossFileModelCopier.copyingRigidModelChain(
+                    modelID: modelID, isSpecial: isSpecial,
+                    sourceFileRoot: sourceGraphicsRoot, sourceBytes: sourceGraphicsBytes,
+                    destinationFileRoot: destinationGraphicsRoot, destinationBytes: destinationGraphicsBytes
+                )
+            } catch {
+                lastError = "Couldn't copy the source model's geometry: \(error.localizedDescription)"
+                return nil
+            }
         }
 
         let newPlacement = SceneryModelPlacement(

@@ -104,16 +104,41 @@ public enum CrossFileModelCopier {
 
         // Resolve `modelID` down to a real, concrete RigidModel ID —
         // `AssetResolver.resolveModelID`'s own logic (isSpecial -> LodModel
-        // indirection, first lodModelIDs entry that actually exists),
-        // reimplemented locally since that function is decode-oriented
-        // (returns a `ResolvedModelAsset`) where this needs the real
-        // record *ID* to locate its raw bytes.
+        // indirection), reimplemented locally since that function is
+        // decode-oriented (returns a `ResolvedModelAsset`) where this needs
+        // the real record *ID* to locate its raw bytes. Must recurse the
+        // same way `resolveModelID` does: a LodModel's own `lodModelIDs`
+        // aren't guaranteed to be RigidModel IDs directly — one entry can
+        // itself be another LodModel one level further down the chain. A
+        // single-level-only lookup here previously threw
+        // `lodModelDidNotResolve` even for chains that should have
+        // resolved — depth-capped at 4, matching `resolveModelID`'s own
+        // bound, since the format has no structural guarantee against a
+        // malformed cycle.
+        //
+        // Known remaining gap, real disc evidence, not yet understood well
+        // enough to fix (see `Levels/Earth/Totem/l03beach.sm2`,
+        // modelID 46204230, isSpecial): `graphicsCollection(.rigidModel,
+        // in:)` finds the tier-2 collection whose own `sectionType` is
+        // literally `.rigidModel` — for this real file that collection has
+        // *zero* children, yet `AssetResolver.buildIndex` (which
+        // aggregates every leaf under every tier-2 collection by the
+        // leaf's own decoded *payload* type, not by which collection it's
+        // nested under) finds 85 real `.rigidModel`-payloaded leaves
+        // elsewhere in the same `.graphics` container. This function's
+        // node-based lookups (`sourceRigidModels.children.first(where:)`,
+        // needed to reach a record's raw bytes to copy, not just its
+        // decoded value) can't be trivially swapped for
+        // `AssetResolver`'s dictionary-based aggregation without real
+        // verification of which tier-2 collection actually holds these
+        // records for this file layout and why — guessing at binary
+        // format structure risks writing corrupt output, so this is left
+        // as an open, documented limitation rather than a guessed fix.
+        // `testPlacingSceneryFromAnotherArchiveBrowsedLevelRoundTrips`
+        // (`RealDiscDiagnosticTests.swift`) pins this exact failure.
         var realRigidModelID = modelID
         if isSpecial {
-            guard let lodNode = graphicsCollection(.lodModel, in: sourceFileRoot)?.children.first(where: { $0.recordID == modelID }),
-                  case .lodModel(let lodInfo)? = lodNode.payload
-            else { throw CopyError.recordNotFound(.lodModel, modelID) }
-            guard let resolved = lodInfo.lodModelIDs.first(where: { candidate in sourceRigidModels.children.contains { $0.recordID == candidate } }) else {
+            guard let resolved = Self.resolvingRigidModelID(forLodModelID: modelID, rigidModels: sourceRigidModels, lodModels: graphicsCollection(.lodModel, in: sourceFileRoot)) else {
                 throw CopyError.lodModelDidNotResolve(modelID)
             }
             realRigidModelID = resolved
@@ -194,6 +219,28 @@ public enum CrossFileModelCopier {
 
     private static func rawBytes(of node: ChunkNode, in bytes: Data) -> Data {
         bytes.subdata(in: (bytes.startIndex + node.fileOffset)..<(bytes.startIndex + node.fileOffset + node.byteSize))
+    }
+
+    /// Recursive LOD-chain walk, mirroring `AssetResolver.resolveModelID`'s
+    /// own algorithm exactly (isSpecial -> LodModel indirection, first
+    /// `lodModelIDs` candidate that resolves, recursing when a candidate is
+    /// itself another LodModel rather than a RigidModel) but returning the
+    /// real record *ID* instead of a decoded `ResolvedModelAsset`, since
+    /// this caller needs it to locate the RigidModel's raw bytes to copy.
+    private static func resolvingRigidModelID(forLodModelID lodModelID: UInt32, rigidModels: ChunkNode, lodModels: ChunkNode?, depth: Int = 0) -> UInt32? {
+        guard depth < 4,
+              let lodNode = lodModels?.children.first(where: { $0.recordID == lodModelID }),
+              case .lodModel(let lodInfo)? = lodNode.payload
+        else { return nil }
+        for candidateID in lodInfo.lodModelIDs {
+            if rigidModels.children.contains(where: { $0.recordID == candidateID }) {
+                return candidateID
+            }
+            if let resolved = resolvingRigidModelID(forLodModelID: candidateID, rigidModels: rigidModels, lodModels: lodModels, depth: depth + 1) {
+                return resolved
+            }
+        }
+        return nil
     }
 
     /// The `.graphics`/`.graphicsX`/`.graphicsD` container's child whose
