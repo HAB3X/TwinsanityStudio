@@ -389,6 +389,50 @@ final class WorkspaceViewModelIntegrationTests: XCTestCase {
             "the second search should reuse every level's already-parsed GraphicsAssetIndex instead of re-parsing archive entries it already visited; first=\(firstDuration)s second=\(secondDuration)s"
         )
     }
+
+    /// Regression test for the Scenery tab reporting "This level's own
+    /// scenery data decoded to zero placements" for a real beach-area level
+    /// whose 3D viewport rendered its scenery (trees, rocks, palm
+    /// structures) just fine. `resolvedSceneryCatalog` had never been
+    /// covered by any test (confirmed via `grep -rln
+    /// "resolvedSceneryCatalog" Tests/` returning nothing before this).
+    ///
+    /// Root cause, verified empirically against this exact real archive:
+    /// `resolvedSceneryCatalog` built its `AssetResolver` index from the
+    /// paired `graphicsRoot` (`.rm2`) instead of `sceneryRoot` (`.sm2`)
+    /// itself. A direct check against `Levels/Earth/Hub/hubb.sm2`/
+    /// `hubb.rm2` showed every one of `hubb.sm2`'s real 462 scenery
+    /// placements resolves against `hubb.sm2`'s own Graphics section (245
+    /// `RigidModel`s / 80 `LodModel`s), while *zero* resolve against
+    /// `hubb.rm2`'s — matching `resolvedLevelPlacements`'s own doc comment,
+    /// which independently confirms `.rm2` carries "zero scenery" for this
+    /// same level. This asserts the fixed function — now indexing
+    /// `sceneryRoot` alone — returns a real, non-empty catalog with
+    /// sensible entries for `hubb.sm2`, not just that it no longer crashes.
+    func testResolvedSceneryCatalogIsNonEmptyForARealLevelWithKnownScenery() async throws {
+        let bhURL = URL(fileURLWithPath: "/Users/marcuschandler/Documents/Crash Twinsanity/Games Files/PS2 FILES/CRASH6/CRASH.BH")
+        guard FileManager.default.fileExists(atPath: bhURL.path) else {
+            throw XCTSkip("Real CRASH.BH not present on this machine.")
+        }
+        let index = try BDArchiveParser.readIndex(bhURL: bhURL)
+        guard let sceneryEntry = index.entries.first(where: { $0.name == "Levels/Earth/Hub/hubb.sm2" }) else {
+            return XCTFail("couldn't find Levels/Earth/Hub/hubb.sm2 in the real archive index")
+        }
+        let sceneryData = try BDArchiveParser.readEntryData(sceneryEntry, index: index)
+        let sceneryDriver = EngineDriverRegistry.driver(forExtension: "sm2") ?? TwinsanityEngineDriver()
+        let sceneryRoot = try sceneryDriver.parseChunkFile(data: sceneryData, fileKind: .sm2, fileName: sceneryEntry.name)
+
+        let workspace = WorkspaceViewModel()
+        let catalog = await workspace.resolvedSceneryCatalog(sceneryRoot: sceneryRoot)
+
+        XCTAssertFalse(catalog.isEmpty, "hubb.sm2 has 462 real scenery placements and should decode to a real, non-empty catalog, not the 'zero placements' regression this test guards against")
+        XCTAssertTrue(catalog.allSatisfy { !$0.asset.mesh.submeshes.isEmpty }, "every catalog entry should carry real, drawable mesh geometry")
+        XCTAssertTrue(catalog.allSatisfy { $0.count >= 1 }, "every catalog entry should have counted at least the one placement that produced it")
+        XCTAssertEqual(catalog.map(\.modelID), Set(catalog.map(\.modelID)).sorted(), "entries should be de-duplicated by modelID/isSpecial and sorted by modelID")
+
+        let totalPlacementsCounted = catalog.reduce(0) { $0 + $1.count }
+        XCTAssertEqual(totalPlacementsCounted, 462, "hubb.sm2's real placement count is 462 (cited elsewhere in this codebase); every one of them resolves against hubb.sm2's own Graphics section, so the catalog's counts should sum back up to exactly that")
+    }
 }
 
 /// Bridges `@Observable`'s access-based change tracking to XCTest's

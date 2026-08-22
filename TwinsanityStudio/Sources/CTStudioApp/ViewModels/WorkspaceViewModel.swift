@@ -2953,21 +2953,26 @@ public final class WorkspaceViewModel {
     /// `sceneryRoot`'s *own* Graphics data — the click-to-place catalog for
     /// one picked source level.
     ///
-    /// Previously built its index from the paired `graphicsRoot` (`.rm2`)
-    /// instead, on the assumption scenery geometry lived there. Verified
-    /// empirically against the real disc archive (`Levels/Earth/Hub/
-    /// hubb.sm2`/`hubb.rm2`): every one of `hubb.sm2`'s real 462 scenery
-    /// placements resolves against `hubb.sm2`'s own Graphics section (245
-    /// `RigidModel`s / 80 `LodModel`s); *none* resolve against `hubb.rm2`'s
-    /// (which carries the level's Instance/Trigger/Camera/AI data instead —
-    /// see `resolvedLevelPlacements`'s own doc comment, independently
-    /// confirming `.rm2` has "zero scenery"). Building the index from the
-    /// wrong file made every `resolveModelID` call fail, so this panel
-    /// always reported zero placements regardless of how much real scenery
-    /// a level actually had — the viewport rendered fine the whole time
-    /// because `resolvedLevelPlacements` already indexed the scenery file
-    /// itself. This now matches that working code path exactly.
-    public func resolvedSceneryCatalog(sceneryRoot: ChunkNode, graphicsRoot: ChunkNode) async -> [SceneryCatalogEntry] {
+    /// Previously built its index from a separate paired `graphicsRoot`
+    /// (`.rm2`) parameter instead, on the assumption scenery geometry lived
+    /// there. Verified empirically against the real disc archive
+    /// (`Levels/Earth/Hub/hubb.sm2`/`hubb.rm2`): every one of `hubb.sm2`'s
+    /// real 462 scenery placements resolves against `hubb.sm2`'s own
+    /// Graphics section (245 `RigidModel`s / 80 `LodModel`s); *none*
+    /// resolve against `hubb.rm2`'s (which carries the level's Instance/
+    /// Trigger/Camera/AI data instead — see `resolvedLevelPlacements`'s own
+    /// doc comment, independently confirming `.rm2` has "zero scenery").
+    /// Building the index from the wrong file made every `resolveModelID`
+    /// call fail, so this panel always reported zero placements regardless
+    /// of how much real scenery a level actually had — the viewport
+    /// rendered fine the whole time because `resolvedLevelPlacements`
+    /// already indexed the scenery file itself. This now matches that
+    /// working code path exactly, and the now-unnecessary `graphicsRoot`
+    /// parameter (its only call site, in `LevelViewerWindow`, still has the
+    /// paired `.rm2` handy for other reasons -- see `SceneryLevelSource`'s
+    /// "Add Scenery From Other Level" use of it -- but no real scenery
+    /// model ever needed it here) was dropped rather than kept unused.
+    public func resolvedSceneryCatalog(sceneryRoot: ChunkNode) async -> [SceneryCatalogEntry] {
         guard let sceneryNode = sceneryNode(in: sceneryRoot), case .scenery(let asset)? = sceneryNode.payload else { return [] }
         return await Task.detached(priority: .userInitiated) {
             let index = AssetResolver.buildIndex(fileRoot: sceneryRoot)

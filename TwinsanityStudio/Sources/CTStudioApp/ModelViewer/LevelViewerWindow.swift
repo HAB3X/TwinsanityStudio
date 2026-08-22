@@ -2970,7 +2970,7 @@ struct SceneryModeView: View {
             if isCurrent { cache.currentLevelStatus = .failed(workspace.lastError ?? "Couldn't load \(source.displayName).") }
             return
         }
-        let catalog = await workspace.resolvedSceneryCatalog(sceneryRoot: loaded.sceneryRoot, graphicsRoot: loaded.graphicsRoot)
+        let catalog = await workspace.resolvedSceneryCatalog(sceneryRoot: loaded.sceneryRoot)
         cache.loadedCount += 1
         guard !catalog.isEmpty else {
             if isCurrent { cache.currentLevelStatus = .empty }
